@@ -1,0 +1,29 @@
+<!doctype html>
+<!-- Touch event support against release Firefox: bench/compare_bridge.py touch-events (task 3843).
+     Desktop Firefox without a touchscreen has no TouchEvent and no ontouch* on HTMLElement
+     (TouchEvent::PrefEnabled); X's isTouchSupported tests the handlers on a div, by `in` and by a
+     compiled content attribute, and draws its pull-to-refresh wrapper when they are there. -->
+<html><head><title>touch-events</title><meta charset="utf-8"></head><body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.map(String).join(" "));
+for (const n of ["TouchEvent", "Touch", "TouchList"]) log("global", n, typeof window[n]);
+for (const n of ["ontouchstart", "ontouchend", "ontouchmove", "ontouchcancel"]) {
+  log("in", n, n in document.createElement("div"), n in HTMLElement.prototype, n in document, n in window);
+}
+// X's isTouchSupported (loader.TimelineRenderer, module 409366)
+const xTouch = ["touchend", "touchmove", "touchstart"].some(e => {
+  const t = document.createElement("div"), r = `on${e}`;
+  let i = r in t;
+  if (!i) { t.setAttribute(r, "return;"); i = typeof t[r] === "function"; }
+  return i;
+});
+log("x isTouchSupported", xTouch);
+log("maxTouchPoints", navigator.maxTouchPoints);
+for (const q of ["(pointer: coarse)", "(pointer: fine)", "(any-pointer: coarse)", "(hover: hover)", "(hover: none)"]) log("media", q, matchMedia(q).matches);
+let fired = 0;
+const d = document.createElement("div");
+d.addEventListener("touchstart", () => fired++);
+d.dispatchEvent(new Event("touchstart"));
+log("listener", fired);
+</script>

@@ -1,0 +1,27 @@
+[package]
+name = "mrt-style"
+version = "0.1.0"
+edition = "2024"
+
+# Stage 2a: Stylo's element traits over the arena DOM, with the page's CSS parsed by Stylo's cssparser.
+# Stylo 0.22 (2026-09-30), the release nearest the Firefox tree the layout is translated from.
+[dependencies]
+mrt-dom = { path = "../mrt-dom" }
+style = { version = "0.22", package = "stylo" }
+static_prefs = { version = "0.22", package = "stylo_static_prefs" }
+style_dom = { version = "0.22", package = "stylo_dom" }
+selectors = "0.41"
+web_atoms = "0.3"
+euclid = "0.22"
+app_units = "0.7"
+url = "2"
+cssparser = "0.38"
+style_traits = { version = "0.22", package = "stylo_traits" }
+
+[profile.release]
+debug = false
+
+# Stylo 0.22 with Gecko-only properties also generated for the Servo engine (vendor/stylo/README-mrt.md)
+[patch.crates-io]
+stylo = { path = "../vendor/stylo" }
+stylo_atoms = { path = "../vendor/stylo_atoms" }

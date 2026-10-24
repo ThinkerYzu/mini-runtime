@@ -1,0 +1,119 @@
+<!doctype html>
+<!-- The frames' layout against release Firefox: bench/compare_bridge.py frame-layout (DESIGN, "The
+     frames' layout (S5)"). Each frame's document laid out at its frame element's content box: frames
+     sized by default, by attributes, by CSS (with border and padding), by percent, display:none, inside
+     a hidden parent; inside each, innerWidth/innerHeight, the root's client size, boxes, the frame's own
+     sheet and matchMedia; a frame resized and its resize event; a cross-origin frame (127.0.0.1, in a
+     runtime of its own) sized by CSS. -->
+<html><head><title>frame-layout</title><meta charset="utf-8">
+<style>
+  body { margin: 0; }
+  #host { width: 800px; }
+  .styled { width: 400px; height: 120px; border: 5px solid black; padding: 7px 3px; }
+  .percent { width: 50%; height: 60px; border: 0; }
+  #hidden { display: none; }
+</style></head>
+<body>
+<div id="host"></div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const host = document.getElementById("host");
+  const events = [];
+
+  // what a frame's window sees of itself
+  function inside(name, f) {
+    const w = f.contentWindow, d = f.contentDocument;
+    if (!w) { log(name, "no window"); return; }
+    const p = d.getElementById("p");
+    const r = p ? p.getBoundingClientRect() : null;
+    log(name, "inner", w.innerWidth, w.innerHeight,
+        "root client", d.documentElement.clientWidth, d.documentElement.clientHeight,
+        "p", r ? [r.x, r.y, r.width, r.height].join(",") : "none",
+        "mq", w.matchMedia("(max-width: 350px)").matches, w.matchMedia("(min-height: 100px)").matches);
+  }
+  function fill(f, extra = "") {
+    const d = f.contentDocument;
+    d.open();
+    d.write("<!doctype html><html><head><style>p { margin: 4px; width: 50%; height: 10px; } " + extra + "</style></head><body><p id=p>x</p></body></html>");
+    d.close();
+  }
+
+  // 1. the default size (300 x 150), and the frame's own body margin
+  const a = document.createElement("iframe");
+  host.appendChild(a);
+  fill(a);
+  inside("default", a);
+  const ab = a.getBoundingClientRect();
+  log("default element", ab.width, ab.height, a.clientWidth, a.clientHeight);
+
+  // 2. width and height attributes
+  const b = document.createElement("iframe");
+  b.width = "200"; b.height = "90";
+  host.appendChild(b);
+  fill(b);
+  inside("attributes", b);
+
+  // 3. CSS size with border and padding: the document gets the content box
+  const c = document.createElement("iframe");
+  c.className = "styled";
+  host.appendChild(c);
+  fill(c, "@media (min-width: 390px) { p { height: 20px; } }");
+  inside("styled", c);
+  const cb = c.getBoundingClientRect();
+  log("styled element", cb.width, cb.height, c.clientWidth, c.clientHeight);
+
+  // 4. percent of the containing block
+  const d = document.createElement("iframe");
+  d.className = "percent";
+  host.appendChild(d);
+  fill(d);
+  inside("percent", d);
+
+  // 5. display: none, and inside a hidden parent
+  const e = document.createElement("iframe");
+  e.style.display = "none";
+  host.appendChild(e);
+  fill(e);
+  inside("none", e);
+  const hidden = document.createElement("div");
+  hidden.id = "hidden";
+  host.appendChild(hidden);
+  const g = document.createElement("iframe");
+  hidden.appendChild(g);
+  fill(g);
+  inside("hidden parent", g);
+
+  // 6. a resize: the new size at once (the parent flushed), the resize event later
+  b.contentWindow.addEventListener("resize", () => events.push("b resize " + b.contentWindow.innerWidth));
+  c.contentWindow.addEventListener("resize", () => events.push("c resize " + c.contentWindow.innerWidth));
+  b.style.width = "250px";
+  inside("resized", b);
+  // a change of size that nobody reads before the next frame tick
+  c.style.width = "300px";
+  e.style.display = "";
+  // 7. a cross-origin frame: the size its frame element gives it reaches its own process
+  let crossLine = null, timedOut = false;
+  const finish = () => {
+    if (!crossLine || !timedOut) return;
+    log(crossLine);
+    log("done");
+  };
+  window.addEventListener("message", m => {
+    const d = m.data;
+    crossLine = ["cross-origin inner", d.inner.join(" "), "root client", d.root.join(" "), "p", d.p.join(","), "mq", d.mq].join(" ");
+    finish();
+  });
+  const x = document.createElement("iframe");
+  x.className = "styled";
+  x.src = location.href.replace("localhost", "127.0.0.1").replace("frame-layout.html", "frame-layout-child.html");
+  host.appendChild(x);
+  setTimeout(() => {
+    inside("shown", e);
+    inside("styled later", c);
+    // (sorted: release Firefox fires the frames' resize events in either order from one run to the next)
+    log("events", events.sort().join(", "));
+    timedOut = true;
+    finish();
+  }, 300);
+</script></body></html>

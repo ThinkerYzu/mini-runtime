@@ -1,0 +1,10 @@
+<!doctype html>
+<!-- reportError (WindowOrWorkerGlobalScope.webidl; Gecko's nsGlobalWindowInner::ReportError and
+     WorkerGlobalScopeBase::ReportError) against release Firefox: bench/compare_bridge.py report-error.
+     The method's shape and brand check, the ErrorEvent it fires at once at the window for each kind of
+     value, onerror's five arguments and its `true`, preventDefault, a reportError made while an error
+     event is handled, a throwing listener, a same-origin frame, and a worker (report-error-worker.js).
+     The sites only read it (React's `typeof reportError` at module load: CNN, Facebook, Instagram, X;
+     session 95). The script is report-error.js. -->
+<html><head><meta charset="utf-8"><title>report-error</title></head><body><p>report-error test</p>
+<script src="report-error.js"></script></body></html>

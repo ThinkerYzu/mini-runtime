@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- An animation's values in getComputedStyle against release Firefox (task 0e92): what X's
+     ondemand.s bundle does to make the x-client-transaction-id header its search API checks. A
+     <div> in the body is animated for 4096 ms from one color to another and from rotate(0deg) to
+     rotate(Ndeg), with a cubic-bezier easing in the keyframes, paused at once, its currentTime set
+     to a multiple of 10, and its computed color and transform read. The inputs come from a fixed
+     sequence of bytes as X makes them from its key. Also: another property than the animated ones,
+     the values after cancel(), an animation that has finished (no fill), and fill "forwards". -->
+<html><head><title>animate-style</title><meta charset="utf-8"></head>
+<body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  // bytes from a fixed generator (X's come from its site-verification key and an SVG path)
+  let seed = 12345;
+  const byte = () => (seed = (seed * 1103515245 + 12345) % 2147483648) % 256;
+  const hex = n => (n < 16 ? "0" : "") + n.toString(16);
+  // X's J: a byte scaled to [min, max], rounded down or to two decimals
+  const scale = (b, min, max, floor) => { const v = b * (max - min) / 255 + min; return floor ? Math.floor(v) : v.toFixed(2); };
+  const keyframesOf = w => ({
+    color: ["#" + hex(w[0]) + hex(w[1]) + hex(w[2]), "#" + hex(w[3]) + hex(w[4]) + hex(w[5])],
+    transform: ["rotate(0deg)", "rotate(" + scale(w[6], 60, 360, true) + "deg)"],
+    easing: "cubic-bezier(" + w.slice(7).map((b, i) => scale(b, i % 2 ? -1 : 0, 1)).join() + ")",
+  });
+  const times = [0, 10, 970, 2050, 3330, 4090];
+  for (let i = 0; i < 8; i++) {
+    const w = Array.from({ length: 11 }, byte);
+    const keyframes = keyframesOf(w);
+    const div = document.createElement("div");
+    document.body.append(div);
+    const a = div.animate(keyframes, 2 ** 12);
+    a.pause();
+    const out = [];
+    for (const t of times) {
+      a.currentTime = t;
+      const s = getComputedStyle(div);
+      out.push(t + ": " + s.color + " | " + s.transform);
+    }
+    log(i, JSON.stringify(keyframes));
+    for (const line of out) log(i, line);
+    div.remove();
+  }
+
+  // the other cases, on one element
+  const div = document.createElement("div");
+  div.style.color = "rgb(1, 2, 3)";
+  document.body.append(div);
+  const s = getComputedStyle(div);
+  const a = div.animate({ color: ["#000000", "#ff8000"], opacity: [0, 1] }, 1000);
+  a.pause();
+  a.currentTime = 250;
+  log("color and opacity at 250", s.color, s.opacity, "background", s.backgroundColor, "transform", s.transform);
+  a.cancel();
+  log("cancelled", s.color, s.opacity);
+  const b = div.animate({ color: ["#000000", "#ff8000"] }, 1000);
+  b.finish();
+  log("finished, no fill", s.color);
+  const c = div.animate({ color: ["#000000", "#ff8000"] }, { duration: 1000, fill: "forwards" });
+  c.finish();
+  log("finished, forwards", s.color);
+  c.cancel();
+  // a keyframe list, with an offset, and the effect's own easing
+  const d = div.animate([{ transform: "rotate(10deg)" }, { transform: "rotate(50deg)", offset: 0.25 }, { transform: "rotate(90deg)" }],
+                        { duration: 1000, easing: "ease-in" });
+  d.pause();
+  for (const t of [100, 500, 900]) { d.currentTime = t; log("list at", t, s.transform); }
+  d.cancel();
+  log("end", s.color, s.transform);
+</script>
+</body></html>

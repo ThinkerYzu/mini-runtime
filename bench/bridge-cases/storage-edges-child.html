@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>storage-edges child</title></head><body>
+<script>
+  // its first use of localStorage, then a new URL: its storage events keep the first
+  localStorage.getItem("x");
+  history.replaceState(null, "", location.pathname + "?moved");
+  window.events = [];
+  window.addEventListener("storage", e => {
+    window.events.push([e.key, e.oldValue, e.newValue, e.url.replace(location.origin, ""), e.storageArea === localStorage,
+      e.isTrusted, e.bubbles, e.cancelable, e instanceof StorageEvent, e.target === window]);
+  });
+  window.change = () => localStorage.setItem("f1", "child");
+  window.addEventListener("message", e => { if (e.data === "count") parent.postMessage(window.events.length, "*"); });
+</script></body></html>

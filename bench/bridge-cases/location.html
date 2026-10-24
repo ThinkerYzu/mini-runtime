@@ -1,0 +1,64 @@
+<!doctype html>
+<!-- The document's URL against release Firefox: bench/compare_bridge.py location, which loads it as
+     location.html#inbox (GAPS D71). A navigated document keeps the fragment it was asked for, while a
+     fetch's Response.url never has one; relative URLs resolved against the document never take its
+     fragment; a frame's src with a fragment; replaceState with and without one. Gmail's router reads
+     location.hash and, without one, moves the page to /chat/u/0/. -->
+<html><head><title>location</title><meta charset="utf-8"></head>
+<body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const tail = u => String(u).replace(/^.*\//, "");
+
+  // 1. the document's own URL
+  log("location", tail(location.href), location.hash, location.pathname.endsWith("/location.html"));
+  log("document", tail(document.URL), tail(document.documentURI), tail(document.baseURI));
+
+  // 2. relative URLs against it: never its fragment
+  log("Request", tail(new Request("a?b=1").url), tail(new Request("").url), tail(new Request("#x").url));
+  log("URL", tail(new URL("c", location.href).href), tail(new URL("", location.href).href), tail(new URL("?q", location.href).href));
+  const a = document.createElement("a");
+  a.href = "d";
+  log("anchor", tail(a.href), a.hash === "");
+
+  // the userinfo setters (percent-encoded; nothing for a URL without a host)
+  const u = new URL("http://example.com/p");
+  u.username = "a b:c@d/\u00e9!$&()*+,-._~";
+  u.password = "p:w";
+  const m = new URL("mailto:x@y");
+  m.username = "z";
+  log("userinfo", u.href, u.username, u.password, m.href);
+
+  // the port: a special scheme's default port is none (Reddit's reCAPTCHA posts to its parent with
+  // targetOrigin "https://www.reddit.com:443", GAPS B97), leading zeros dropped, above 65535 invalid
+  const ports = ["https://a.com:443/", "http://a.com:80/", "wss://a.com:443/", "ws://a.com:80/", "ftp://a.com:21/",
+                 "https://a.com:80/", "http://a.com:0080/", "foo://a.com:443/", "https://a.com:/"];
+  log("ports", JSON.stringify(ports.map(s => { const x = new URL(s); return [x.port, x.host, x.origin, x.href]; })));
+  let big;
+  try { new URL("http://a.com:65536/"); big = "parsed"; } catch (e) { big = e.name; }
+  log("port 65536", big);
+
+  // 3. a fetch's response URL has no fragment (logged after the load's lines: whether the answer comes
+  // before the frame's load depends on the network)
+  const fetched = fetch("location.html#frag");
+
+  // 4. a frame whose src has one
+  const f = document.createElement("iframe");
+  f.src = "location-child.html#inside";
+  f.addEventListener("load", () => log("frame", tail(f.contentWindow.location.href), f.contentWindow.location.hash, f.contentWindow.childHash));
+  document.body.appendChild(f);
+
+  // 5. replaceState keeps what it is given, and a relative fetch after it resolves against the new URL
+  window.addEventListener("load", () => {
+    history.replaceState(null, "", "location.html?r=1");
+    log("replaceState", tail(location.href), location.hash === "", tail(new Request("e").url));
+    history.replaceState(null, "", "#again");
+    log("replaceState hash", tail(location.href), location.hash);
+    // back to the URL the case was loaded at: outside a replay, mini_realsites.py loads the runtime
+    // from the URL Firefox's tab ends at
+    history.replaceState(null, "", "location.html#inbox");
+    fetched.then(r => log("fetch", tail(r.url), r.ok));
+  });
+</script>
+</body></html>

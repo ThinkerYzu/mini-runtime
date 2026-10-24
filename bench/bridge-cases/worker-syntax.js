@@ -1,0 +1,2 @@
+postMessage("before");
+let = = ;

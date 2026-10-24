@@ -1,0 +1,52 @@
+<!doctype html>
+<!-- Scripts run where the parser is, against release Firefox: bench/compare_bridge.py parser-position
+     (GAPS B8). Each parser-blocking script sees the document up to its own element only, in the head
+     and in the body, inside a table and in SVG; a microtask queued by one script runs before the next
+     (the end tag's microtask checkpoint); a sheet linked before a script applies when it runs; a
+     mutation observer made in the head sees the parser's insertions; a custom element defined early
+     is upgraded and connected before the next script; deferred scripts run once the document is
+     parsed, in readyState "interactive". -->
+<html><head><title>parser-position</title><meta charset="utf-8">
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const count = () => document.getElementsByTagName("*").length;
+  log("head script:", document.readyState, "body", document.body === null ? "null" : "set", "elements", count());
+  window.added = [];
+  new MutationObserver(records => {
+    for (const r of records) for (const n of r.addedNodes) if (n.nodeType === 1) window.added.push(n.localName + (n.id ? "#" + n.id : ""));
+  }).observe(document, { childList: true, subtree: true });
+  Promise.resolve().then(() => log("microtask of the first script"));
+  customElements.define("x-early", class extends HTMLElement {
+    connectedCallback() { log("x-early connected", this.id); }
+  });
+</script>
+<script>log("second script: after the first one's microtask");</script>
+<link rel="stylesheet" href="link-sheets-a.css">
+<script>log("scripts so far", document.scripts.length, "link sheets", document.styleSheets.length);</script>
+<script defer src="parser-position-defer.js"></script>
+</head>
+<body>
+<p id="a">first</p>
+<script>
+  log("body script: #a", !!document.getElementById("a"), "#b", !!document.getElementById("b"),
+      "#a width", getComputedStyle(document.getElementById("a")).width, "readyState", document.readyState);
+</script>
+<x-early id="e1"></x-early>
+<script>log("after x-early: defined", document.getElementById("e1").matches(":defined"));</script>
+<p id="b">second</p>
+<table id="t"><tr><td id="c1">cell<script>
+  log("in a cell: #c1", !!document.getElementById("c1"), "#c2", !!document.getElementById("c2"),
+      "cell text", JSON.stringify(document.getElementById("c1").textContent.slice(0, 4)));
+</script></td><td id="c2"></td></tr></table>
+<svg id="s"><circle id="circle"/><script>log("in svg: #circle", !!document.getElementById("circle"), "#after-svg", !!document.getElementById("after-svg"));</script></svg>
+<div id="after-svg"></div>
+<script src="parser-position-blocking.js"></script>
+<p id="last">last</p>
+<script>
+  log("last script: elements", count(), "#last", !!document.getElementById("last"));
+  document.addEventListener("DOMContentLoaded", () => {
+    log("DOMContentLoaded: added", window.added.join(","));
+  });
+</script>
+</body></html>

@@ -1,0 +1,52 @@
+<!doctype html>
+<!-- window.screenX, screenY and their aliases screenLeft, screenTop (Window.webidl; Gecko's
+     nsGlobalWindowOuter::GetScreenXY: the top-level window's position in CSS px) against release
+     Firefox: bench/compare_bridge.py window-screen-xy. The values, the aliases, the window's
+     properties ([Replaceable]), their getters and setters, and a same-origin frame's. Amazon, YouTube,
+     Reddit and Google Docs read them (session 93). -->
+<html><head><meta charset="utf-8"><title>window-screen-xy</title></head><body><p>window-screen-xy test</p>
+<script>
+(function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const names = ["screenX", "screenY", "screenLeft", "screenTop"];
+
+  T("values", () => names.map(n => [n, typeof window[n], window[n], Number.isInteger(window[n])]));
+  T("aliases", () => [window.screenLeft === window.screenX, window.screenTop === window.screenY]);
+  T("self", () => names.map(n => self[n] === window[n] && globalThis[n] === window[n]));
+  T("in", () => names.map(n => [n in window, window.hasOwnProperty(n), Object.keys(window).includes(n)]));
+  T("proto", () => names.map(n => !!Object.getOwnPropertyDescriptor(Window.prototype, n)));
+  T("descriptors", () => names.map(n => {
+    const d = Object.getOwnPropertyDescriptor(window, n);
+    return d && [n, typeof d.get, typeof d.set, d.enumerable, d.configurable, d.get.name, d.set && d.set.name, d.get.length, d.set && d.set.length];
+  }));
+  T("same getter", () => {
+    const d = n => Object.getOwnPropertyDescriptor(window, n).get;
+    return [d("screenX") === d("screenLeft"), d("screenY") === d("screenTop"), d("screenX") === d("screenY")];
+  });
+  T("getter wrong this", () => Object.getOwnPropertyDescriptor(window, "screenX").get.call({}));
+  T("getter undefined this", () => Object.getOwnPropertyDescriptor(window, "screenTop").get.call(undefined) === window.screenTop);
+  T("setter wrong this", () => { Object.getOwnPropertyDescriptor(window, "screenY").set.call({}, 3); return window.screenY === window.screenTop; });
+
+  // a same-origin frame: the top-level window's position, so the parent's values
+  const frame = document.createElement("iframe");
+  document.body.appendChild(frame);
+  const fw = frame.contentWindow;
+  T("frame", () => names.map(n => fw[n] === window[n]));
+  T("frame getter on parent", () => Object.getOwnPropertyDescriptor(fw, "screenX").get.call(window) === window.screenX);
+  T("frame getter differs", () => Object.getOwnPropertyDescriptor(fw, "screenX").get !== Object.getOwnPropertyDescriptor(window, "screenX").get);
+
+  // [Replaceable]: an assignment makes an own data property; delete then removes the attribute
+  T("replace", () => {
+    window.screenLeft = "x";
+    const d = Object.getOwnPropertyDescriptor(window, "screenLeft");
+    return [window.screenLeft, "value" in d, d.writable, d.enumerable, d.configurable, window.screenX === fw.screenX];
+  });
+  T("delete", () => [delete window.screenLeft, typeof window.screenLeft, "screenLeft" in window]);
+  T("frame replace", () => { fw.screenTop = null; return [fw.screenTop, Object.getOwnPropertyDescriptor(fw, "screenTop").writable, typeof window.screenTop]; });
+  L("done");
+})();
+</script></body></html>

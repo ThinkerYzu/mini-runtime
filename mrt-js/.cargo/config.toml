@@ -1,0 +1,4 @@
+# libz-rs-sys's symbols carry Firefox's prefix (config/makefiles/rust.mk), which the tree's
+# modules/zlib/src/mozzconf.h renames zlib's functions to; see build.rs
+[env]
+LIBZ_RS_SYS_PREFIX = "MOZ_Z_"

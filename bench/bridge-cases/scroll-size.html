@@ -1,0 +1,52 @@
+<!doctype html>
+<!-- clientWidth/Height and scrollWidth/Height of elements that are not the scrolling element, against
+     release Firefox: bench/compare_bridge.py scroll-size (Gecko's Element::GetClientAreaRect and
+     GetScrollSize). YouTube's description expander grows its snippet until scrollHeight exceeds
+     offsetHeight under overflow: hidden. -->
+<html><head><title>scroll size</title>
+<style>
+  body { margin: 8px; font: 16px/20px sans-serif; width: 600px; }
+  .box { border: 3px solid black; padding: 5px 7px 9px 11px; margin: 4px; }
+  #clamp { overflow: hidden; max-height: 40px; }
+  #auto { overflow: auto; height: 50px; }
+  #visible { height: 30px; }
+  #wide { overflow: hidden; width: 100px; white-space: nowrap; }
+  #rev { display: flex; flex-direction: column-reverse; overflow: hidden; height: 40px; }
+  #rev div { height: 30px; flex: none; }
+  #rtl { direction: rtl; overflow: hidden; width: 100px; white-space: nowrap; }
+  #abs { position: relative; overflow: hidden; height: 40px; }
+  #abs span { position: absolute; top: 100px; left: 10px; }
+  #inline { border: 2px solid; padding: 3px; }
+  #empty { padding: 4px; border: 1px solid; }
+  #hidden { display: none; }
+  #grid { display: grid; grid-template-columns: 100px 100px; overflow: hidden; height: 30px; }
+  #grid div { height: 25px; }
+</style></head>
+<body>
+<div id="clamp" class="box">One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight</div>
+<div id="auto" class="box"><p>a</p><p>b</p><p>c</p><p>d</p></div>
+<div id="visible" class="box">x<br>y<br>z<br>w</div>
+<div id="wide" class="box">A very long line that does not wrap at all because of nowrap here</div>
+<div id="rev" class="box"><div>1</div><div>2</div><div>3</div></div>
+<div id="rtl" class="box">A very long line that does not wrap in a right to left box</div>
+<div id="abs" class="box">text<span>far below</span></div>
+<p>An <span id="inline">inline span</span> in a paragraph.</p>
+<div id="empty"></div>
+<div id="hidden">gone</div>
+<div id="grid" class="box"><div>1</div><div>2</div><div>3</div><div>4</div></div>
+<script>
+  window.__log = [];
+  for (const id of ["clamp", "auto", "visible", "wide", "rev", "rtl", "abs", "inline", "empty", "hidden", "grid"]) {
+    const e = document.getElementById(id);
+    window.__log.push([id, "offset", e.offsetWidth, e.offsetHeight, "client", e.clientWidth, e.clientHeight, "scroll", e.scrollWidth, e.scrollHeight].join(" "));
+  }
+  // the snippet loop: grow the text until it overflows the clamped box
+  const c = document.getElementById("clamp"), words = c.textContent.split(" ");
+  let n = 0;
+  for (c.textContent = ""; n < words.length; n++) {
+    c.textContent = words.slice(0, n + 1).join(" ");
+    if (c.scrollHeight - c.offsetHeight > 0) break;
+  }
+  window.__log.push("snippet overflows at word " + n);
+  window.__log.push("done");
+</script></body></html>

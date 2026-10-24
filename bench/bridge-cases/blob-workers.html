@@ -1,0 +1,177 @@
+<!doctype html>
+<!-- blob: and data: URLs, and workers made from them (W4; GAPS B82; Gecko's dom/file/uri and
+     WorkerScriptLoader) against release Firefox: bench/compare_bridge.py blob-workers.
+     URL.createObjectURL and revokeObjectURL: the URL's form, their checks; a blob: URL fetched and read
+     by XHR (status, headers, body, a fragment, a method other than GET, a revoked URL, a Request made
+     before the revoke); then workers: a classic and a module worker from a blob: URL, one whose URL is
+     revoked right after the constructor, one from a URL revoked before it, importScripts of a blob:
+     URL, a blob: URL a worker makes (read by the page, and gone once the worker ends), a classic and a
+     module worker from a data: URL (an opaque origin: it cannot read the page's blob: URLs), and a
+     shared worker from a blob: URL. UUIDs are logged as <uuid>, the page's origin as <origin>. -->
+<html><head><meta charset="utf-8"><title>blob-workers</title></head><body><p>blob workers test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
+  const mask = s => String(s).split(location.origin).join("<origin>").replace(UUID, "<uuid>");
+  const L = (...a) => log.push(mask(a.join(" ")));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const A = async (what, f) => { try { L(what, "ok", J(await f())); } catch (e) { L(what, "throws", E(e)); } };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const url = (text, type = "text/javascript") => URL.createObjectURL(new Blob([text], { type }));
+  // the first message or error of a worker, within `ms`
+  const first = (w, ms = 2000) => new Promise(r => {
+    w.onmessage = e => r(["message", e.data]);
+    w.onerror = e => { e.preventDefault(); r(["error", e.constructor.name, e.message || ""]); };
+    setTimeout(() => r(["timeout"]), ms);
+  });
+  const resp = async r => [r.status, r.statusText, r.type, r.url, r.redirected, [...r.headers].sort(), await r.text()];
+
+  // the URL's form and the checks
+  {
+    const u = URL.createObjectURL(new Blob(["x"]));
+    T("form", () => [u.startsWith(`blob:${location.origin}/`), UUID.test(u), u.length - `blob:${location.origin}/`.length]);
+    UUID.lastIndex = 0;
+    T("new URL", () => { const p = new URL(u); return [p.protocol, p.origin, p.pathname, p.host]; });
+    T("two differ", () => URL.createObjectURL(new Blob(["x"])) !== u);
+  }
+  T("no argument", () => URL.createObjectURL());
+  T("a string", () => URL.createObjectURL("abc"));
+  T("an object", () => URL.createObjectURL({}));
+  T("revoke none", () => URL.revokeObjectURL());
+  T("revoke junk", () => URL.revokeObjectURL("blob:nothing"));
+  T("revoke other", () => URL.revokeObjectURL("https://example.com/"));
+
+  // fetch and XHR of a blob: URL
+  const text = "hello, blob é";
+  const u1 = url(text, "Text/Plain;Charset=UTF-8");
+  await A("fetch", async () => resp(await fetch(u1)));
+  await A("fetch fragment", async () => resp(await fetch(u1 + "#frag")));
+  await A("fetch untyped", async () => resp(await fetch(URL.createObjectURL(new Blob([new Uint8Array([1, 2, 3])])))));
+  await A("fetch file", async () => resp(await fetch(URL.createObjectURL(new File(["abc"], "a.txt", { type: "text/x-a" })))));
+  await A("fetch arrayBuffer", async () => [...new Uint8Array(await (await fetch(u1)).arrayBuffer())].length);
+  await A("fetch blob", async () => { const b = await (await fetch(u1)).blob(); return [b.size, b.type]; });
+  await A("fetch POST", async () => resp(await fetch(u1, { method: "POST", body: "x" })));
+  await A("fetch HEAD", async () => resp(await fetch(u1, { method: "HEAD" })));
+  await A("fetch unknown", async () => resp(await fetch(`blob:${location.origin}/00000000-0000-0000-0000-000000000000`)));
+  await A("xhr", () => new Promise(r => {
+    const x = new XMLHttpRequest();
+    x.open("GET", u1);
+    x.onloadend = () => r([x.status, x.statusText, x.responseURL, x.getAllResponseHeaders().split("\r\n").filter(Boolean).sort(), x.responseText]);
+    x.send();
+  }));
+  await A("xhr unknown", () => new Promise(r => {
+    const x = new XMLHttpRequest();
+    x.open("GET", `blob:${location.origin}/00000000-0000-0000-0000-000000000000`);
+    x.onerror = () => r(["error", x.status]);
+    x.onload = () => r(["load", x.status]);
+    x.send();
+  }));
+  {
+    const u = url("gone");
+    const req = new Request(u);
+    URL.revokeObjectURL(u);
+    await A("fetch revoked", async () => resp(await fetch(u)));
+    await A("fetch Request made before revoke", async () => resp(await fetch(req)));
+  }
+
+  // workers from blob: URLs
+  const classic = `postMessage([self.origin, location.href, location.protocol, location.origin, typeof importScripts,
+    Object.prototype.toString.call(self)]);`;
+  await A("classic blob worker", () => first(new Worker(url(classic))));
+  await A("module blob worker", () => first(new Worker(url(`postMessage([self.origin, import.meta.url, location.href]);`), { type: "module" })));
+  {
+    const u = url(classic);
+    const w = new Worker(u);
+    URL.revokeObjectURL(u);
+    await A("revoked after new Worker", () => first(w));
+  }
+  {
+    const u = url(classic);
+    URL.revokeObjectURL(u);
+    await A("revoked before new Worker", () => first(new Worker(u)));
+  }
+  await A("syntax error blob worker", () => first(new Worker(url("let let = ;"))));
+  await A("throwing blob worker", () => first(new Worker(url("throw new Error('boom');"))));
+  await A("untyped blob worker", () => first(new Worker(URL.createObjectURL(new Blob(["postMessage('untyped ran')"])))));
+  await A("json-typed blob worker", () => first(new Worker(url("postMessage('json ran')", "application/json"))));
+  await A("json-typed module blob worker", () => first(new Worker(url("postMessage('json module ran')", "application/json"), { type: "module" })));
+  {
+    // importScripts of the page's blob: URLs, and of one revoked
+    const lib = url("self.fromLib = 'lib loaded';");
+    const gone = url("self.never = 1;");
+    URL.revokeObjectURL(gone);
+    const w = new Worker(url(`onmessage = e => {
+      const r = [];
+      try { importScripts(e.data[0]); r.push(self.fromLib); } catch (x) { r.push(x.name); }
+      try { importScripts(e.data[1]); r.push("gone loaded"); } catch (x) { r.push(x.name + ": " + x.message); }
+      postMessage(r);
+    };`));
+    w.postMessage([lib, gone]);
+    await A("importScripts blob", () => first(w));
+  }
+  {
+    // a module blob worker importing the page's blob: URL module, and a relative import (no base)
+    const dep = url("export const v = 'dep';");
+    await A("module imports blob", () => first(new Worker(url(`import { v } from "${dep}"; postMessage(v);`), { type: "module" })));
+    await A("module relative import", () => first(new Worker(url(`import "./worker-module-dep.js"; postMessage("ran");`), { type: "module" })));
+  }
+  {
+    // a blob: URL a worker makes: the page reads it; once the worker is terminated it is gone
+    const w = new Worker(url(`
+      const u = URL.createObjectURL(new Blob(["from worker"], { type: "text/x-w" }));
+      fetch(u).then(r => r.text()).then(t => postMessage([u, t, typeof URL.revokeObjectURL]));`));
+    const got = await first(w);
+    L("worker's own blob", J(got));
+    if (got[0] === "message") {
+      const u = got[1][0];
+      await A("page reads worker's blob", async () => resp(await fetch(u)));
+      w.terminate();
+      await sleep(100);
+      await A("after terminate", async () => resp(await fetch(u)));
+    }
+  }
+  {
+    // a worker revokes the page's URL
+    const u = url("page's");
+    const w = new Worker(url(`onmessage = e => { URL.revokeObjectURL(e.data); postMessage("revoked"); };`));
+    w.postMessage(u);
+    L("worker revokes page's", J(await first(w)));
+    await A("after worker revoke", async () => resp(await fetch(u)));
+  }
+
+  // workers from data: URLs: an opaque origin
+  const dataClassic = "data:text/javascript," + encodeURIComponent(`
+    onmessage = e => fetch(e.data).then(r => r.text(), x => x.name + ": " + x.message).then(t =>
+      postMessage([self.origin, location.protocol, location.origin, typeof importScripts, t]));`);
+  {
+    const w = new Worker(dataClassic);
+    w.postMessage(url("page blob"));
+    await A("classic data worker", () => first(w));
+  }
+  await A("module data worker", () => first(new Worker("data:text/javascript,postMessage([self.origin, import.meta.url.slice(0, 20)])", { type: "module" })));
+  await A("data worker base64", () => first(new Worker("data:application/javascript;base64," + btoa("postMessage('b64 ' + self.origin)"))));
+  await A("data worker no type", () => first(new Worker("data:,postMessage('no type')")));
+  await A("data worker html type", () => first(new Worker("data:text/html,postMessage('html type')")));
+  await A("data worker importScripts", () => first(new Worker("data:text/javascript," + encodeURIComponent(
+    `try { importScripts("data:text/javascript,self.x=1"); postMessage(["ok", self.x]); } catch (e) { postMessage([e.name, e.message]); }`))));
+
+  // a shared worker from a blob: URL, two connections
+  {
+    const u = url(`onconnect = e => e.ports[0].postMessage([self.origin, location.href, Object.prototype.toString.call(self)]);`);
+    const one = await new Promise(r => { const s = new SharedWorker(u); s.port.onmessage = e => r(e.data); setTimeout(() => r("timeout"), 2000); });
+    const two = await new Promise(r => { const s = new SharedWorker(u); s.port.onmessage = e => r(e.data); setTimeout(() => r("timeout"), 2000); });
+    L("shared blob worker", J([one, two]));
+  }
+  await A("shared data worker", () => new Promise(r => {
+    const s = new SharedWorker("data:text/javascript,onconnect=e=>e.ports[0].postMessage(self.origin)");
+    s.port.onmessage = e => r(["message", e.data]);
+    s.onerror = e => r(["error", e.constructor.name]);
+    setTimeout(() => r(["timeout"]), 2000);
+  }));
+  L("done");
+})();
+</script>
+</body></html>

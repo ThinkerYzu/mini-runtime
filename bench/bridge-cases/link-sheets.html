@@ -1,0 +1,49 @@
+<!doctype html>
+<!-- Stylesheet links against release Firefox: bench/compare_bridge.py link-sheets (SPEC decision 13,
+     DESIGN "Linked style sheets"). The sheets' rules are read through the boxes they give. -->
+<html><head><title>link sheets</title>
+<script>
+  // the links' events, caught at the document (handler attributes are not built in the mini runtime, GAPS B40)
+  // logged sorted per phase: Firefox loads sheets in parallel, so their order within a phase is the network's
+  window.__log = [];
+  window.__events = [];
+  window.__flush = phase => { window.__log.push(phase + ": " + (window.__events.sort().join(", ") || "-")); window.__events = []; };
+  for (const t of ["load", "error"]) document.addEventListener(t, e => { if (e.target.tagName === "LINK") window.__events.push(t + " " + e.target.getAttribute("href")); }, true);
+</script>
+<link rel="stylesheet" href="link-sheets-a.css">
+<style>#order { width: 50px; } #s { display: block; width: 60px; }</style>
+<link rel="stylesheet" href="link-sheets-b.css">
+<link rel="stylesheet" href="link-sheets-print.css" media="print">
+<link rel="stylesheet" href="missing.css">
+<link rel="alternate stylesheet" href="link-sheets-b.css">
+</head>
+<body>
+<span id="a">a</span><span id="b">b</span><span id="order">order</span><span id="s">s</span><span id="p">p</span><span id="late">late</span>
+<custom-app><div class="clamp">one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight twenty-nine thirty thirty-one thirty-two thirty-three thirty-four</div></custom-app>
+<script>
+  const L = s => window.__log.push(s);
+  __flush("link events before the body's script");
+  const box = id => { const e = document.getElementById(id); return id + " " + e.offsetWidth + "x" + e.offsetHeight; };
+  L("in a script: " + ["a", "b", "order", "s", "p", "late"].map(box).join(", "));
+  const c = document.querySelector(".clamp");
+  L("clamp " + c.clientWidth + " " + c.offsetHeight + " " + c.scrollHeight);
+  L("styleSheets " + document.styleSheets.length);
+  document.addEventListener("DOMContentLoaded", () => { __flush("link events before DOMContentLoaded"); L("DOMContentLoaded"); });
+  window.addEventListener("load", () => {
+    __flush("link events before load");
+    L("load");
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "link-sheets-late.css";
+    link.onload = () => {
+      __flush("link events of the inserted link");
+      L("late load: " + box("late"));
+      link.remove();
+      L("removed: " + box("late"));
+      document.getElementById("p").parentNode.appendChild(document.createElement("i"));
+      L("done");
+    };
+    document.head.appendChild(link);
+    L("late inserted: " + box("late"));
+  });
+</script></body></html>

@@ -1,0 +1,167 @@
+<!doctype html>
+<!-- elementFromPoint and elementsFromPoint against release Firefox: bench/compare_bridge.py hit-test
+     (GAPS B15, task 842c). Gecko: DocumentOrShadowRoot::ElementFromPoint and ElementsFromPoint
+     (QueryNodesFromRect over nsLayoutUtils::GetFramesForArea): the frames under a point in painting
+     order (stacking contexts, z-index, floats, positioned content, clips, visibility, pointer-events),
+     text answered by its parent element, generated content by its element, retargeted out of shadow
+     trees. Each stage is an absolutely positioned box at a known place; the points are fixed. -->
+<html><head><title>hit-test</title><meta charset="utf-8">
+<style>
+  html, body { margin: 0 }
+  body { font: 16px/20px monospace; height: 700px }
+  .st { position: absolute; width: 220px; height: 120px }
+  .bg { background: #eee }
+  /* 1: blocks and inline text */
+  #b1 { height: 40px; background: #cdf }
+  /* 2: z-index */
+  #s2 > div { position: absolute }
+  #za { left: 0; top: 0; width: 100px; height: 60px; z-index: 2; background: #fcc }
+  #zb { left: 50px; top: 30px; width: 100px; height: 60px; z-index: 1; background: #cfc }
+  #zn { left: 160px; top: 10px; width: 40px; height: 40px; z-index: -1; background: #ccf }
+  #zauto { left: 120px; top: 70px; width: 60px; height: 40px; background: #ffc }
+  #zkid { position: absolute; left: 10px; top: 10px; width: 20px; height: 20px; z-index: 5 }
+  /* 3: opacity and transform make stacking contexts painted with the positioned boxes */
+  #pa { position: absolute; left: 0; top: 0; width: 80px; height: 80px; background: #fcc }
+  #op { opacity: 0.5; height: 30px; margin-top: 10px; background: #cfc }
+  #nb { height: 30px; background: #ccf }
+  #tf { transform: translateX(0); height: 30px; background: #fcf }
+  /* 4: floats above block backgrounds, below inline content */
+  #fl { float: left; width: 60px; height: 60px; background: #fcc }
+  #fb { height: 20px; background: #cfc }
+  #after { margin-top: -30px; height: 40px; background: #ccf }
+  /* 5: overflow clips */
+  #ov { overflow: hidden; width: 100px; height: 40px; background: #eef }
+  #ovc { width: 200px; height: 30px; background: #cfc }
+  #ovabs { position: absolute; left: 150px; top: 0; width: 40px; height: 40px; background: #fcc }
+  #ovclip { overflow: clip; width: 100px; height: 30px }
+  #ovclipc { width: 200px; height: 30px; background: #ccf }
+  #ovs { overflow: auto; width: 100px; height: 30px; position: relative }
+  #ovsc { width: 200px; height: 30px; background: #fcf }
+  #ovsabs { position: absolute; left: 120px; top: 0; width: 20px; height: 20px }
+  /* 6: visibility, 7: pointer-events */
+  #vh { visibility: hidden; height: 50px; background: #fcc }
+  #vv { visibility: visible; width: 50px; height: 20px; background: #cfc }
+  #pn { pointer-events: none; height: 50px; background: #fcc }
+  #pau { pointer-events: auto; width: 50px; height: 20px; background: #cfc }
+  /* 8: rounded corners */
+  #rr { width: 100px; height: 100px; border-radius: 50%; background: #fcc }
+  #rr2 { width: 100px; height: 20px; border-radius: 10px 0 0 0; background: #ccf; margin-top: 5px }
+  /* 9: flex order and z-index, grid */
+  #fx { display: flex; height: 50px }
+  #fx > div { width: 60px; height: 50px }
+  #f1 { order: 2; background: #fcc }
+  #f2 { order: 1; background: #cfc; margin-right: -30px }
+  #f3 { order: 3; background: #ccf; margin-left: -30px; z-index: -1 }
+  #gd { display: grid; grid-template-columns: 60px 60px; height: 40px }
+  #g1 { grid-area: 1 / 1 / 2 / 3; background: #fcc }
+  #g2 { grid-area: 1 / 2 / 2 / 3; background: #cfc }
+  /* 10: tables */
+  #tb { border-spacing: 4px; empty-cells: hide; border: 2px solid }
+  #tb td { width: 40px; height: 20px; padding: 0 }
+  #tb2 td { padding: 0 }
+  /* 11: generated content and markers */
+  #ps::before { content: "BEFORE"; display: block; height: 20px }
+  #ps::after { content: ""; position: absolute; left: 150px; top: 0; width: 30px; height: 30px; background: #fcc }
+  #ul { margin: 0; padding-left: 40px; list-style-position: outside }
+  /* 12: positioned and fixed */
+  #fixed { position: fixed; right: 20px; bottom: 20px; width: 50px; height: 50px; background: #fcc }
+  #rel { position: relative; top: 15px; background: #cfc }
+  #dc { display: contents }
+  #ib { display: inline-block; width: 30px; height: 30px; background: #ccf; vertical-align: top }
+  #ibneg { display: inline-block; width: 30px; height: 30px; margin-left: -20px; background: #fcf; vertical-align: top }
+  iframe { border: 0; width: 100px; height: 60px }
+</style>
+</head><body>
+<div class="st bg" id="s1" style="left: 0; top: 0"><div id="b1">Hello <span id="sp1">world</span></div>below</div>
+<div class="st bg" id="s2" style="left: 240px; top: 0"><div id="za"></div><div id="zb"><div id="zkid"></div></div><div id="zn"></div><div id="zauto"></div></div>
+<div class="st bg" id="s3" style="left: 480px; top: 0"><div id="pa"></div><div id="op"></div><div id="nb"></div><div id="tf"></div></div>
+<div class="st" id="s4" style="left: 720px; top: 0"><div id="fb"><div id="fl"></div>ab</div><div id="after">cdefghijk</div></div>
+<div class="st" id="s5" style="left: 960px; top: 0"><div id="ov"><div id="ovc"></div><div id="ovabs"></div></div><div id="ovclip"><div id="ovclipc"></div></div><div id="ovs"><div id="ovsc"></div><div id="ovsabs"></div></div></div>
+<div class="st" id="s6" style="left: 1200px; top: 0"><div id="vh"><div id="vv"></div></div><div id="pn"><div id="pau"></div></div></div>
+<div class="st" id="s8" style="left: 0; top: 140px"><div id="rr"></div><div id="rr2"></div></div>
+<div class="st" id="s9" style="left: 240px; top: 140px"><div id="fx"><div id="f1"></div><div id="f2"></div><div id="f3"></div></div><div id="gd"><div id="g1"></div><div id="g2"></div></div></div>
+<div class="st" id="s10" style="left: 480px; top: 140px"><table id="tb"><caption id="cap">cap</caption><colgroup id="cg"><col id="c1"><col id="c2"></colgroup><tbody id="tbd"><tr id="tr1"><td id="td1">x</td><td id="td2"></td></tr></tbody></table><table id="tb2"><tr><td id="td3">y</td></tr></table></div>
+<div class="st" id="s11" style="left: 720px; top: 140px"><div id="ps">text</div><ul id="ul"><li id="li1">item</li></ul></div>
+<div class="st" id="s12" style="left: 960px; top: 140px"><span id="rel">rel</span><br><span id="dc"><span id="dcc">dc</span></span> <span id="ib"></span><span id="ibneg"></span><br><img id="im" width="30" height="20" alt=""><input id="in" style="width: 60px"><button id="bt">b</button></div>
+<div class="st" id="s13" style="left: 1200px; top: 140px"><iframe id="fr" src="hit-test-child.html"></iframe><div id="sh"><span id="light">light</span></div></div>
+<div class="st" id="s14" style="left: 0; top: 280px"><svg id="sv" width="40" height="40"><rect id="rc" x="20" y="20" width="20" height="20" fill="red"/></svg></div>
+<div id="fixed"></div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.map(v => typeof v === "string" ? v : JSON.stringify(v)).join(" "));
+  const err = f => { try { return f(); } catch (e) { return e.constructor.name + ": " + e.message; } };
+  const name = e => e === null ? null : e === undefined ? "undefined" : (e.id || e.localName || String(e));
+  const $ = id => document.getElementById(id);
+  // what the document answers at a point: the element, then the list
+  const at = (x, y, root = document) => [name(root.elementFromPoint(x, y)), root.elementsFromPoint(x, y).map(name)];
+  const points = (label, list, root) => log(label, list.map(([x, y]) => [x, y, ...at(x, y, root)]));
+
+  (async () => {
+    await new Promise(r => addEventListener("load", r));
+    log("interfaces", typeof document.elementFromPoint, typeof document.elementsFromPoint, Document.prototype.elementFromPoint.length,
+      Document.prototype.elementsFromPoint.length, typeof ShadowRoot.prototype.elementFromPoint, typeof ShadowRoot.prototype.elementsFromPoint,
+      Object.getOwnPropertyDescriptor(Document.prototype, "elementFromPoint") ? "own" : "inherited");
+    log("arguments", err(() => document.elementFromPoint()), err(() => document.elementFromPoint(1)), err(() => document.elementsFromPoint(1)),
+      err(() => document.elementFromPoint(NaN, 1)), err(() => document.elementFromPoint(1, Infinity)), err(() => document.elementsFromPoint(1, -Infinity)),
+      err(() => name(document.elementFromPoint("5", "5"))), err(() => name(document.elementFromPoint({ valueOf: () => 5 }, [5]))),
+      err(() => Document.prototype.elementFromPoint.call({}, 1, 1)), err(() => Document.prototype.elementsFromPoint.call(document.body, 1, 1)),
+      err(() => document.elementFromPoint(1, Symbol())));
+    const list = document.elementsFromPoint(5, 5);
+    log("list", Array.isArray(list), list === document.elementsFromPoint(5, 5), Object.getPrototypeOf(list) === Array.prototype);
+
+    points("blocks and text", [[5, 10], [100, 10], [5, 30], [5, 50], [5, 100], [180, 110]]);
+    points("edges and fractions", [[0, 0], [0.4, 0.6], [219.4, 119.4], [219.6, 119.6], [219.9, 5], [220, 5], [-1, 5], [5, -0.5], [-0.4, 5]]);
+    points("z-index", [[245, 5], [290, 35], [345, 60], [345, 85], [410, 20], [375, 80], [305, 45], [250, 100]]);
+    points("stacking contexts", [[485, 15], [485, 45], [485, 75], [600, 15], [600, 45], [600, 75]]);
+    points("floats", [[725, 5], [725, 25], [725, 45], [725, 55], [800, 5], [800, 25], [745, 45]]);
+    points("overflow", [[965, 5], [1080, 5], [1115, 5], [1120, 50], [965, 45], [1080, 45], [965, 75], [1080, 75], [1085, 75]]);
+    points("visibility and pointer-events", [[1205, 5], [1300, 5], [1205, 55], [1300, 55], [1205, 110]]);
+    points("rounded corners", [[2, 142], [50, 190], [97, 237], [15, 190], [2, 247], [8, 251], [50, 250]]);
+    points("flex and grid", [[245, 145], [300, 145], [340, 145], [380, 145], [245, 195], [305, 195], [355, 195]]);
+    points("tables", [[490, 145], [490, 165], [490, 175], [482, 175], [530, 170], [490, 200], [545, 168], [530, 185], [490, 205]]);
+    points("generated content", [[725, 145], [725, 165], [875, 145], [740, 190], [725, 190], [770, 190], [700, 165]]);
+    points("positioned and inline", [[965, 145], [965, 158], [965, 165], [965, 182], [990, 185], [1010, 185], [1020, 185], [1035, 185], [965, 205], [1010, 205], [1080, 205]]);
+    points("svg", [[5, 285]]);
+    const vh = innerHeight, vw = innerWidth;
+    points("fixed and viewport", [[vw - 40, vh - 40], [vw - 10, vh - 10], [5, vh - 5], [5, vh + 5], [vw + 5, 5], [700, 600]]);
+
+    // a frame: its element in this document, its own document inside
+    const fr = $("fr");
+    if (!fr.contentDocument || fr.contentDocument.readyState !== "complete") await new Promise(r => fr.addEventListener("load", r, { once: true }));
+    points("frame from outside", [[1205, 145], [1295, 195]]);
+    points("frame inside", [[5, 5], [5, 30], [95, 55], [150, 5]], fr.contentDocument);
+
+    // a shadow tree: retargeted to the host from the document, its own nodes from the shadow root
+    const root = $("sh").attachShadow({ mode: "open" });
+    root.innerHTML = '<style>#wrap { padding: 10px; background: #ccf } #inner { display: block; height: 15px }</style><div id="wrap"><span id="inner">in</span><slot></slot></div>';
+    points("shadow from the document", [[1205, 225], [1205, 205], [1215, 245]]);
+    points("shadow from the root", [[1205, 225], [1205, 205], [1215, 245], [5, 5]], root);
+    const closed = document.createElement("div");
+    closed.style.cssText = "position: absolute; left: 240px; top: 280px; width: 50px; height: 50px";
+    document.body.append(closed);
+    const croot = closed.attachShadow({ mode: "closed" });
+    croot.innerHTML = '<div id="cin" style="width: 50px; height: 50px"></div>';
+    points("closed shadow", [[245, 285]]);
+    points("closed shadow from its root", [[245, 285]], croot);
+
+    // the answers follow the DOM without waiting: layout is flushed by the call
+    const late = document.createElement("div");
+    late.id = "late";
+    late.style.cssText = "position: absolute; left: 480px; top: 280px; width: 30px; height: 30px; z-index: 3";
+    document.body.append(late);
+    points("inserted", [[485, 285]]);
+    late.style.display = "none";
+    points("hidden again", [[485, 285]]);
+    late.style.display = "";
+    late.style.pointerEvents = "none";
+    points("pointer-events none", [[485, 285]]);
+    document.documentElement.style.pointerEvents = "none";
+    points("root pointer-events none", [[485, 285], [700, 600]]);
+    document.documentElement.style.pointerEvents = "";
+    $("s1").remove();
+    points("removed", [[5, 10]]);
+    const doc = document.implementation.createHTMLDocument("x");
+    log("no layout", name(doc.elementFromPoint(1, 1)), doc.elementsFromPoint(1, 1).length);
+  })().catch(e => log("error", String(e), e.stack));
+</script>
+</body></html>

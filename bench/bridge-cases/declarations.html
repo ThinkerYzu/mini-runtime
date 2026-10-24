@@ -1,0 +1,57 @@
+<!doctype html>
+<!-- CSSStyleDeclaration, CSSStyleProperties and DOMStringMap against release Firefox:
+     bench/compare_bridge.py declarations. element.style and getComputedStyle's result are
+     CSSStyleProperties (Gecko's generated subclass of CSSStyleDeclaration); a page may wrap the
+     methods on CSSStyleDeclaration.prototype, as Facebook's Hyperion does. element.dataset is a
+     DOMStringMap (nsDOMStringMap). -->
+<html><head><title>declarations</title><meta charset="utf-8"></head>
+<body><div id="d" style="color: red; margin-left: 3px" data-a-big-fish="1" data-x="2"></div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const d = document.getElementById("d"), s = d.style;
+  log("interfaces", typeof CSSStyleDeclaration, typeof CSSStyleProperties, typeof CSS2Properties, typeof DOMStringMap);
+  log("tags", Object.prototype.toString.call(s), Object.prototype.toString.call(getComputedStyle(d)), Object.prototype.toString.call(d.dataset));
+  log("protos", Object.getPrototypeOf(s) === CSSStyleProperties.prototype,
+      Object.getPrototypeOf(CSSStyleProperties.prototype) === CSSStyleDeclaration.prototype,
+      Object.getPrototypeOf(getComputedStyle(d)) === CSSStyleProperties.prototype,
+      s instanceof CSSStyleDeclaration, d.dataset instanceof DOMStringMap, d.style === s, d.dataset === d.dataset);
+  log("declaration members", Object.getOwnPropertyNames(CSSStyleDeclaration.prototype).sort().join(","));
+  log("own keys", Object.keys(s).join(","), s.length, s[0], s[1], s[2], "0" in s, "2" in s, "color" in s, s.hasOwnProperty("color"));
+  log("accessors", typeof Object.getOwnPropertyDescriptor(CSSStyleProperties.prototype, "marginLeft").get,
+      "cssFloat" in s, "float" in s, "webkitTransform" in s, "WebkitTransform" in s, "-webkit-transform" in s, "MozAppearance" in s, "noSuchProp" in s);
+  try { new CSSStyleDeclaration(); } catch (e) { log("constructor", e.name); }
+  try { CSSStyleDeclaration.prototype.getPropertyValue.call({}, "color"); } catch (e) { log("brand", e.name); }
+
+  // a wrapper on the prototype sees calls through the instance, not the property accessors
+  const calls = [];
+  const orig = CSSStyleDeclaration.prototype.setProperty;
+  CSSStyleDeclaration.prototype.setProperty = function (...a) { calls.push(a[0]); return orig.apply(this, a); };
+  s.setProperty("padding-top", "4px");
+  s.paddingBottom = "5px";
+  s["padding-right"] = "6px";
+  CSSStyleDeclaration.prototype.setProperty = orig;
+  log("wrapped", calls.join(","), s.cssText);
+  s.cssFloat = "left";
+  log("float", s.float, s.getPropertyValue("float"), s.cssText.includes("float: left"));
+  s.color = null;
+  log("null removes", s.color === "", s.length);
+  s.expando = 7;
+  log("expando", s.expando, Object.keys(s).includes("expando"));
+  try { "use strict"; (function () { "use strict"; s[0] = "x"; })(); log("index set", "no throw"); } catch (e) { log("index set", e.name); }
+  const c = getComputedStyle(d);
+  log("computed", c.marginLeft, c.getPropertyValue("margin-left"), c.length > 100, typeof c[0]);
+  try { c.color = "blue"; log("computed set", "no throw"); } catch (e) { log("computed set", e.name); }
+  try { c.setProperty("color", "blue"); } catch (e) { log("computed setProperty", e.name); }
+
+  const ds = d.dataset;
+  log("dataset", ds.aBigFish, ds.x, ds.nope, Object.keys(ds).join(","), "x" in ds, JSON.stringify(ds));
+  ds.newValue = 3;
+  log("dataset set", d.getAttribute("data-new-value"), Object.keys(ds).join(","));
+  try { ds["a-b"] = 1; } catch (e) { log("dataset bad name", e.name); }
+  delete ds.x;
+  log("dataset delete", d.hasAttribute("data-x"), Object.keys(ds).join(","));
+  d.setAttribute("data-constructor", "c");
+  log("override builtins", ds.constructor, typeof DOMStringMap.prototype.constructor);
+  log("done");
+</script></body></html>

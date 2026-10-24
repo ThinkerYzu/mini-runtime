@@ -1,0 +1,172 @@
+<!doctype html>
+<!-- Web Crypto forwarded to Firefox, keys kept in the runtime (SPEC decision 21, GAPS B68) against
+     release Firefox: bench/compare_bridge.py crypto. The interfaces' shape; the bindings' errors and
+     whether a promise is already settled after two microtasks (Gecko rejects a binding error or a
+     FailureTask at the call, and settles an operation from its crypto thread, a task later); digests;
+     what the sites call (Facebook's AES-GCM and HKDF, Amazon's AES-CBC, X's digests); HMAC, ECDSA, ECDH,
+     RSA-OAEP, PBKDF2, AES-KW with their keys' attributes, export, wrap and unwrap; non-extractable keys
+     refused for export and wrap; and, in the runtime, every key used again after the bridge tab forgot
+     them (imported again from the material the runtime keeps). Random output (keys, signatures,
+     ciphertexts of generated keys) is logged by its length or by a round trip. -->
+<html><head><meta charset="utf-8"><title>crypto</title></head><body><p>crypto test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const E = e => e ? e.constructor.name + " " + e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", JSON.stringify(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const hex = b => Array.from(new Uint8Array(b), x => x.toString(16).padStart(2, "0")).join("");
+  const enc = s => new TextEncoder().encode(s);
+  const S = crypto.subtle;
+  // an operation's outcome, and whether it was settled two microtasks after the call
+  const P = async (what, f) => {
+    let p;
+    try { p = f(); } catch (e) { L(what, "threw", E(e)); return undefined; }
+    let settled = false;
+    p.then(() => { settled = true; }, () => { settled = true; });
+    await null; await null;
+    const early = settled;
+    try {
+      const v = await p;
+      L(what, "resolved", early ? "early" : "later", show(v));
+      return v;
+    } catch (e) { L(what, "rejected", early ? "early" : "later", E(e)); return undefined; }
+  };
+  const showKey = k => `CryptoKey(${k.type},${k.extractable},${JSON.stringify(k.algorithm, (n, v) => v instanceof Uint8Array ? hex(v) : v)},${k.usages})`;
+  const show = v => v instanceof ArrayBuffer ? "ArrayBuffer:" + v.byteLength
+    : v instanceof CryptoKey ? showKey(v)
+    : v && v.publicKey ? "pair " + Object.keys(v) + " " + showKey(v.publicKey) + " " + showKey(v.privateKey)
+    : JSON.stringify(v);
+
+  T("shape", () => [typeof crypto.subtle, crypto.subtle === crypto.subtle, Object.prototype.toString.call(crypto.subtle),
+                    Object.prototype.toString.call(crypto), Object.keys(Crypto.prototype).sort(), Object.keys(SubtleCrypto.prototype).sort(),
+                    Object.keys(CryptoKey.prototype).sort(), SubtleCrypto.prototype.importKey.length, SubtleCrypto.prototype.deriveBits.length,
+                    SubtleCrypto.prototype.unwrapKey.length, typeof CryptoKeyPair]);
+  T("new SubtleCrypto", () => new SubtleCrypto());
+  T("new CryptoKey", () => new CryptoKey());
+  T("new Crypto", () => new Crypto());
+  T("brand", () => Object.getOwnPropertyDescriptor(CryptoKey.prototype, "type").get.call({}));
+
+  // the bindings' errors
+  await P("digest no args", () => S.digest());
+  await P("digest one arg", () => S.digest("SHA-256"));
+  await P("digest wrong this", () => SubtleCrypto.prototype.digest.call({}, "SHA-256", new Uint8Array(1)));
+  await P("digest string data", () => S.digest("SHA-256", "abc"));
+  await P("digest unknown", () => S.digest("SHA-3", new Uint8Array(1)));
+  await P("digest no name", () => S.digest({}, new Uint8Array(1)));
+  await P("encrypt not a key", () => S.encrypt({ name: "AES-GCM", iv: new Uint8Array(12) }, {}, new Uint8Array(1)));
+  await P("importKey data not object", () => S.importKey("raw", "abc", "AES-GCM", false, ["encrypt"]));
+  await P("importKey usages not sequence", () => S.importKey("raw", new Uint8Array(16), "AES-GCM", false, 5));
+  await P("importKey bad format", () => S.importKey("pem", new Uint8Array(16), "AES-GCM", false, ["encrypt"]));
+  await P("importKey bad length", () => S.importKey("raw", new Uint8Array(15), "AES-GCM", false, ["encrypt"]));
+  await P("importKey bad usage", () => S.importKey("raw", new Uint8Array(16), "AES-GCM", false, ["sign"]));
+
+  // digests
+  for (const alg of ["SHA-1", "sha-256", { name: "SHA-384" }, "SHA-512"])
+    await P("digest " + JSON.stringify(alg), () => S.digest(alg, enc("hello")).then(hex));
+  await P("digest DataView", () => S.digest("SHA-256", new DataView(enc("hello world").buffer, 6)).then(hex));
+  await P("digest empty", () => S.digest("SHA-256", new ArrayBuffer(0)).then(hex));
+
+  // Facebook: AES-GCM and HKDF
+  const raw = new Uint8Array(32).map((_, i) => i);
+  const gcm = await P("import AES-GCM", () => S.importKey("raw", raw.buffer, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]));
+  T("algorithm cached", () => [gcm.algorithm === gcm.algorithm, gcm.usages === gcm.usages, Object.isFrozen(gcm.usages), Object.isFrozen(gcm.algorithm)]);
+  const iv = new Uint8Array(12).fill(7);
+  const ct = await P("encrypt AES-GCM", () => S.encrypt({ name: "AES-GCM", iv, tagLength: 128 }, gcm, enc("a secret message").buffer));
+  L("ciphertext", hex(ct));
+  await P("decrypt AES-GCM", () => S.decrypt({ name: "AES-GCM", iv, tagLength: 128 }, gcm, ct).then(b => new TextDecoder().decode(b)));
+  await P("encrypt AES-GCM aad", () => S.encrypt({ name: "AES-GCM", iv, additionalData: enc("x"), tagLength: 96 }, gcm, enc("m")).then(hex));
+  const bad = new Uint8Array(ct); bad[0] ^= 1;
+  await P("decrypt AES-GCM tampered", () => S.decrypt({ name: "AES-GCM", iv }, gcm, bad));
+  await P("encrypt AES-GCM no iv", () => S.encrypt({ name: "AES-GCM" }, gcm, enc("m")));
+  await P("sign with AES-GCM", () => S.sign("HMAC", gcm, enc("m")));
+  await P("export non-extractable", () => S.exportKey("raw", gcm));
+  await P("export bad format", () => S.exportKey("pem", gcm));
+  const hkdf = await P("import HKDF", () => S.importKey("raw", raw, "HKDF", false, ["deriveKey", "deriveBits"]));
+  await P("import HKDF extractable", () => S.importKey("raw", raw, "HKDF", true, ["deriveKey"]));
+  const hkdfParams = { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32).fill(1), info: new ArrayBuffer(0) };
+  const derived = await P("deriveKey HKDF", () => S.deriveKey(hkdfParams, hkdf, { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]));
+  await P("export derived", () => S.exportKey("raw", derived).then(hex));
+  const derivedNx = await P("deriveKey HKDF non-extractable", () => S.deriveKey(hkdfParams, hkdf, { name: "AES-GCM", length: 128 }, false, ["encrypt"]));
+  await P("export derived non-extractable", () => S.exportKey("raw", derivedNx));
+  await P("encrypt with derived non-extractable", () => S.encrypt({ name: "AES-GCM", iv }, derivedNx, enc("m")).then(hex));
+  await P("deriveBits HKDF", () => S.deriveBits(hkdfParams, hkdf, 128).then(hex));
+  await P("deriveBits HKDF null", () => S.deriveBits(hkdfParams, hkdf, null));
+
+  // Amazon: AES-CBC with a length member
+  const cbc = await P("import AES-CBC", () => S.importKey("raw", raw.buffer, { name: "AES-CBC", length: 128 }, false, ["encrypt", "decrypt"]));
+  const cbcIv = new Uint8Array(16).fill(3).buffer;
+  await P("encrypt AES-CBC", () => S.encrypt({ name: "AES-CBC", length: 128, iv: cbcIv }, cbc, enc("sixteen bytes!!!")).then(hex));
+  await P("encrypt AES-CBC short iv", () => S.encrypt({ name: "AES-CBC", iv: new Uint8Array(8) }, cbc, enc("m")));
+
+  // HMAC: generated, signed, verified, exported
+  const hmac = await P("generate HMAC", () => S.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]));
+  const sig = await P("sign HMAC", () => S.sign("HMAC", hmac, enc("data")));
+  await P("verify HMAC", () => S.verify("HMAC", hmac, sig, enc("data")));
+  await P("verify HMAC other data", () => S.verify("HMAC", hmac, sig, enc("datA")));
+  await P("export HMAC jwk", () => S.exportKey("jwk", hmac).then(j => [Object.keys(j), j.kty, j.alg, j.k.length, j.key_ops, j.ext]));
+  const hmacNx = await P("generate HMAC non-extractable", () => S.generateKey({ name: "HMAC", hash: "SHA-1", length: 128 }, false, ["sign"]));
+  await P("export HMAC non-extractable", () => S.exportKey("jwk", hmacNx));
+  await P("sign HMAC non-extractable", () => S.sign("HMAC", hmacNx, enc("data")).then(b => b.byteLength));
+  const known = await P("import HMAC", () => S.importKey("raw", raw, { name: "HMAC", hash: { name: "SHA-256" } }, true, ["sign"]));
+  await P("sign HMAC known", () => S.sign("HMAC", known, enc("data")).then(hex));
+  await P("import jwk ext false extractable", () => S.importKey("jwk", { kty: "oct", k: "AAECAwQFBgcICQoLDA0ODw", ext: false }, { name: "HMAC", hash: "SHA-256" }, true, ["sign"]));
+  await P("import jwk", () => S.importKey("jwk", { kty: "oct", k: "AAECAwQFBgcICQoLDA0ODw", alg: "A128GCM" }, "AES-GCM", true, ["encrypt"]));
+  await P("generate no usages", () => S.generateKey({ name: "AES-GCM", length: 128 }, true, []));
+
+  // ECDSA and ECDH
+  const ec = await P("generate ECDSA", () => S.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]));
+  const ecSig = await P("sign ECDSA", () => S.sign({ name: "ECDSA", hash: "SHA-256" }, ec.privateKey, enc("m")));
+  await P("verify ECDSA", () => S.verify({ name: "ECDSA", hash: "SHA-256" }, ec.publicKey, ecSig, enc("m")));
+  await P("export ECDSA public", () => S.exportKey("raw", ec.publicKey).then(b => b.byteLength));
+  await P("export ECDSA private", () => S.exportKey("pkcs8", ec.privateKey));
+  const a = await P("generate ECDH a", () => S.generateKey({ name: "ECDH", namedCurve: "P-384" }, true, ["deriveBits"]));
+  const b = await P("generate ECDH b", () => S.generateKey({ name: "ECDH", namedCurve: "P-384" }, true, ["deriveBits"]));
+  const ab = await P("deriveBits ECDH ab", () => S.deriveBits({ name: "ECDH", public: b.publicKey }, a.privateKey, 256));
+  const ba = await P("deriveBits ECDH ba", () => S.deriveBits({ name: "ECDH", public: a.publicKey }, b.privateKey, 256));
+  L("ECDH agree", hex(ab) === hex(ba));
+  await P("deriveBits ECDH wrong public", () => S.deriveBits({ name: "ECDH", public: ec.publicKey }, a.privateKey, 256));
+
+  // RSA-OAEP
+  const rsa = await P("generate RSA-OAEP", () => S.generateKey({ name: "RSA-OAEP", modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["encrypt", "decrypt"]));
+  const rct = await P("encrypt RSA-OAEP", () => S.encrypt({ name: "RSA-OAEP", label: enc("l") }, rsa.publicKey, enc("rsa message")));
+  await P("decrypt RSA-OAEP", () => S.decrypt({ name: "RSA-OAEP", label: enc("l") }, rsa.privateKey, rct).then(b => new TextDecoder().decode(b)));
+  await P("export RSA jwk", () => S.exportKey("jwk", rsa.privateKey).then(j => [Object.keys(j), j.alg, j.e]));
+  await P("generate RSA Uint32 exponent", () => S.generateKey({ name: "RSA-OAEP", modulusLength: 1024, publicExponent: new Uint32Array([65537]), hash: "SHA-256" }, true, ["encrypt"]));
+
+  // PBKDF2
+  const pw = await P("import PBKDF2", () => S.importKey("raw", enc("password"), "PBKDF2", false, ["deriveBits"]));
+  await P("deriveBits PBKDF2", () => S.deriveBits({ name: "PBKDF2", salt: enc("salt"), iterations: 1000, hash: "SHA-256" }, pw, 256).then(hex));
+
+  // AES-KW: wrap and unwrap
+  const kw = await P("import AES-KW", () => S.importKey("raw", raw.slice(0, 16), "AES-KW", false, ["wrapKey", "unwrapKey"]));
+  const toWrap = await P("import key to wrap", () => S.importKey("raw", raw.slice(16), "AES-GCM", true, ["encrypt"]));
+  const wrapped = await P("wrapKey", () => S.wrapKey("raw", toWrap, kw, "AES-KW"));
+  L("wrapped", hex(wrapped));
+  await P("wrapKey non-extractable", () => S.wrapKey("raw", gcm, kw, "AES-KW"));
+  await P("wrapKey without usage", () => S.wrapKey("raw", toWrap, gcm, "AES-GCM"));
+  await P("wrapKey bad format", () => S.wrapKey("pem", toWrap, kw, "AES-KW"));
+  const unwrapped = await P("unwrapKey", () => S.unwrapKey("raw", wrapped, kw, "AES-KW", "AES-GCM", false, ["encrypt", "decrypt"]));
+  await P("export unwrapped non-extractable", () => S.exportKey("raw", unwrapped));
+  await P("unwrapped round trip", async () => {
+    const c = await S.encrypt({ name: "AES-GCM", iv }, unwrapped, enc("u"));
+    return new TextDecoder().decode(await S.decrypt({ name: "AES-GCM", iv }, unwrapped, c));
+  });
+
+  // keys used again after the bridge tab forgot them (in the runtime only; Firefox has no bridge)
+  if (window.__mrt && window.__mrt.forgetBridgeKeys) window.__mrt.forgetBridgeKeys();
+  await P("after: decrypt AES-GCM", () => S.decrypt({ name: "AES-GCM", iv, tagLength: 128 }, gcm, ct).then(b => new TextDecoder().decode(b)));
+  await P("after: encrypt derived non-extractable", () => S.encrypt({ name: "AES-GCM", iv }, derivedNx, enc("m")).then(hex));
+  await P("after: export derived non-extractable", () => S.exportKey("raw", derivedNx));
+  await P("after: verify HMAC", () => S.verify("HMAC", hmac, sig, enc("data")));
+  await P("after: sign HMAC non-extractable", () => S.sign("HMAC", hmacNx, enc("data")).then(b => b.byteLength));
+  await P("after: verify ECDSA", () => S.verify({ name: "ECDSA", hash: "SHA-256" }, ec.publicKey, ecSig, enc("m")));
+  await P("after: sign ECDSA", () => S.sign({ name: "ECDSA", hash: "SHA-256" }, ec.privateKey, enc("m")).then(s => s.byteLength));
+  await P("after: deriveBits ECDH", () => S.deriveBits({ name: "ECDH", public: b.publicKey }, a.privateKey, 256).then(x => hex(x) === hex(ab)));
+  await P("after: decrypt RSA-OAEP", () => S.decrypt({ name: "RSA-OAEP", label: enc("l") }, rsa.privateKey, rct).then(b => new TextDecoder().decode(b)));
+  await P("after: deriveBits HKDF", () => S.deriveBits(hkdfParams, hkdf, 128).then(hex));
+  await P("after: unwrapKey", () => S.unwrapKey("raw", wrapped, kw, "AES-KW", "AES-GCM", true, ["encrypt"]).then(k => S.exportKey("raw", k)).then(hex));
+  await P("after: unwrapped", () => S.encrypt({ name: "AES-GCM", iv }, unwrapped, enc("u")).then(hex));
+  L("done");
+})();
+</script></body></html>

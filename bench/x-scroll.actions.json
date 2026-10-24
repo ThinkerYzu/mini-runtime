@@ -1,0 +1,4 @@
+[["pause", 15000], ["waitfor", "article[data-testid=\"tweet\"] [data-testid=\"tweetText\"]"], ["pause", 2000],
+ ["wheelat", 750, 500, 0, 869], ["pause", 4000],
+ ["wheelat", 750, 500, 0, 869], ["pause", 4000],
+ ["wheelat", 750, 500, 0, 869], ["pause", 6000]]

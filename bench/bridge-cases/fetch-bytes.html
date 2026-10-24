@@ -1,0 +1,37 @@
+<!doctype html><meta charset="utf-8"><title>Fetch response bytes</title>
+<script>
+(async()=>{
+ const log=window.__log=[], L=(...args)=>log.push(args.join(' '));
+ const endpoint=`http://localhost:${new URLSearchParams(location.search).get('ws')}/h`;
+ const raw=[0,7,127,128,255,195,40,239,187,191,78];
+ const encoded=bytes=>btoa(String.fromCharCode(...bytes));
+ const url=(type,bytes=raw)=>endpoint+'?'+new URLSearchParams({acao:'*',type,body64:encoded(bytes)});
+ const load=(type,bytes=raw)=>fetch(url(type,bytes));
+ const xhr=(type,responseType,bytes=raw)=>new Promise((resolve,reject)=>{
+  const x=new XMLHttpRequest();x.open('GET',url(type,bytes));x.responseType=responseType;
+  x.onload=()=>resolve(x.response);x.onerror=()=>reject(new Error('XHR failed'));x.send();
+ });
+ const equal=bytes=>JSON.stringify(Array.from(bytes))===JSON.stringify(raw);
+ for(const type of ['text/plain;charset=utf-8','application/json','text/x-component','application/octet-stream']){
+  let r=await load(type);L(type,'arrayBuffer',equal(new Uint8Array(await r.arrayBuffer())));
+  r=await load(type);const clone=r.clone();L(type,'clone',equal(new Uint8Array(await clone.arrayBuffer())));
+  L(type,'blob',equal(new Uint8Array(await (await r.blob()).arrayBuffer())));
+  L(type,'xhr-arraybuffer',equal(new Uint8Array(await xhr(type,'arraybuffer'))));
+  L(type,'xhr-blob',equal(new Uint8Array(await (await xhr(type,'blob')).arrayBuffer())));
+  r=await load(type);const reader=r.body.getReader(),all=[];
+  while(true){const part=await reader.read();if(part.done)break;all.push(...part.value);}
+  L(type,'stream',equal(all));
+  r=await load(type);L(type,'text',(await r.text())===new TextDecoder().decode(new Uint8Array(raw)));
+ }
+ const bom=[239,187,191,123,34,120,34,58,49,125];
+ let r=await load('application/json;charset=utf-8',bom);
+ L('bom','arrayBuffer',JSON.stringify(Array.from(new Uint8Array(await r.arrayBuffer())))===JSON.stringify(bom));
+ r=await load('application/json;charset=utf-8',bom);L('bom','text',(await r.text())==='{"x":1}');
+ r=await load('application/json;charset=utf-8',bom);L('bom','json',(await r.json()).x===1);
+ L('bom','xhr-arraybuffer',JSON.stringify(Array.from(new Uint8Array(await xhr('application/json','arraybuffer',bom))))===JSON.stringify(bom));
+ r=await load('text/plain;charset=windows-1252',[233]);L('legacy','bytes',(await r.bytes())[0]===233);
+ r=await load('text/plain;charset=windows-1252',[233]);L('legacy','text',(await r.text())==='\ufffd');
+ L('legacy','xhr-text',(await xhr('text/plain;charset=windows-1252','text',[233]))==='\u00e9');
+ L('done');
+})().catch(e=>window.__log.push('uncaught '+e.name+': '+e.message));
+</script>

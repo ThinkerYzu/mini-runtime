@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- Editing commands and contentEditable against release Firefox: bench/compare_bridge.py editing
+     (Document::QueryCommandSupported and the others, nsGenericHTMLElement's contentEditable). The page
+     is not editable, so nothing executes. Google Docs asks queryCommandSupported; X reads contentEditable. -->
+<html><head><title>editing</title><meta charset="utf-8"></head>
+<body><div id="e" contenteditable><p id="in">x</p><span id="no" contenteditable="false">y</span></div><div id="plain">z</div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const names = ["bold", "BOLD", "copy", "cut", "paste", "insertText", "insertHTML", "formatBlock", "styleWithCSS", "contentReadOnly",
+    "insertBrOnReturn", "justifyNone", "print", "saveAs", "nonsense", ""];
+  log("supported", names.map(n => n + "=" + document.queryCommandSupported(n)).join(" "));
+  log("enabled", ["bold", "copy", "cut", "paste", "selectAll"].map(n => n + "=" + document.queryCommandEnabled(n)).join(" "));
+  log("state", document.queryCommandState("bold"), JSON.stringify(document.queryCommandValue("fontName")), document.execCommand("bold"));
+  log("designMode", document.designMode);
+  const ids = ["e", "in", "no", "plain"];
+  log("contentEditable", ids.map(id => id + "=" + document.getElementById(id).contentEditable).join(" "));
+  log("isContentEditable", ids.map(id => id + "=" + document.getElementById(id).isContentEditable).join(" "));
+  const p = document.getElementById("plain");
+  p.contentEditable = "true";
+  log("set true", p.getAttribute("contenteditable"), p.isContentEditable);
+  p.contentEditable = "inherit";
+  log("set inherit", p.hasAttribute("contenteditable"), p.isContentEditable);
+  try { p.contentEditable = "maybe"; log("no throw"); } catch (x) { log("set maybe", x.name); }
+  log("done");
+</script></body></html>

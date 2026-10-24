@@ -1,0 +1,58 @@
+<!doctype html><meta charset="utf-8"><title>Native image service</title>
+<!-- The 7x3 raster fixtures were encoded by image 0.25.10; the rotated JPEG
+     adds EXIF orientation 6 and must expose 3x7 dimensions. Compare against
+     actual Firefox decoding, not only the API implementation's own results. -->
+<script>
+window.__log = [];
+const log = (...a) => __log.push(a.join(" "));
+async function load(name, url, crossOrigin, referrerPolicy) {
+  const img = new Image();
+  if (crossOrigin !== undefined) img.crossOrigin = crossOrigin;
+  if (referrerPolicy) img.referrerPolicy = referrerPolicy;
+  const result = new Promise(resolve => { img.onload = () => resolve("load"); img.onerror = () => resolve("error"); });
+  img.src = url;
+  const status = await result;
+  log(name, status, img.naturalWidth, img.naturalHeight);
+}
+(async () => {
+  for (const ext of ["png", "jpg", "gif", "webp", "bmp", "ico"])
+    await load(ext, "images-api." + ext);
+  await load("rotated", "images-api-rotated.jpg");
+  const svg = text => "data:image/svg+xml," + encodeURIComponent(text);
+  for (const [name, attrs] of [["svg-sized", 'width="17" height="9"'], ["svg-default", ""],
+    ["svg-viewbox", 'viewBox="0 0 200 100"'], ["svg-square", 'viewBox="0 0 100 100"'],
+    ["svg-width", 'width="80" viewBox="0 0 200 100"'], ["svg-zero", 'width="0" height="7"']])
+    await load(name, svg('<svg xmlns="http://www.w3.org/2000/svg" ' + attrs + '/>'));
+  await load("svg-broken", svg('<svg xmlns="http://www.w3.org/2000/svg"><'));
+  const port = new URL(location.href).searchParams.get("ws");
+  const base = "http://localhost:" + port;
+  const bytes = new Uint8Array(await (await fetch("images-api.png")).arrayBuffer());
+  const body64 = btoa(String.fromCharCode(...bytes));
+  const h = (id, options={}) => {
+    const url = new URL(base + "/h");
+    for (const [k,v] of Object.entries({id, body64, type:"image/png", ...options})) url.searchParams.set(k,v);
+    return url.href;
+  };
+  // Cookies are same-site across the ports but are omitted by anonymous CORS.
+  document.cookie = "mrt_image_test=ok; Path=/; SameSite=Lax";
+  await load("no-cors", h("img-nocors"));
+  await load("anonymous-reject", h("img-anon-reject"), "anonymous");
+  await load("anonymous", h("img-anon", {acao:"*"}), "anonymous");
+  await load("credentialed", h("img-creds", {acao:"echo", acac:"true"}), "use-credentials");
+  await load("credentialed-reject", h("img-creds-reject", {acao:"*", acac:"true"}), "use-credentials");
+  await load("corp-reject", h("img-corp", {corp:"same-origin"}));
+  await load("redirect", h("img-redirect", {status:"302", loc:h("img-final")}));
+  await load("no-referrer", h("img-no-referrer"), undefined, "no-referrer");
+  await load("404-valid-image", h("img-404", {status:"404"}));
+  const opaque = await fetch(h("opaque-fetch"), {mode:"no-cors"});
+  log("opaque-fetch", opaque.type, opaque.status, (await opaque.arrayBuffer()).byteLength);
+  const records = await (await fetch(base + "/log")).json();
+  for (const id of ["img-nocors", "img-anon", "img-creds", "img-no-referrer"]) {
+    const rec = records.filter(r => r.id === id).pop();
+    log("headers", id, rec.h["sec-fetch-dest"], rec.h["sec-fetch-mode"],
+      (rec.h.cookie || "").includes("mrt_image_test=ok"), !!rec.h.referer);
+  }
+  document.cookie = "mrt_image_test=; Max-Age=0; Path=/";
+  log("done");
+})();
+</script>

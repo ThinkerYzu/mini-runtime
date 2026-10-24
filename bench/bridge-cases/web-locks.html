@@ -1,0 +1,189 @@
+<!doctype html>
+<!-- Web Locks from Gecko's dom/locks against release Firefox: bench/compare_bridge.py web-locks. The
+     interfaces; exclusive and shared grants and their order; ifAvailable, steal and signal; the
+     argument errors; a callback that throws or returns a plain value; query() (held, pending,
+     clientId); a dedicated worker (web-locks-worker.js) that holds a lock until it is terminated, as
+     Facebook's Messenger worker holds sw-lock-<name>-<id>; a data: worker's request. -->
+<html><head><meta charset="utf-8"><title>web-locks</title></head><body><p>web locks test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : String(e);
+  const tick = ms => new Promise(r => setTimeout(r, ms));
+  const settle = p => p.then(v => "resolved " + J(v), e => "rejected " + (e instanceof Error || e instanceof DOMException ? E(e) : J(e)));
+  // a query with clientIds as "page" (this window's), "other" or "bad" (not a UUID)
+  let pageClient = null;
+  const shown = info => info.map(i => [i.name, i.mode, !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(i.clientId) ? "bad" : i.clientId === pageClient ? "page" : "other"]);
+  const query = async () => { const q = await navigator.locks.query(); return J({ held: shown(q.held), pending: shown(q.pending), keys: Object.keys(q) }); };
+
+  L("interfaces", J([typeof LockManager, typeof Lock, "locks" in navigator, navigator.locks instanceof LockManager,
+                     navigator.locks === navigator.locks, Object.prototype.toString.call(navigator.locks),
+                     Object.getOwnPropertyNames(LockManager.prototype).sort(), Object.getOwnPropertyNames(Lock.prototype).sort(),
+                     LockManager.prototype.request.length, LockManager.prototype.query.length]));
+  for (const C of [LockManager, Lock]) { try { new C(); L("new", C.name, "no throw"); } catch (e) { L("new", C.name, E(e)); } }
+
+  // the first grant, and what runs before it
+  {
+    const order = [];
+    const p = navigator.locks.request("a", lock => {
+      order.push("callback " + J([lock.name, lock.mode, Object.prototype.toString.call(lock), lock instanceof Lock]));
+      return 42;
+    });
+    order.push("returned");
+    Promise.resolve().then(() => order.push("microtask"));
+    setTimeout(() => order.push("timeout 0"), 0);
+    order.push(await settle(p));
+    await tick(10);
+    L("first", J(order));
+  }
+  // clientId: the page's own, from a held lock
+  {
+    let release;
+    const p = navigator.locks.request("me", () => new Promise(r => { release = r; }));
+    await tick(0);
+    const q = await navigator.locks.query();
+    pageClient = q.held.length ? q.held[0].clientId : null;
+    L("me", J(q.held.map(i => [i.name, i.mode])), J(q.pending), typeof pageClient);
+    release("done");
+    L("me released", await settle(p));
+  }
+  // exclusive: queued in order, query while held and pending
+  {
+    const order = [];
+    let release;
+    const p1 = navigator.locks.request("x", async lock => { order.push("1 got"); await new Promise(r => { release = r; }); order.push("1 releasing"); return "one"; });
+    const p2 = navigator.locks.request("x", lock => { order.push("2 got " + lock.mode); return "two"; });
+    const p3 = navigator.locks.request("x", { mode: "shared" }, lock => { order.push("3 got " + lock.mode); });
+    await tick(10);
+    L("x while held", await query());
+    release();
+    L("x results", await settle(p1), await settle(p2), await settle(p3));
+    L("x order", J(order));
+  }
+  // shared: granted together; an exclusive waits for both
+  {
+    const order = [];
+    const rel = [];
+    const s1 = navigator.locks.request("s", { mode: "shared" }, () => { order.push("s1"); return new Promise(r => rel.push(r)); });
+    const s2 = navigator.locks.request("s", { mode: "shared" }, () => { order.push("s2"); return new Promise(r => rel.push(r)); });
+    const ex = navigator.locks.request("s", () => { order.push("ex"); });
+    const s3 = navigator.locks.request("s", { mode: "shared" }, () => { order.push("s3"); });
+    await tick(10);
+    L("s while held", await query(), J(order));
+    rel[0](); await tick(10);
+    order.push("released 1");
+    rel[1](); await Promise.all([s1, s2, ex, s3]);
+    L("s order", J(order));
+  }
+  // ifAvailable
+  {
+    let release;
+    const held = navigator.locks.request("i", () => new Promise(r => { release = r; }));
+    await tick(0);
+    const got = [];
+    const p = navigator.locks.request("i", { ifAvailable: true }, lock => { got.push(lock); return "fallback"; });
+    L("ifAvailable held", await settle(p), J(got));
+    const free = navigator.locks.request("i2", { ifAvailable: true }, lock => lock && lock.name);
+    L("ifAvailable free", await settle(free));
+    release();
+    await held;
+  }
+  // steal
+  {
+    const order = [];
+    let release;
+    const victim = navigator.locks.request("t", () => new Promise(r => { release = r; }).then(() => order.push("victim callback ended")));
+    const waiting = navigator.locks.request("t", () => order.push("waiter got"));
+    await tick(0);
+    const thief = navigator.locks.request("t", { steal: true }, lock => { order.push("thief got " + lock.name); return "stolen"; });
+    order.push("victim " + await settle(victim));
+    order.push("thief " + await settle(thief));
+    await tick(10);
+    L("steal while victim runs", await query());
+    release();
+    await waiting;
+    await tick(10);
+    L("steal order", J(order));
+  }
+  // signal
+  {
+    let release;
+    const held = navigator.locks.request("g", () => new Promise(r => { release = r; }));
+    const ac = new AbortController();
+    const order = [];
+    const p = navigator.locks.request("g", { signal: ac.signal }, () => order.push("aborted one ran"));
+    await tick(0);
+    ac.abort("why");
+    L("signal pending", await settle(p), await query());
+    const ac2 = new AbortController();
+    ac2.abort();
+    L("signal aborted before", await settle(navigator.locks.request("g2", { signal: ac2.signal }, () => {})));
+    const ac3 = new AbortController();
+    const granted = navigator.locks.request("g3", { signal: ac3.signal }, () => { ac3.abort(); return "kept"; });
+    L("signal after grant", await settle(granted));
+    release();
+    await held;
+    L("signal order", J(order));
+  }
+  // argument errors (rejections, not throws)
+  {
+    const tries = [
+      ["dash", () => navigator.locks.request("-x", () => {})],
+      ["steal ifAvailable", () => navigator.locks.request("e", { steal: true, ifAvailable: true }, () => {})],
+      ["steal shared", () => navigator.locks.request("e", { steal: true, mode: "shared" }, () => {})],
+      ["steal signal", () => navigator.locks.request("e", { steal: true, signal: new AbortController().signal }, () => {})],
+      ["ifAvailable signal", () => navigator.locks.request("e", { ifAvailable: true, signal: new AbortController().signal }, () => {})],
+      ["bad mode", () => navigator.locks.request("e", { mode: "both" }, () => {})],
+      ["no callback", () => navigator.locks.request("e")],
+      ["not callable", () => navigator.locks.request("e", {}, 5)],
+      ["no args", () => navigator.locks.request()],
+      ["empty name", () => navigator.locks.request("", lock => J(lock.name))],
+      ["number name", () => navigator.locks.request(7, lock => typeof lock.name)],
+    ];
+    for (const [what, f] of tries) {
+      let r;
+      try { r = await settle(f()); } catch (e) { r = "threw " + E(e); }
+      L("error", what, r);
+    }
+  }
+  // a callback that throws or rejects releases the lock
+  {
+    const p = navigator.locks.request("r", () => { throw new RangeError("inside"); });
+    const q = navigator.locks.request("r", () => Promise.reject(new TypeError("later")));
+    const after = navigator.locks.request("r", () => "after");
+    L("throwing", await settle(p), await settle(q), await settle(after));
+  }
+  // a worker that holds a lock until it is terminated
+  {
+    const w = new Worker("web-locks-worker.js");
+    const msgs = [];
+    await new Promise(resolve => {
+      w.onmessage = e => { msgs.push(e.data); if (e.data === "holding") resolve(); };
+      w.onerror = e => { msgs.push("error " + e.message); resolve(); };
+    });
+    L("worker said", J(msgs));
+    L("worker holds", await query());
+    L("worker lock ifAvailable", await settle(navigator.locks.request("w-lock", { ifAvailable: true }, lock => lock)));
+    const order = [];
+    const p = navigator.locks.request("w-lock", lock => { order.push("page got"); return "page"; });
+    await tick(20);
+    order.push("terminate");
+    w.terminate();
+    const result = await Promise.race([settle(p), tick(2000).then(() => "timeout")]);
+    L("after terminate", result, J(order), await query());
+  }
+  // a data: worker (an opaque origin)
+  {
+    const src = "postMessage(String(typeof navigator.locks)); try { navigator.locks.request('d', () => 1).then(v => postMessage('ok ' + v), e => postMessage(e.name)); } catch (e) { postMessage('threw ' + e.name); }";
+    const w = new Worker("data:text/javascript," + encodeURIComponent(src));
+    const got = [];
+    await Promise.race([new Promise(resolve => { w.onmessage = e => { got.push(e.data); if (got.length === 2) resolve(); }; w.onerror = e => { got.push("error"); resolve(); }; }), tick(2000)]);
+    w.terminate();
+    L("data worker", J(got));
+  }
+  L("end", await query());
+})();
+</script>
+</body></html>

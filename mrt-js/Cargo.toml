@@ -1,0 +1,32 @@
+[package]
+name = "mrt-js"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+# Stage 3: SpiderMonkey from the Firefox tree (obj-js) through a thin C++ layer (glue/), DOM bindings
+# over the arena DOM. No crates from crates.io: build.rs calls the compiler itself, as mrt-text's does.
+# See README.md.
+[dependencies]
+mrt-layout = { path = "../mrt-layout" }
+mrt-style = { path = "../mrt-style" }
+# zlib as release Firefox has it (USE_LIBZ_RS, toolkit/library/rust/shared/Cargo.toml): the tree's
+# vendored zlib-rs with Firefox's features and symbol prefix (.cargo/config.toml), for
+# CompressionStream (GAPS D106)
+libz-rs-sys = { path = "../../firefox-source/third_party/rust/libz-rs-sys", features = ["custom-prefix"] }
+zlib-rs = { path = "../../firefox-source/third_party/rust/zlib-rs", features = ["avx512"] }
+
+[profile.release]
+debug = false
+
+# One process for all cases, with no test harness: SpiderMonkey must be shut down after the last page
+# is dropped (its helper threads hold locks its static destructors would destroy).
+[[test]]
+name = "bindings"
+harness = false
+
+# Stylo 0.22 with Gecko-only properties also generated for the Servo engine (vendor/stylo/README-mrt.md)
+[patch.crates-io]
+stylo = { path = "../vendor/stylo" }
+stylo_atoms = { path = "../vendor/stylo_atoms" }
+zlib-rs = { path = "../../firefox-source/third_party/rust/zlib-rs" }

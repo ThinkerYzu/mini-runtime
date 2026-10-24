@@ -1,0 +1,204 @@
+<!doctype html>
+<!-- IntersectionObserver against release Firefox: bench/compare_bridge.py intersection-observer (GAPS
+     B15, task 5616). Gecko: dom/base/DOMIntersectionObserver.cpp and Document::UpdateIntersections:
+     every observer updated at each refresh tick after layout, an entry queued when a target's
+     threshold index changes, the entries of one observer delivered in one callback by a task after
+     the tick; an explicit root, the ancestors' clips, root and scroll margins, a same-origin frame.
+     Each step waits two animation frames. Nothing scrolls: targets move by style changes. The two
+     frames are observed in separate steps: Firefox's order between documents varies. -->
+<html><head><title>intersection-observer</title><meta charset="utf-8">
+<style>
+  body { margin: 8px; font: 16px/20px monospace; width: 900px }
+  .t { position: absolute; width: 100px; height: 40px; background: #ddd }
+  #inbox { left: 20px; top: 30px }
+  #out { left: -1000px; top: 30px }
+  #edge { left: -50px; top: 100px; width: 50px }
+  #zero { left: 200px; top: 30px; width: 0; height: 0 }
+  #none { display: none }
+  #half { left: -50px; top: 160px }
+  #mover { left: 300px; top: 30px }
+  #clip { position: absolute; left: 450px; top: 30px; width: 100px; height: 100px; overflow: hidden; padding: 5px; border: 2px solid }
+  #clipkid { position: relative; top: 80px; height: 50px; width: 40px; background: #aaa }
+  #plain { position: absolute; left: 600px; top: 30px; width: 100px; height: 60px; border: 3px solid }
+  #plainkid { margin-top: 40px; height: 50px; width: 40px; background: #aaa }
+  #clipx { position: absolute; left: 450px; top: 200px; width: 60px; height: 60px; overflow-x: clip }
+  #clipx .a { position: relative; left: 100px; width: 30px; height: 20px; background: #aaa }
+  #clipx .b { position: relative; top: 100px; width: 30px; height: 20px; background: #aaa }
+  #clipm { position: absolute; left: 600px; top: 200px; width: 60px; height: 60px; overflow: clip; overflow-clip-margin: 15px }
+  #clipm div { position: relative; left: 70px; width: 30px; height: 20px; background: #aaa }
+  #scroller { position: absolute; left: 700px; top: 200px; width: 80px; height: 80px; overflow: auto; border: 4px solid; padding: 6px }
+  #scroller div { margin-top: 90px; height: 20px; width: 20px; background: #aaa }
+  #near { left: -130px; top: 300px; width: 100px }
+  iframe { position: absolute; border: 2px solid; padding: 3px; width: 200px; height: 100px }
+  #f1 { left: 20px; top: 400px }
+  #f2 { left: -100px; top: 520px }
+</style>
+</head><body>
+<div class="t" id="inbox"></div>
+<div class="t" id="out"></div>
+<div class="t" id="edge"></div>
+<div class="t" id="zero"></div>
+<div class="t" id="none"></div>
+<div class="t" id="half"></div>
+<div class="t" id="mover"></div>
+<div class="t" id="near"></div>
+<p style="position: absolute; left: 20px; top: 250px; margin: 0">text <span id="span">inline span</span></p>
+<div id="clip"><div id="clipkid"></div></div>
+<div id="plain"><div id="plainkid"></div></div>
+<div id="clipx"><div class="a" id="clipxa"></div><div class="b" id="clipxb"></div></div>
+<div id="clipm"><div id="clipmkid"></div></div>
+<div id="scroller"><div id="scrollkid"></div></div>
+<iframe id="f1" srcdoc="<body style='margin:0'><div id=a style='position:absolute;left:10px;top:10px;width:50px;height:20px'></div><div id=b style='position:absolute;left:10px;top:150px;width:50px;height:20px'></div></body>"></iframe>
+<iframe id="f2" srcdoc="<body style='margin:0'><div id=c style='position:absolute;left:0;top:10px;width:150px;height:20px'></div></body>"></iframe>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.map(v => typeof v === "string" ? v : JSON.stringify(v)).join(" "));
+  const err = f => { try { f(); return "no error"; } catch (e) { return e.constructor.name + ": " + e.message; } };
+  const frames = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const rect = r => r === null ? null : [r.x, r.y, r.width, r.height].map(v => Math.round(v * 100) / 100);
+  const describe = e => [e.target.id, e.isIntersecting, Math.round(e.intersectionRatio * 10000) / 10000, rect(e.boundingClientRect), rect(e.intersectionRect)];
+  const $ = id => document.getElementById(id);
+  // an observer whose calls are logged under `name`
+  const watch = (name, options, extra) => new IntersectionObserver(function (entries, observer) {
+    log(name, entries.length, entries.map(describe));
+    if (extra) extra(entries, observer, this);
+  }, options);
+
+  (async () => {
+    await new Promise(r => window.addEventListener("load", r));
+    log("interfaces", typeof IntersectionObserver, typeof IntersectionObserverEntry, IntersectionObserver.length,
+      Object.getOwnPropertyNames(IntersectionObserver.prototype), Object.getOwnPropertyNames(IntersectionObserverEntry.prototype));
+    log("constructor errors", err(() => IntersectionObserver(() => {})), err(() => new IntersectionObserver()),
+      err(() => new IntersectionObserver(5)), err(() => new IntersectionObserver(() => {}, 5)),
+      err(() => new IntersectionObserverEntry()), err(() => new IntersectionObserver(() => {}, { root: {} })),
+      err(() => new IntersectionObserver(() => {}, { root: 5 })));
+    const ctor = options => err(() => new IntersectionObserver(() => {}, options));
+    log("margin errors", ctor({ rootMargin: "10" }), ctor({ rootMargin: "0" }), ctor({ rootMargin: "1em" }), ctor({ rootMargin: "1px 2px 3px 4px 5px" }),
+      ctor({ rootMargin: "calc(1px)" }), ctor({ rootMargin: "1px,2px" }), ctor({ scrollMargin: "x" }));
+    log("threshold errors", ctor({ threshold: 1.5 }), ctor({ threshold: -0.1 }), ctor({ threshold: NaN }), ctor({ threshold: [0, Infinity] }),
+      ctor({ threshold: [0.5, 2] }), ctor({ threshold: "x" }), ctor({ threshold: NaN, rootMargin: "x" }), ctor({ rootMargin: "x", threshold: 2 }));
+    const attrs = options => { const o = new IntersectionObserver(() => {}, options); return [o.root === null ? null : o.root.nodeName || "doc", o.rootMargin, o.scrollMargin, o.thresholds]; };
+    log("attributes", attrs(), attrs({ rootMargin: "" }), attrs({ rootMargin: "10px" }), attrs({ rootMargin: "5% -3px" }),
+      attrs({ rootMargin: "1.5px 2.25% 0px 7px", scrollMargin: "  10PX   " }), attrs({ threshold: [1, 0, 0.5] }), attrs({ threshold: [] }),
+      attrs({ threshold: "0.25" }), attrs({ root: document }), attrs({ root: $("clip"), rootMargin: "0.1px 33.333333% 1e1px +2px" }));
+    const probe = new IntersectionObserver(() => {});
+    log("same thresholds", probe.thresholds === probe.thresholds, Object.isFrozen(probe.thresholds), Object.prototype.toString.call(probe));
+    log("observe errors", err(() => probe.observe()), err(() => probe.observe(document)), err(() => probe.observe(5)),
+      err(() => probe.unobserve({})), err(() => IntersectionObserver.prototype.observe.call({}, $("inbox"))),
+      err(() => IntersectionObserver.prototype.disconnect.call(5)), err(() => IntersectionObserver.prototype.takeRecords.call({})),
+      err(() => Object.getOwnPropertyDescriptor(IntersectionObserver.prototype, "root").get.call({})));
+    log("takeRecords empty", probe.takeRecords());
+
+    // first entries of several targets in one callback, in observe() order
+    const a = watch("first", undefined, (entries, observer, self) => {
+      const e = entries[0];
+      log("first details", self === observer, typeof e.time, e.time > 0, rect(e.rootBounds), e.boundingClientRect instanceof DOMRect,
+        e.rootBounds === e.rootBounds, Object.prototype.toString.call(e), entries.every(x => x.time === e.time));
+    });
+    for (const id of ["inbox", "out", "edge", "zero", "none", "span"]) a.observe($(id));
+    a.observe($("inbox"));
+    const detached = document.createElement("div");
+    detached.id = "detached";
+    a.observe(detached);
+    await frames();
+    log("after first, nothing new");
+    await frames();
+
+    // thresholds: entries when the index changes, none when it does not
+    const b = watch("thresholds", { threshold: [0, 0.5, 1] });
+    b.observe($("half"));
+    await frames();
+    $("half").style.left = "-49px";
+    await frames();
+    log("half moved within its band");
+    $("half").style.left = "10px";
+    await frames();
+    $("half").style.left = "12px";
+    await frames();
+    log("half moved, still fully in");
+    $("half").style.left = "-1000px";
+    await frames();
+    $("half").style.left = "-90px";
+    await frames();
+    b.disconnect();
+
+    // root margins: px and percentages
+    const c1 = watch("margin px", { rootMargin: "0px 0px 0px 40px" });
+    c1.observe($("near"));
+    const c2 = watch("margin percent", { rootMargin: "0px 0px 0px 10%" });
+    c2.observe($("near"));
+    const c3 = watch("margin negative", { rootMargin: "-40px" });
+    c3.observe($("inbox"));
+    await frames();
+    c1.disconnect(); c2.disconnect(); c3.disconnect();
+
+    // an explicit root: an element that clips (its padding box) and one that does not (its border
+    // box); a target outside the root is not computed
+    const d1 = watch("root clip", { root: $("clip"), threshold: [0, 0.25, 0.5] });
+    d1.observe($("clipkid"));
+    d1.observe($("inbox"));
+    const d2 = watch("root plain", { root: $("plain") });
+    d2.observe($("plainkid"));
+    const d3 = watch("root document", { root: document });
+    d3.observe($("inbox"));
+    d3.observe($("f1").contentDocument.getElementById("a"));
+    await frames();
+    log("root rects", d1.root.id);
+    $("clipkid").style.top = "200px";
+    await frames();
+    $("clipkid").style.top = "0px";
+    await frames();
+    d1.disconnect(); d2.disconnect(); d3.disconnect();
+
+    // the ancestors' clips with the implicit root: overflow-x clip, overflow-clip-margin, a scroll
+    // container's port and the scroll margin
+    const e1 = watch("clips");
+    for (const id of ["clipxa", "clipxb", "clipmkid", "scrollkid"]) e1.observe($(id));
+    const e2 = watch("scroll margin", { scrollMargin: "20px" });
+    e2.observe($("scrollkid"));
+    await frames();
+    e1.disconnect(); e2.disconnect();
+
+    // later entries: a target moved in and out; two observers called in the order they connected;
+    // unobserve before the update queues nothing
+    const f1 = watch("mover A");
+    const f2 = watch("mover B", { threshold: 1 });
+    f1.observe($("mover"));
+    f2.observe($("mover"));
+    await frames();
+    $("mover").style.left = "-1000px";
+    await frames();
+    $("mover").style.left = "-30px";
+    await frames();
+    $("mover").style.left = "300px";
+    await frames();
+    f2.observe($("inbox"));
+    f2.unobserve($("inbox"));
+    $("mover").style.display = "none";
+    await frames();
+    $("mover").style.display = "";
+    f1.disconnect();
+    await frames();
+    log("takeRecords after disconnect", f1.takeRecords().length);
+    f1.observe($("mover"));
+    await frames();
+    f1.disconnect(); f2.disconnect(); a.disconnect();
+
+    // a same-origin frame: the implicit root is the top viewport, the intersection is clipped by
+    // the frame's viewport and given relative to the frame's document
+    const w1 = $("f1").contentWindow, w2 = $("f2").contentWindow;
+    const g1 = new w1.IntersectionObserver(entries => log("frame f1", entries.length, entries.map(describe), rect(entries[0].rootBounds)));
+    g1.observe(w1.document.getElementById("a"));
+    g1.observe(w1.document.getElementById("b"));
+    // (one frame at a time: Gecko visits subdocuments in hash-table order)
+    await frames();
+    const g2 = new w2.IntersectionObserver(entries => log("frame f2", entries.length, entries.map(describe)));
+    g2.observe(w2.document.getElementById("c"));
+    await frames();
+    $("f1").style.left = "-300px";
+    await frames();
+    g1.disconnect(); g2.disconnect();
+    log("done");
+  })().catch(e => log("failed", String(e), e.stack));
+</script>
+</body></html>

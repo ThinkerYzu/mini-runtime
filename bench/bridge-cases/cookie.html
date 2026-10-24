@@ -1,0 +1,96 @@
+<!doctype html>
+<!-- document.cookie against release Firefox: bench/compare_bridge.py cookie (with API_PROCESS=cookie,
+     the API process's port of Gecko's netwerk/cookie, SPEC decision 27). Names and values, attributes,
+     paths and their order, expiry by Expires and Max-Age, domains, Secure and the prefixes on
+     http://localhost (a trustworthy origin), HttpOnly, SameSite, Partitioned (CHIPS), the size limits,
+     control characters, cookies a response set (ws_echo's /set-cookie, ?ws=PORT), the per-domain
+     eviction, and a frame of another site (127.0.0.1), whose cookies are partitioned under this one. -->
+<html><head><meta charset="utf-8"><title>cookie</title></head><body><p>cookie test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const ws = new URLSearchParams(location.search).get("ws");
+  const names = () => document.cookie.split("; ").filter(c => c).map(c => c.split("=")[0]);
+  const clear = () => {
+    for (const n of new Set(names())) for (const p of ["/", "/bridge-cases", "/cookie.html", location.pathname])
+      for (const d of ["", "; domain=localhost"]) document.cookie = `${n}=; max-age=0; path=${p}${d}`;
+    // a Secure cookie can only be removed by a Secure write, a Partitioned one by a Partitioned write
+    for (const n of new Set(names())) for (const a of ["", "; Partitioned"]) document.cookie = `${n}=; max-age=0; path=/; Secure${a}`;
+  };
+  const T = (what, ...writes) => { for (const w of writes) document.cookie = w; L(what, JSON.stringify(document.cookie)); };
+  // (the driver's first visit ran this page in Firefox's tab, with JS, before the runtime runs it)
+  clear();
+  T("empty");
+  T("basic", "a=1");
+  T("valueless", "flag");
+  T("nameless", "=x");
+  T("spaces", "  b  =  2  ");
+  T("overwrite keeps order", "a=2");
+  T("attributes ignored on read", "c=3; path=/; max-age=1000; samesite=strict");
+  T("path elsewhere", "d=4; path=/elsewhere");
+  T("path of the document", "e=5; path=/cookie.html", "e=5b; path=/");
+  T("path not absolute", "f=6; path=relative");
+  T("expires past", "g=7; expires=Thu, 01 Jan 1970 00:00:01 GMT");
+  T("expires future", "h=8; expires=Wed, 21 Oct 2099 07:28:00 GMT");
+  T("expires odd formats", "i=9; expires=21-Oct-99 07:28:00", "j=10; expires=Friday, 31-Dec-1999 23:59:59 GMT", "k=11; expires=12/31/2099");
+  T("expires garbage is a session cookie", "l=12; expires=never");
+  T("max-age over expires", "m=13; expires=Wed, 21 Oct 2099 07:28:00 GMT; max-age=0");
+  T("max-age invalid then expires", "n=14; max-age=abc; expires=Thu, 01 Jan 1970 00:00:01 GMT");
+  T("max-age negative", "h=; max-age=-1");
+  T("delete by max-age 0", "a=; max-age=0");
+  T("domain host", "o=15; domain=localhost");
+  T("domain with dot", "p=16; domain=.localhost");
+  T("domain other", "q=17; domain=example.com");
+  T("secure on localhost", "r=18; Secure");
+  T("secure prefix", "__Secure-s=19; Secure", "__Secure-t=20");
+  T("host prefix", "__Host-u=21; Secure; Path=/", "__Host-v=22; Secure", "__Host-w=23; Secure; Path=/; domain=localhost");
+  T("host prefix case", "__host-x=24; Secure");
+  T("insecure over secure", "r=override");
+  T("httponly from script", "y=25; HttpOnly");
+  T("samesite none without secure", "z=26; SameSite=None");
+  T("samesite none secure", "z=27; SameSite=None; Secure");
+  T("samesite lax and bogus", "aa=28; SameSite=Lax", "ab=29; SameSite=bogus");
+  T("partitioned without secure", "ac=30; Partitioned");
+  T("partitioned", "ad=31; Partitioned; Secure");
+  T("control char", "ae=3\x01 2", "af=\x7f");
+  T("tab and unicode", "ag=a\tb", "ah=é😀");
+  T("semicolon in value", "ai=x;y");
+  T("equals in value", "aj=x=y");
+  document.cookie = "ak=" + "v".repeat(4096 - 2);
+  document.cookie = "al=" + "v".repeat(4096 - 1);
+  L("size limit", JSON.stringify(names().filter(n => n === "ak" || n === "al")));
+  document.cookie = "ak=; max-age=0";
+  T("attribute over 1024", "am=1; path=/" + "p".repeat(1100));
+  T("several in one string", "an=1\nao=2");
+  L("names", JSON.stringify(names()));
+  // cookies from a response: Firefox's jar gets them, document.cookie shows all but HttpOnly
+  try {
+    const set = ["srv=1; path=/", "srvhttp=2; HttpOnly; path=/", "srvlax=3; SameSite=Lax; path=/"].join("\n");
+    await fetch(`http://localhost:${ws}/set-cookie?${encodeURIComponent(set)}`, { credentials: "include" });
+    T("after a response");
+    T("script over httponly", "srvhttp=mine; path=/");
+    const r = await fetch(`http://localhost:${ws}/echo-cookie`, { credentials: "include" });
+    const sent = (await r.text()).split("; ").filter(c => /^(srv|srvhttp|b|c)=/.test(c)).sort();
+    L("sent", JSON.stringify(sent));
+  } catch (e) { L("set-cookie", e.name); }
+  // 180 per base domain: the 181st evicts the least recently used down to 150
+  clear();
+  for (let i = 0; i < 185; i++) document.cookie = `ev${i}=${i}`;
+  // the parent process evicts; a content process sees it a little later
+  await new Promise(done => setTimeout(done, 1000));
+  const ev = names();
+  L("eviction", ev.length, ev[0], ev[ev.length - 1]);
+  clear();
+  L("cleared", JSON.stringify(document.cookie));
+  // a frame of another site: its cookies are in this site's partition
+  await new Promise(done => {
+    window.addEventListener("message", e => { L("frame", JSON.stringify(e.data)); done(); }, { once: true });
+    const f = document.createElement("iframe");
+    f.src = `http://127.0.0.1:${location.port}/cookie-child.html`;
+    document.body.appendChild(f);
+  });
+  L("page after frame", JSON.stringify(document.cookie));
+  L("done");
+})();
+</script></body></html>

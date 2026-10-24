@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>transform-boxes</title>
+<style>
+  body { margin: 0; }
+  #list { position: relative; height: 3000px; }
+  .cell { position: absolute; top: 0; left: 0; width: 300px; height: 100px; background: #ccf; }
+  #c2 { transform: translateY(400px); }
+  #c3 { transform: translateY(2000px); }
+  #c4 { transform: translate(50px, 120px) scale(2); transform-origin: 0 0; }
+  #c5 { left: 400px; top: 600px; transform: rotate(90deg); }
+  #c6 { left: 400px; top: 800px; transform: translate(50%, -25%); }
+  #c7 { left: 0; top: 2600px; transform: translateY(-100px); }
+  #c7 .inner { position: absolute; left: 10px; top: 10px; width: 50px; height: 20px; transform: translateX(100px) scale(0.5); transform-origin: 0 0; background: #fcc; }
+  #c8 { left: 700px; top: 100px; transform: rotate(45deg); transform-origin: 50% 50%; }
+  #c9 { left: 700px; top: 400px; translate: 20px 30px; rotate: 30deg; scale: 1.5; transform: translateX(10px); }
+  #c10 { left: 700px; top: 700px; transform: matrix(1, 0.2, 0.3, 1, 5, 6); transform-origin: 10px 20px; }
+  #c11 { left: 1000px; top: 100px; width: 200px; height: 120px; overflow: hidden; transform: translateY(50px); }
+  #c11 .inner { position: absolute; left: 0; top: 80px; width: 100px; height: 100px; background: #cfc; }
+  #c12 { left: 1000px; top: 400px; transform: translateY(60px); }
+  #c12 > span { display: inline-block; width: 40px; height: 20px; transform: translateX(30px); }
+  #go { position: fixed; right: 10px; bottom: 10px; width: 80px; height: 30px; }
+</style>
+<!-- CSS transforms in the boxes script reads (X's timeline places each cell with
+     transform: translateY): getBoundingClientRect, getClientRects, IntersectionObserver entries,
+     elementFromPoint; offsetTop does not include transforms. Then translate percentages, rotate,
+     scale, nested transforms, transform-origin, the individual properties, a matrix, an
+     overflow clip on a transformed box, an inline-block in a transformed block, the document's
+     scroll height (transformed overflow), and after a click the same reads with the document
+     scrolled (transformed boxes below a scrolled root). The raw lines give three transformed
+     boxes at full precision (DOMRect::SetLayoutRect, then floats). -->
+<div id="list">
+  <div class="cell" id="c1">one</div>
+  <div class="cell" id="c2"><span id="in2">two</span></div>
+  <div class="cell" id="c3">three</div>
+  <div class="cell" id="c4">four</div>
+  <div class="cell" id="c5">five</div>
+  <div class="cell" id="c6">six</div>
+  <div class="cell" id="c7">seven<div class="inner" id="in7"></div></div>
+  <div class="cell" id="c8">eight</div>
+  <div class="cell" id="c9">nine</div>
+  <div class="cell" id="c10">ten</div>
+  <div class="cell" id="c11"><div class="inner" id="in11"></div></div>
+  <div class="cell" id="c12">x <span id="in12">y</span></div>
+</div>
+<button id="go">go</button>
+<script>
+window.__log = [];
+const log = s => window.__log.push(s);
+const n = v => Math.round(v * 10) / 10;
+const r = b => [b.left, b.top, b.width, b.height].map(n).join(",");
+const ids = ["c1", "c2", "in2", "c3", "c4", "c5", "c6", "c7", "in7", "c8", "c9", "c10", "c11", "in11", "c12", "in12"];
+const points = [[10, 450], [10, 50], [120, 250], [460, 640], [520, 640], [560, 770], [420, 2520], [130, 2520], [700, 100], [745, 150], [850, 140], [730, 470], [1010, 160], [1010, 245], [1010, 300], [1075, 475]];
+// after the scroll (scrollY 500): c5, c6, c9, c12, and the bottom of the viewport
+const scrolledPoints = [[520, 140], [560, 270], [600, 300], [800, 60], [900, 100], [1020, 30], [1050, 10], [10, 990]];
+const reads = (what, pts = points) => {
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    log(`${what} ${id} rect ${r(el.getBoundingClientRect())} rects ${Array.from(el.getClientRects(), r).join(" ")} offsetTop ${el.offsetTop}`);
+  }
+  log(`${what} fromPoint ${pts.map(([x, y]) => `${x},${y}=${document.elementFromPoint(x, y)?.id}`).join(" ")}`);
+  log(`${what} fromPoints 745,150=${document.elementsFromPoint(745, 150).map(e => e.id || e.localName).join("/")}`);
+  log(`${what} scrollHeight ${document.documentElement.scrollHeight} scrollWidth ${document.documentElement.scrollWidth}`);
+};
+reads("load");
+for (const id of ["c8", "c9", "c10"]) { const b = document.getElementById(id).getBoundingClientRect(); log(`raw ${id} ${b.left} ${b.top} ${b.width} ${b.height}`); }
+const observe = (what, then) => {
+  const io = new IntersectionObserver(entries => {
+    for (const e of entries) log(`${what} io ${e.target.id} ${e.isIntersecting} ${n(e.intersectionRatio * 100) / 100} ${r(e.boundingClientRect)} ${r(e.intersectionRect)}`);
+    io.disconnect();
+    if (then) then();
+  }, { threshold: [0, 0.5, 1] });
+  for (const id of ["c1", "c2", "c3", "c4", "c5", "c7", "in7", "c8", "in11"]) io.observe(document.getElementById(id));
+};
+observe("load", () => log("load done"));
+document.getElementById("go").addEventListener("click", () => {
+  scrollTo(0, 500);
+  setTimeout(() => {
+    reads(`scrolled ${scrollY}`, scrolledPoints);
+    observe("scrolled", () => log("scrolled done"));
+  }, 300);
+});
+</script>

@@ -1,0 +1,155 @@
+<!doctype html>
+<!-- innerText and outerText against release Firefox: bench/compare_bridge.py inner-text (GAPS B15,
+     task 1a8f). Gecko: nsGenericHTMLElement::GetInnerText (textContent when the element is not
+     rendered) and nsRange::GetInnerTextNoFlush (the rendered text collection steps over the frames:
+     collapsed and trimmed whitespace, visibility, replaced elements, required line breaks of blocks
+     and <p>, <br>, table cells and rows); the setters as TextToNode and SetOuterText. Each value is
+     logged as JSON, so whitespace shows. -->
+<html><head><title>inner-text</title><meta charset="utf-8">
+<style>
+  body { font: 16px/20px monospace; width: 600px }
+  .narrow { width: 80px }
+  .tt-u { text-transform: uppercase }
+  .tt-c { text-transform: capitalize }
+  .cell { display: table-cell }
+  .row { display: table-row }
+  .tbl { display: table }
+  .cap { display: table-caption }
+  .ib { display: inline-block }
+  .fl { float: left }
+  .ab { position: absolute; left: 700px }
+  .gen::before { content: "before " }
+  .gen::after { content: " after" }
+  .vh { visibility: hidden }
+  .vv { visibility: visible }
+  .dc { display: contents }
+  .flex { display: flex }
+  .grid { display: grid; grid-template-columns: 1fr 1fr }
+</style></head>
+<body>
+<div id="ws1">  A     B
+  C  </div>
+<div id="ws2"><span> a </span> <span> b </span>c<b> d</b></div>
+<pre id="pre1">  x   y
+  z  </pre>
+<div id="pw" style="white-space: pre-wrap">  one   two
+three  </div>
+<div id="pl" style="white-space: pre-line">  four   five
+six
+</div>
+<div id="nw" style="white-space: nowrap">  seven   eight  </div>
+<div id="wrap" class="narrow">alpha beta gamma delta epsilon zeta</div>
+<div id="blocks">x<div>in a div</div><div><div>nested</div></div>y<p>para</p><p>para2</p>z</div>
+<div id="lead"><p>first</p>mid<p>last</p></div>
+<div id="hidden">a<span style="display:none">none</span>b<span class="vh">hidden<span class="vv">shown</span></span>c</div>
+<div id="dcwrap">a<span class="dc" id="dc">in contents <b>bold</b></span>b</div>
+<div id="inl">a<span class="ib">inline block</span>b<span class="fl">float</span>c<span class="ab">abs</span>d</div>
+<div id="br">one<br>two<br><br>three<br></div>
+<table id="t1"><caption>cap</caption><thead><tr><th>h1</th><th>h2</th></tr></thead>
+  <tbody><tr><td>a</td><td>b</td><td>c</td></tr><tr><td>d</td><td></td><td>f</td></tr></tbody>
+  <tbody></tbody><tfoot><tr><td>foot</td></tr></tfoot></table>
+<table id="t2"><tr><td>only</td></tr></table>
+<div id="t3" class="tbl"><div class="row"><div class="cell">c1</div><div class="cell">c2</div></div><div class="row"><div class="cell">c3</div></div></div>
+<ul id="list"><li>one</li><li>two <ol><li>inner</li></ol></li></ul>
+<div id="gen" class="gen">middle</div>
+<div id="tt"><span class="tt-u">upper case</span> <span class="tt-c">capital words</span></div>
+<div id="tt2"><span class="tt-u">straße</span> <span style="text-transform: lowercase">ΟΔΟΣ İ ABC</span> <span class="tt-c">it's a well-known “fact” ǆ</span></div>
+<div id="tt3" class="tt-c">split<b>word</b> next <i>one</i>two</div>
+<div id="forms">a<button>btn <b>x</b></button>b<select><option>o1</option><option>o2</option></select>c<input value="v">d<textarea>ta</textarea>e<img alt="alt">f</div>
+<div id="flex" class="flex"><span>f1</span><span>f2</span>text</div>
+<div id="grid" class="grid"><span>g1</span><span>g2</span><span>g3</span></div>
+<div id="nohide" style="display:none">  not   rendered <b>x</b>
+</div>
+<div id="tabs" style="white-space: pre">a	b</div>
+<div id="tabsn">a	b
+c</div>
+<div id="shy">soft&shy;hyphen</div>
+<div id="nbsp">a&nbsp;&nbsp;b  &nbsp;c</div>
+<div id="host">light <span>child</span></div>
+<span id="spanblk" style="display:block">block span</span>
+<div id="emp"></div>
+<div id="cmt">a<!-- comment -->b</div>
+<div id="setters"></div>
+<div id="outer"><span>p</span>before<i id="o1">x</i>after<span>q</span></div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.map(v => typeof v === "string" ? v : JSON.stringify(v)).join(" "));
+  const $ = id => document.getElementById(id);
+  const it = id => log(id, JSON.stringify($(id).innerText));
+  const kids = el => [...el.childNodes].map(n => n.nodeType === 3 ? JSON.stringify(n.data) : "<" + n.localName + ">").join(",");
+  (async () => {
+    await new Promise(r => (document.readyState === "complete" ? r() : addEventListener("load", r, { once: true })));
+    for (const id of ["ws1", "ws2", "pre1", "pw", "pl", "nw", "wrap", "blocks", "lead", "hidden", "dcwrap", "dc", "inl",
+                      "br", "t1", "t2", "t3", "list", "gen", "tt", "tt2", "tt3", "forms", "flex", "grid", "nohide", "tabs", "tabsn", "shy", "nbsp", "emp", "cmt"])
+      it(id);
+    log("outerText", JSON.stringify($("ws2").outerText));
+    log("body", JSON.stringify(document.body.innerText.length), JSON.stringify(document.body.innerText.slice(0, 40)));
+
+    // a shadow host: its light children only (the walk is over the DOM's children)
+    const root = $("host").attachShadow({ mode: "open" });
+    root.innerHTML = 'shadow <slot></slot> text';
+    it("host");
+    log("in shadow", JSON.stringify(root.querySelector("slot").parentNode === root));
+
+    // the element given is a block: a span made a block, a td, an li
+    it("spanblk");
+    log("td", JSON.stringify(document.querySelector("#t1 td").innerText), JSON.stringify(document.querySelector("#t1 tr").innerText));
+    log("li", JSON.stringify(document.querySelector("#list li").innerText));
+    log("option", JSON.stringify(document.querySelector("#forms option").innerText), JSON.stringify(document.querySelector("#forms select").innerText));
+    log("button", JSON.stringify(document.querySelector("#forms button").innerText));
+    log("textarea", JSON.stringify(document.querySelector("#forms textarea").innerText));
+
+    // not in the document, and a document without layout
+    const d = document.createElement("div");
+    d.innerHTML = "  a   <p>b</p>  ";
+    log("detached", JSON.stringify(d.innerText));
+    const doc = document.implementation.createHTMLDocument("x");
+    doc.body.innerHTML = "<div>  q   r </div>";
+    log("no layout", JSON.stringify(doc.body.innerText));
+
+    // the value follows the DOM: layout is flushed by the read
+    const ch = $("emp");
+    ch.textContent = "  late   text ";
+    it("emp");
+    ch.style.display = "none";
+    it("emp");
+    ch.style.display = "";
+    ch.style.visibility = "hidden";
+    it("emp");
+    ch.style.visibility = "";
+    ch.style.whiteSpace = "pre";
+    it("emp");
+
+    // setters
+    const s = $("setters");
+    for (const v of ["plain", "a\nb", "a\r\nb", "a\rb", "\n", "x\n", "\nx", "", "a\n\nb", "  sp  ", null, undefined, 12]) {
+      s.innerText = v;
+      log("set", JSON.stringify(v === undefined ? "undefined" : v), kids(s), JSON.stringify(s.innerText));
+    }
+    s.innerHTML = "<b>old</b>";
+    const old = s.firstChild;
+    s.innerText = "new";
+    log("replaced", JSON.stringify(old.parentNode), kids(s));
+    try { HTMLElement.prototype.__lookupGetter__("innerText").call({}); } catch (e) { log("brand", e.name, e.message); }
+    try { HTMLElement.prototype.__lookupSetter__("innerText").call({}, "x"); } catch (e) { log("brand set", e.name, e.message); }
+    const desc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "innerText");
+    log("descriptor", typeof desc.get, typeof desc.set, desc.enumerable, desc.configurable);
+
+    // outerText's setter: the element replaced, neighbouring text merged
+    const o = $("outer");
+    $("o1").outerText = "X\nY";
+    log("outer set", kids(o));
+    o.innerHTML = "a<i>x</i>b";
+    o.children[0].outerText = "mid";
+    log("outer merge", kids(o), JSON.stringify(o.firstChild.data));
+    o.innerHTML = "a<i>x</i>b";
+    o.children[0].outerText = "";
+    log("outer empty", kids(o));
+    o.innerHTML = "<i>x</i>";
+    o.children[0].outerText = "\n";
+    log("outer br", kids(o));
+    try { document.createElement("i").outerText = "z"; } catch (e) { log("outer no parent", e.name, e.message); }
+    log("outer get", JSON.stringify(o.outerText));
+  })().catch(e => log("error", String(e), e.stack));
+</script>
+</body></html>

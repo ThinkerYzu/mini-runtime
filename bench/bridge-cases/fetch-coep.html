@@ -1,0 +1,34 @@
+<!doctype html>
+<!-- COEP require-corp over the document's requests (GAPS B162), against release Firefox: bench/compare_bridge.py
+     fetch-coep, served by ws_echo.py's /doc/ with Cross-Origin-Embedder-Policy: require-corp (fetch-coep.html.headers).
+     A no-cors answer from another origin needs a CORP header that allows it; CORS answers and this origin's
+     do not; a script of another site the same. -->
+<html><head><meta charset="utf-8"><title>fetch coep</title></head><body><p>fetch coep test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const SELF = location.origin, X = `http://127.0.0.1:${location.port}`;
+  const h = (base, o) => `${base}/h?` + new URLSearchParams(o);
+  const F = async (what, url, init) => {
+    try { const r = await fetch(url, init); L(what, r.type, r.status); }
+    catch (e) { L(what, "throws", e.name); }
+  };
+  await F("no-cors without CORP", h(X, {}), { mode: "no-cors" });
+  await F("no-cors CORP cross-origin", h(X, { corp: "cross-origin" }), { mode: "no-cors" });
+  await F("no-cors CORP same-site", h(X, { corp: "same-site" }), { mode: "no-cors" });
+  await F("no-cors this origin without CORP", h(SELF, {}), { mode: "no-cors" });
+  await F("no-cors redirected to another site", h(SELF, { status: "302", loc: h(X, {}) }), { mode: "no-cors" });
+  await F("cors without CORP", h(X, { acao: "*" }));
+  const script = (what, src) => new Promise(done => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = s.onerror = e => { L(what, e.type); done(); };
+    document.head.appendChild(s);
+  });
+  await script("cross-site script without CORP", h(X, { type: "text/javascript", body: "window.__a = 1;" }));
+  await script("cross-site script CORP cross-origin", h(X, { type: "text/javascript", body: "window.__b = 1;", corp: "cross-origin" }));
+  L("ran", window.__a, window.__b);
+  L("done");
+})();
+</script></body></html>

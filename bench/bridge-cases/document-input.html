@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Document input handlers</title>
+<textarea id="draft"></textarea><button id="send" disabled>Send</button>
+<output id="echo"></output><ol id="submitted"></ol>
+<script>
+window.__log = [];
+const inputSupported = "oninput" in document;
+const draft = document.getElementById("draft"), send = document.getElementById("send");
+const echo = document.getElementById("echo"), submitted = document.getElementById("submitted");
+function check(name, ok) { __log.push(name + ' ' + !!ok); }
+for (const name of ['oninput', 'onbeforeinput', 'onchange', 'onkeydown', 'onkeyup']) {
+  const descriptor = Object.getOwnPropertyDescriptor(Document.prototype, name);
+  check(name + ' exposed', name in document && !!descriptor?.get && !!descriptor?.set);
+  check(name + ' initially null', document[name] === null);
+}
+let calls = [];
+const other = document.implementation.createHTMLDocument('other');
+const handler = function(e) { calls.push(this === document && e.target === draft); };
+document.oninput = handler;
+check('handler identity', document.oninput === handler);
+check('per document', other.oninput === null);
+draft.dispatchEvent(new Event('input', {bubbles:true}));
+check('bubble dispatch', calls.length === 1 && calls[0]);
+document.oninput = 42;
+check('non object cleared', document.oninput === null);
+document.oninput = null;
+draft.dispatchEvent(new Event('input', {bubbles:true}));
+check('cleared handler', calls.length === 1);
+// Modern input feature detection, delegated editing, and controlled submission.
+// A missing Document.oninput must not silently select a legacy event path.
+const event = inputSupported ? 'input' : 'propertychange';
+document.addEventListener(event, e => {
+  if (e.target !== draft) return;
+  echo.textContent = draft.value;
+  send.disabled = !draft.value.trim();
+});
+send.addEventListener('click', () => {
+  const item = document.createElement('li');
+  item.textContent = echo.textContent;
+  submitted.appendChild(item);
+  draft.value = ''; echo.textContent = ''; send.disabled = true;
+});
+__log.push('done');
+</script>

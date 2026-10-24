@@ -1,0 +1,101 @@
+<!doctype html>
+<!-- The databases idb-profile.html reads (GAPS B168): bench/compare_bridge.py runs this page once in
+     Firefox on a fresh profile (SAVE_PROFILE) and gives a copy of that profile to each side, so the
+     runtime's API process imports what Firefox wrote. Not a case of its own. -->
+<html><head><meta charset="utf-8"><title>idb-profile-seed</title></head><body><p>idb profile seed</p>
+<script>
+(function () {
+  const log = window.__log = [];
+  const P = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const done = tx => new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = tx.onabort = () => rej(tx.error); });
+  const open = (name, version, upgrade) => new Promise((res, rej) => {
+    const r = indexedDB.open(name, version);
+    r.onupgradeneeded = ev => upgrade(r.result, r.transaction, ev.oldVersion);
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+
+  // one value of each kind the structured clone stores, under out-of-line keys of each key type
+  function values() {
+    const shared = { s: 1 };
+    const cyclic = { name: "cyclic" };
+    cyclic.self = cyclic;
+    const buf = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]).buffer;
+    const big = new Uint8Array(1536 * 1024);
+    for (let i = 0; i < big.length; i++) big[i] = (i * 7) & 255;
+    const holes = [1, , 3];
+    holes.length = 5;
+    return [
+      [1, undefined], [2, null], [3, true], [4, false], [5, 0], [6, -0], [7, NaN], [8, Infinity],
+      [9, -Infinity], [10, 1.5], [11, 2 ** 40], [12, -5], [13, 2 ** 31], [14, -(2 ** 31) - 1],
+      [-1, "str"], [-2.5, "lat\u00e9\u00ff"], [-Infinity, "wide\u4e2d\ud83d\ude00"], [Infinity, ""],
+      ["", 10n], ["a", -(2n ** 70n)], ["\u00e9", 0n], ["\u4e2d", 2n ** 64n - 1n], ["\ud83d\ude00", "emoji key"],
+      ["\u0000x", "nul key"], ["\u007f\u0080\u3fff\u4000\uffff", "boundaries"],
+      [new Date(0), { b: 2, a: 1, 2: "two", 1: "one", nested: { deep: [1, { x: "y" }] } }],
+      [new Date(-1e12), holes], [new Date(1.7e12), new Date(1234567890123)],
+      [new Uint8Array([0, 1, 126, 127, 128, 255]), /a+b/dgimsy], [new Uint8Array([]).buffer, /[\p{L}]/v],
+      [[1, "a"], new Boolean(false)], [[[1, [2]], []], new Number(-0.5)], [[new Date(5), "x", [new Uint8Array([9])]], new String("wrapped")],
+      [["a", ["b", ["c", ["d"]]]], Object(5n)],
+      ["map", new Map([[1, "one"], ["k", { v: true }], [shared, shared]])],
+      ["set", new Set([1, "1", shared, [2]])],
+      ["buffers", { ab: buf, u8: new Uint8Array(buf, 2, 3), i16: new Int16Array(buf, 0, 2), f64: new Float64Array([1.5, -2]),
+                    big64: new BigInt64Array([-1n, 2n ** 62n]), ubig: new BigUint64Array([2n ** 64n - 1n]), dv: new DataView(buf, 4, 4),
+                    clamped: new Uint8ClampedArray([300, -5]), f32: new Float32Array([0.5]), i32: new Int32Array([-7]), u32: new Uint32Array([7]),
+                    u16: new Uint16Array([65535]), i8: new Int8Array([-128]) }],
+      ["refs", { a: shared, b: shared, list: [shared, cyclic], cyclic }],
+      ["errors", [new Error("plain"), new TypeError("bad type"), new RangeError("range", { cause: 1 }), new SyntaxError(), new URIError("u"),
+                  new EvalError("e"), new ReferenceError("r")]],
+      ["blob", { blob: new Blob(["blob text"], { type: "text/plain" }),
+                 file: new File(["file\u00e9"], "name.txt", { type: "text/x-test", lastModified: 1700000000000 }) }],
+      ["large", big],
+    ];
+  }
+
+  async function main() {
+    for (const name of ["mrt-p", "mrt-p2"]) await P(indexedDB.deleteDatabase(name));
+    // version 1 with a store version 3 deletes, so that the object_store ids have a gap
+    let db = await open("mrt-p", 1, db => { db.createObjectStore("gone"); db.createObjectStore("out"); });
+    db.close();
+    db = await open("mrt-p", 3, (db, tx, old) => {
+      db.deleteObjectStore("gone");
+      const inline = db.createObjectStore("inline", { keyPath: "id", autoIncrement: true });
+      inline.createIndex("byName", "name", { unique: true });
+      inline.createIndex("byTags", "tags", { multiEntry: true });
+      inline.createIndex("byPair", ["a", "b"]);
+      inline.createIndex("gone", "x");
+      inline.deleteIndex("gone");
+      db.createObjectStore("nested", { keyPath: "a.b" });
+      db.createObjectStore("gen", { autoIncrement: true });
+      db.createObjectStore("pathless", { keyPath: "" });
+    });
+    {
+      const tx = db.transaction(["out", "inline", "nested", "gen", "pathless"], "readwrite");
+      const out = tx.objectStore("out");
+      for (const [k, v] of values()) out.put(v, k);
+      const inline = tx.objectStore("inline");
+      inline.add({ name: "first", tags: ["x", "y", "x"], a: 1, b: "z" });
+      inline.add({ name: "second", tags: "solo", a: 1, b: "a" });
+      inline.add({ id: 10, name: "tenth", tags: [], a: 0 });
+      inline.add({ name: "eleventh", tags: [1, [2], new Date(3)], a: 2, b: 2 });
+      tx.objectStore("nested").put({ a: { b: [1, 2] }, v: "nested key" });
+      tx.objectStore("nested").put({ a: { b: "s" }, v: "string key" });
+      const gen = tx.objectStore("gen");
+      gen.add("g1"); gen.add("g2"); gen.add("g3");
+      gen.put("explicit", 7.5);
+      tx.objectStore("pathless").put("value is key");
+      tx.objectStore("pathless").put(42);
+      await done(tx);
+    }
+    {
+      const tx = db.transaction("gen", "readwrite");
+      tx.objectStore("gen").delete(3);
+      await done(tx);
+    }
+    db.close();
+    db = await open("mrt-p2", 1, db => db.createObjectStore("s").put({ only: "one" }, "k"));
+    db.close();
+    log.push("seeded");
+  }
+  main().catch(e => log.push("seed error " + e.name + ": " + e.message));
+})();
+</script></body></html>

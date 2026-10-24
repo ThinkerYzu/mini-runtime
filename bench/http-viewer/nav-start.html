@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Navigation start</title><style>body{min-height:1600px}</style>
+<button id="scroll-page">Scroll page</button><p id="state">start</p><button id="leave-guard">Block leaving: off</button>
+<p><a id="same" href="/nav-echo?step=same">Same-origin link</a>
+<a id="frag" href="#part">Fragment link</a>
+<a id="blank" href="/nav-echo?step=blank" target="_blank">New window</a>
+<a id="broken" href="http://127.0.0.1:1/unreachable">Unreachable</a>
+<a id="nocontent" href="/nav-nocontent">No content</a>
+<a id="json" href="/nav-json">JSON</a>
+<a id="multipart" href="/nav-echo?step=m&amp;enctype=multipart%2Fform-data&amp;required=1">Multipart form</a>
+<a id="plain" href="/nav-echo?step=p&amp;enctype=text%2Fplain">Plain form</a></p>
+<p><button id="cancelled">Link the page cancels</button></p>
+<p><span id="hashes">0</span> <span id="count">0</span> <button id="increment">Count</button></p>
+<form id="get" action="/nav-echo"><input type="hidden" name="step" value="get"><input id="q" name="q" value="a b&c"><button id="go">Search</button></form>
+<script>
+console.log("NAV_START");
+sessionStorage.setItem("k", "start");
+document.getElementById('scroll-page').onclick=()=>window.scrollTo(0,200);
+let blockLeaving=false;
+document.getElementById('leave-guard').onclick=()=>{
+  blockLeaving=!blockLeaving;
+  document.getElementById('leave-guard').textContent='Block leaving: '+(blockLeaving?'on':'off');
+};
+addEventListener('beforeunload',e=>{if(blockLeaving)e.preventDefault();});
+let count = 0;
+document.getElementById("increment").addEventListener("click", () => { document.getElementById("count").textContent = String(++count); });
+addEventListener("hashchange", () => { document.getElementById("hashes").textContent = location.hash; });
+document.getElementById("cancelled").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = "/nav-echo?step=cancelled";
+  a.addEventListener("click", e => e.preventDefault());
+  document.body.append(a);
+  a.click();
+  document.getElementById("state").textContent = "cancelled click stayed";
+});
+</script>

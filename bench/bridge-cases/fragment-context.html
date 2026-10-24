@@ -1,0 +1,37 @@
+<!doctype html>
+<!-- Markup parsed in the context of an element (innerHTML, outerHTML, insertAdjacentHTML) against
+     release Firefox: bench/compare_bridge.py fragment-context. Gecko's nsContentUtils::ParseFragmentHTML
+     gives the tree builder the context's name and namespace (setFragmentContext), which set the
+     insertion mode and the tokenizer state; <style> and <script> take their text as it is
+     (SetInnerHTMLTrusted). -->
+<html><head><title>fragment-context</title><meta charset="utf-8"></head><body>
+<table id="t"><tbody id="tb"><tr id="tr"><td id="td">x</td></tr></tbody></table>
+<select id="sel"></select>
+<div id="d"><span id="s">s</span></div>
+<svg id="svg"><g id="g"></g></svg>
+<textarea id="ta"></textarea>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const shape = n => [...n.childNodes].map(c => c.nodeType === 1 ? c.localName + (c.namespaceURI === "http://www.w3.org/2000/svg" ? ":svg" : "") + "(" + shape(c) + ")" : c.nodeType === 3 ? JSON.stringify(c.data) : "#" + c.nodeType).join(" ");
+  const tryIt = (what, f) => { try { log(what, "=", f()); } catch (e) { log(what, "threw", e.name, e.message); } };
+  const $ = id => document.getElementById(id);
+  tryIt("tbody rows", () => { $("tb").innerHTML = "<tr><td>a</td><td>b</td></tr><tr><th>c</th></tr>"; return shape($("tb")); });
+  tryIt("tr cells", () => { $("tb").innerHTML = "<tr id=tr2></tr>"; $("tr2").innerHTML = "<td>1</td><td>2</td>"; return shape($("tr2")); });
+  tryIt("table body", () => { $("t").innerHTML = "<tr><td>z</td></tr>"; return shape($("t")); });
+  tryIt("select options", () => { $("sel").innerHTML = "<option>o1</option><optgroup label=g><option>o2</option></optgroup><div>no</div>"; return shape($("sel")); });
+  tryIt("textarea", () => { $("ta").innerHTML = "<b>&amp;</b>"; return JSON.stringify($("ta").value) + " " + shape($("ta")); });
+  tryIt("title", () => { const t = document.createElement("title"); t.innerHTML = "<i>&lt;x</i>"; return shape(t); });
+  tryIt("style", () => { const s = document.createElement("style"); s.innerHTML = "a > b { content: '<i>&amp;</i>' }\r\n"; return shape(s) + " " + JSON.stringify(s.innerHTML); });
+  tryIt("script", () => { const s = document.createElement("script"); s.innerHTML = "if (a < b && c) {}"; return shape(s); });
+  tryIt("svg g", () => { $("g").innerHTML = "<rect/><foreignObject><div>h</div></foreignObject>"; return shape($("g")); });
+  tryIt("template", () => { const t = document.createElement("template"); t.innerHTML = "<tr><td>t</td></tr>"; return shape(t.content); });
+  tryIt("insertAdjacentHTML afterend of tr", () => { $("t").innerHTML = "<tbody><tr id=tr3><td>1</td></tr></tbody>"; $("tr3").insertAdjacentHTML("afterend", "<tr><td>2</td></tr>"); return shape($("t")); });
+  tryIt("insertAdjacentHTML beforeend of tr", () => { $("tr3").insertAdjacentHTML("beforeend", "<td>3</td>"); return shape($("tr3")); });
+  tryIt("insertAdjacentHTML of html", () => { const h = document.documentElement; h.insertAdjacentHTML("beforeend", "<p id=late>p</p>"); const p = $("late"); const r = p.parentNode.localName; p.remove(); return r; });
+  tryIt("outerHTML in a tbody", () => { $("tr3").outerHTML = "<tr><td>o</td></tr>"; return shape($("t")); });
+  tryIt("outerHTML of the root", () => { document.documentElement.outerHTML = "<html></html>"; return "set"; });
+  tryIt("div plain", () => { $("d").innerHTML = "<p>a<p>b"; return shape($("d")); });
+  tryIt("noscript in a div", () => { $("d").innerHTML = "<noscript><b>n</b></noscript>"; return shape($("d")); });
+  log("done");
+</script></body></html>

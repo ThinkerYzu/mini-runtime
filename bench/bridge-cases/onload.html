@@ -1,0 +1,55 @@
+<!doctype html>
+<!-- The window's load event against release Firefox: bench/compare_bridge.py onload (Gecko's onload
+     blockers, Document::BlockOnload and the document's load group). Before the load, the page inserts a
+     script (which inserts another), sends an async XMLHttpRequest, inserts a stylesheet link, a frame of
+     its own origin (onload-child.html, which inserts a script of its own) and a cross-origin one (the same
+     page on 127.0.0.1); a frame in its HTML loads too. Each must be done before the window's load; the order among them depends on the
+     network in Firefox, so they are logged sorted, at the load. An element's load event does not reach the
+     window (Document::GetEventTargetParent). -->
+<html><head><title>onload</title><meta charset="utf-8"></head>
+<body>
+<iframe id="parsed" src="onload-child.html"></iframe>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  let loaded = false;
+  const done = [];
+  const mark = name => done.push(name + " before load " + !loaded + " " + document.readyState);
+  window.__mark = mark;
+  let atWindow = 0;
+  window.addEventListener("load", e => { if (e.target !== document) atWindow++; }, true);
+  const s = document.createElement("script");
+  s.src = "onload-a.js";
+  s.onload = () => mark("script a load event");
+  document.head.appendChild(s);
+  const x = new XMLHttpRequest();
+  x.open("GET", "onload-a.js");
+  x.onloadend = () => mark("xhr loadend " + x.status);
+  x.send();
+  const l = document.createElement("link");
+  l.rel = "stylesheet";
+  l.href = "link-sheets-late.css";
+  l.onload = () => mark("link load");
+  document.head.appendChild(l);
+  const f = document.createElement("iframe");
+  f.src = "onload-child.html";
+  f.onload = () => mark("frame load, its script ran " + f.contentWindow.childScript + ", its readyState " + f.contentDocument.readyState);
+  document.body.appendChild(f);
+  const xf = document.createElement("iframe");
+  xf.src = location.href.replace("localhost", "127.0.0.1").replace("onload.html", "onload-child.html");
+  xf.onload = () => mark("cross-origin frame load");
+  document.body.appendChild(xf);
+  const pf = document.getElementById("parsed");
+  log("parsed", document.readyState, "the parsed frame's window", typeof pf.contentWindow);
+  pf.addEventListener("load", () => mark("parsed frame load, its script ran " + pf.contentWindow.childScript));
+  window.addEventListener("load", () => {
+    loaded = true;
+    log("load", document.readyState, "element loads seen at the window", atWindow);
+    for (const line of done.sort()) log(line);
+    // inserted after the load: not waited for, and its load comes after
+    const late = document.createElement("script");
+    late.src = "onload-b.js?late";
+    late.onload = () => { log("late script load"); log("done"); };
+    document.head.appendChild(late);
+  });
+</script></body></html>

@@ -1,0 +1,4 @@
+#a { display: block; width: 300px; height: 20px; padding: 5px; }
+#order { width: 111px; }
+custom-app { display: block; width: 400px; }
+custom-app .clamp { overflow: hidden; max-height: 40px; line-height: 20px; }

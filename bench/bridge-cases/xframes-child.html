@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><title>xchild</title><meta charset="utf-8"></head><body><p>cross-origin child</p>
+<script>
+  let parentDoc;
+  try { parentDoc = typeof parent.document; } catch (e) { parentDoc = e.name; }
+  window.addEventListener("message", e => {
+    parent.postMessage({ pong: e.data, from: location.host.split(":")[0], sawOrigin: e.origin.split(":")[1], sourceIsParent: e.source === parent }, "*");
+  });
+  parent.postMessage({ hello: true, parentDoc, top: top === parent, frames: window.frames === window }, "*");
+</script></body></html>

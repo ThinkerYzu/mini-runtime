@@ -1,0 +1,78 @@
+<!doctype html>
+<!-- Same-origin frames against release Firefox: bench/compare_bridge.py iframes (DESIGN, "Same-origin
+     frames: the build plan"). A frame without src and its initial about:blank document, the windows'
+     relations, document.open/write/close on it, each window's own interfaces, a node adopted from
+     the frame's document, a srcdoc frame, a same-origin src frame and the load events' order,
+     timers and listeners across windows, removal. -->
+<html><head><title>iframes</title><meta charset="utf-8"></head>
+<body>
+<div id="host"></div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const events = [];
+  const host = document.getElementById("host");
+
+  // 1. a frame without src: its initial about:blank, made at insertion
+  const f = document.createElement("iframe");
+  log("before insert", f.contentWindow === null, f.contentDocument === null);
+  f.addEventListener("load", () => events.push("blank load"));
+  host.appendChild(f);
+  const cw = f.contentWindow, cd = f.contentDocument;
+  log("after insert", cw !== null, cd !== null, cd === cw.document, cd.URL, cd.readyState, cd.compatMode, cd.characterSet);
+  log("blank document", cd.documentElement.outerHTML);
+  log("relations", cw.frameElement === f, cw.parent === window, cw.top === window, window.frames.length, window.length, window[0] === cw, cw.frames.length, window.frameElement);
+  log("origin", cw.location.href, cw.origin === window.origin);
+
+  // 2. each window its own interfaces; a node adopted into the page's document
+  const div = cd.createElement("div");
+  log("frame interfaces", div instanceof cw.HTMLDivElement, div instanceof HTMLDivElement, cd.body instanceof cw.HTMLBodyElement, cw.HTMLElement !== HTMLElement, div.ownerDocument === cd);
+  host.appendChild(div);
+  log("adopted", div.ownerDocument === document, div instanceof HTMLDivElement, Object.getPrototypeOf(div) === HTMLDivElement.prototype);
+
+  // 3. document.open, write, close on the frame's document (Gmail's FontSizeMonitor opens and closes it)
+  cd.open();
+  cd.write("<!doctype html><html><head><title>written</title></head><body><p id=w>written <b>text</b></p>");
+  cd.write("<span>second</span>");
+  cd.close();
+  log("written", cd.title, cd.body.innerHTML, cd.getElementById("w") !== null, cd.compatMode, cw.document === cd);
+
+  // 4. timers and listeners across windows
+  cw.setTimeout(() => events.push("frame timer"), 0);
+  cd.body.addEventListener("click", e => events.push("frame click " + (e.target === cd.body)));
+  cd.body.dispatchEvent(new cw.Event("click"));
+  cd.body.click();
+
+  // 5. a srcdoc frame and a same-origin src frame: their load events come later
+  const s = document.createElement("iframe");
+  s.srcdoc = "<p id=s>from srcdoc</p><script>window.fromSrcdoc = 7;<\/script>";
+  s.onload = () => { events.push("srcdoc load"); log("srcdoc", s.contentDocument.getElementById("s").textContent, s.contentWindow.fromSrcdoc, s.contentDocument.URL); };
+  host.appendChild(s);
+  log("srcdoc before load", s.contentDocument.URL, s.contentDocument.body === null ? "no body" : s.contentDocument.body.innerHTML);
+  const loads = [];
+  const c = document.createElement("iframe");
+  c.onload = () => {
+    loads.push("child load");
+    const d = c.contentDocument;
+    log("child", d.title, d.getElementById("c").getAttribute("data-ran"), c.contentWindow.childValue, c.contentWindow.parentSaw, d.URL.replace(/^.*\//, ""));
+  };
+  c.src = "iframes-child.html";
+  host.appendChild(c);
+  log("frames", window.frames.length, window[2] === c.contentWindow);
+
+  // 6. a src set on a frame already in the document navigates it (AfterSetAttr, LoadSrc)
+  const late = document.createElement("iframe");
+  host.appendChild(late);
+  late.onload = () => loads.push("late " + late.contentDocument.title);
+  late.src = "iframes-child.html";
+
+  // 7. removal closes the frame's window
+  setTimeout(() => {
+    const w = s.contentWindow;
+    s.remove();
+    log("removed", s.contentWindow === null, s.contentDocument === null, w.closed, window.frames.length);
+    // the two src frames' loads sorted: which of two fetches answers first depends on the network
+    log("events", events.join(", "), "| loads", loads.sort().join(", "));
+    log("done");
+  }, 500);
+</script></body></html>

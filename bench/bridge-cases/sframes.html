@@ -1,0 +1,55 @@
+<!doctype html>
+<!-- Frames of the same site and another origin against release Firefox: bench/compare_bridge.py
+     sframes (SPEC decision 19: in the page's runtime, as Firefox keeps a site's frames in its
+     process). The page is on localhost, the frame on localhost at another port (the same site,
+     another origin): the cross-origin WindowProxy between them, postMessage both ways with origin
+     and source, each origin's own localStorage, and a frame inside the frame of the page's origin,
+     which reaches the page directly. -->
+<html><head><title>sframes</title><meta charset="utf-8"></head>
+<body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const port = location.port;
+  // the second server's port (compare_bridge.py's SECOND_PORT)
+  const other = new URLSearchParams(location.search).get("other");
+  localStorage.clear();
+  localStorage.setItem("who", "page");
+  const f = document.createElement("iframe");
+  f.src = `http://localhost:${other}/sframes-child.html?page=${port}`;
+  // the child's "hello", posted while it loads: logged at the end (as in xframes)
+  let hello = null, portLine = null;
+  const port_of = o => o.split(":")[2] === port ? "page" : o.split(":")[2] === other ? "other" : o;
+  window.addEventListener("message", e => {
+    const d = e.data;
+    // a cross-origin window's [0] throws while it has no frame (CrossOriginPropertyFallback)
+    let inner;
+    try { inner = e.source === f.contentWindow[0]; } catch (err) { inner = err.name; }
+    const line = ["message", JSON.stringify(d), port_of(e.origin), e.source === f.contentWindow, inner].join(" ");
+    if (d.hello) { hello = line; return; }
+    log(line);
+    if (d.grandchild) {
+      log(hello);
+      log(portLine);
+      log("page storage", localStorage.getItem("who"));
+      log("done");
+    }
+  });
+  f.onload = () => {
+    const w = f.contentWindow;
+    log("load", f.contentDocument === null, typeof w, w === f.contentWindow, w.closed, w.length, w.window === w, w.parent === window, w.top === window);
+    for (const p of ["document", "location.href", "name", "localStorage"]) {
+      try { const v = p === "location.href" ? w.location.href : w[p]; log("read", p, "no throw", typeof v); } catch (e) { log("read", p, e.name); }
+    }
+    try { w.foo = 1; log("write no throw"); } catch (e) { log("write", e.name); }
+    w.postMessage("ping 1", "http://example.com");
+    // a port transferred with the message: the child answers on it
+    const channel = new MessageChannel();
+    // (Gecko's ports go through its MessagePort service, later than window messages: logged at the end)
+    channel.port1.onmessage = e => { portLine = "port " + JSON.stringify(e.data); };
+    w.postMessage("port", "*", [channel.port2]);
+    w.postMessage("ping 2", "*");
+  };
+  document.body.appendChild(f);
+  log("inserted", f.contentDocument === null);
+</script></body></html>

@@ -1,0 +1,142 @@
+<!doctype html>
+<!-- CompressionStream and DecompressionStream (Gecko's dom/compression) against release Firefox:
+     bench/compare_bridge.py compression. The interfaces and their constructor's errors; each format's
+     bytes for a short text, an empty input and 100 KB of noise (Gecko's 16 KB output chunks); round
+     trips; the chunk type errors; corrupt, truncated and trailing input; the sites' two patterns,
+     a Response's body piped through the stream into a Response (Facebook's Banzai, Google's ega) and
+     a writer's write and close with the readable in a Response (Google's log pings); a worker
+     (compression-worker.js). -->
+<html><head><meta charset="utf-8"><title>compression</title></head><body><p>compression test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : String(e);
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const tick = ms => new Promise(r => setTimeout(r, ms));
+  const settle = p => p.then(v => "resolved " + J(v), e => "rejected " + E(e));
+  const hex = b => Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  // FNV-1a of the bytes, to log a long output
+  const fnv = b => { let h = 0x811c9dc5; for (const x of b) { h ^= x; h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16); };
+  const concat = chunks => { const n = chunks.reduce((a, c) => a + c.length, 0), out = new Uint8Array(n); let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; } return out; };
+  // write each input, close, and read every chunk the readable gives
+  const run = async (stream, inputs) => {
+    const w = stream.writable.getWriter(), r = stream.readable.getReader(), chunks = [];
+    const reading = (async () => { for (;;) { const { value, done } = await r.read(); if (done) return; chunks.push(value); } })();
+    const writes = [];
+    for (const i of inputs) writes.push(w.write(i).catch(e => { throw e; }));
+    writes.push(w.close());
+    let error = null;
+    try { await Promise.all(writes); await reading; } catch (e) { error = e; }
+    try { await reading; } catch (e) { error = error || e; }
+    return { chunks, error };
+  };
+  const shown = ({ chunks, error }) => {
+    const all = concat(chunks.filter(c => c instanceof Uint8Array));
+    return J({ chunks: chunks.map(c => Object.prototype.toString.call(c) + " " + c.length), bytes: all.length <= 64 ? hex(all) : fnv(all) + " " + all.length, error: error && E(error) });
+  };
+  const text = "Hello, hello, hello compression streams! ".repeat(20);
+  const bytes = new TextEncoder().encode(text);
+  // 100 KB that does not compress (xorshift)
+  const noise = new Uint8Array(100000);
+  { let s = 12345; for (let i = 0; i < noise.length; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; noise[i] = s & 255; } }
+  const formats = ["deflate", "deflate-raw", "gzip", "brotli"];
+
+  L("interfaces", J([typeof CompressionStream, typeof DecompressionStream, CompressionStream.length, DecompressionStream.length,
+                     Object.getOwnPropertyNames(CompressionStream.prototype).sort(), Object.getOwnPropertyNames(DecompressionStream.prototype).sort(),
+                     Object.prototype.toString.call(CompressionStream.prototype), String(new CompressionStream("gzip")),
+                     Object.getPrototypeOf(CompressionStream) === Function.prototype]));
+  T("descriptor", () => { const d = Object.getOwnPropertyDescriptor(CompressionStream.prototype, "readable"); return [typeof d.get, d.set, d.enumerable, d.configurable, d.get.name]; });
+  T("instance", () => { const c = new CompressionStream("deflate"); return [Object.keys(c), c.readable instanceof ReadableStream, c.writable instanceof WritableStream, c.readable === c.readable, c instanceof CompressionStream, c instanceof TransformStream]; });
+  T("no new", () => CompressionStream("gzip"));
+  T("no argument", () => new CompressionStream());
+  T("bad format", () => new CompressionStream("lz4"));
+  T("upper case", () => new DecompressionStream("GZIP"));
+  T("zstd compress", () => new CompressionStream("zstd"));
+  T("zstd decompress", () => new DecompressionStream("zstd"));
+  T("format object", () => [new CompressionStream({ toString: () => "gzip" }) instanceof CompressionStream]);
+  T("wrong this", () => Object.getOwnPropertyDescriptor(CompressionStream.prototype, "readable").get.call(new DecompressionStream("gzip")));
+  T("wrong this plain", () => Object.getOwnPropertyDescriptor(DecompressionStream.prototype, "writable").get.call({}));
+
+  for (const f of formats) {
+    L("compress", f, shown(await run(new CompressionStream(f), [bytes])));
+    L("compress two writes", f, shown(await run(new CompressionStream(f), [bytes.subarray(0, 100), bytes.subarray(100)])));
+    L("compress empty", f, shown(await run(new CompressionStream(f), [])));
+    L("compress empty chunk", f, shown(await run(new CompressionStream(f), [new Uint8Array(0)])));
+    const big = await run(new CompressionStream(f), [noise]);
+    L("compress noise", f, shown(big));
+    const back = await run(new DecompressionStream(f), [concat(big.chunks)]);
+    L("round trip noise", f, J({ chunks: back.chunks.map(c => c.length), same: fnv(concat(back.chunks)) === fnv(noise), error: back.error && E(back.error) }));
+    const small = concat((await run(new CompressionStream(f), [bytes])).chunks);
+    // one byte at a time
+    const bytewise = await run(new DecompressionStream(f), Array.from(small, (_, i) => small.subarray(i, i + 1)));
+    L("decompress bytewise", f, J({ chunks: bytewise.chunks.length, text: new TextDecoder().decode(concat(bytewise.chunks)) === text, error: bytewise.error && E(bytewise.error) }));
+    L("decompress truncated", f, shown(await run(new DecompressionStream(f), [small.subarray(0, small.length - 3)])));
+    const trailing = new Uint8Array(small.length + 2); trailing.set(small); trailing[small.length] = 1; trailing[small.length + 1] = 2;
+    L("decompress trailing", f, shown(await run(new DecompressionStream(f), [trailing])));
+    L("decompress trailing write", f, shown(await run(new DecompressionStream(f), [small, new Uint8Array([7])])));
+    L("decompress empty", f, shown(await run(new DecompressionStream(f), [])));
+    const corrupt = small.slice(); corrupt[Math.min(4, corrupt.length - 1)] ^= 0xff; corrupt[corrupt.length >> 1] ^= 0x55;
+    L("decompress corrupt", f, shown(await run(new DecompressionStream(f), [corrupt])));
+    L("decompress noise", f, shown(await run(new DecompressionStream(f), [noise.subarray(0, 50)])));
+  }
+  // what a chunk may be
+  for (const [name, chunk] of [["string", "abc"], ["number", 5], ["null", null], ["array", [1, 2]], ["ArrayBuffer", bytes.buffer.slice(0, 10)],
+                               ["DataView", new DataView(bytes.buffer, 2, 8)], ["Int16Array", new Int16Array([1, 2, 3])], ["Float64Array", new Float64Array([1.5])],
+                               ["Blob", new Blob(["x"])]]) {
+    L("chunk", name, shown(await run(new CompressionStream("deflate-raw"), [chunk])));
+  }
+  // the writer after an error
+  {
+    const d = new DecompressionStream("deflate"), w = d.writable.getWriter(), r = d.readable.getReader();
+    // read at once: a transform's write waits for a read (backpressure)
+    const [first, read] = await Promise.all([settle(w.write(new Uint8Array([1, 2, 3, 4]))), settle(r.read())]);
+    L("after error", first, read, await settle(w.write(new Uint8Array([1]))), await settle(w.closed), await settle(r.closed));
+  }
+  // a gzip header's fields, and a zlib stream with a preset dictionary
+  {
+    const g = concat((await run(new CompressionStream("gzip"), [bytes])).chunks);
+    L("gzip header", hex(g.subarray(0, 10)), "trailer", hex(g.subarray(g.length - 8)));
+    // 78 bb: FDICT set, then a dictionary id
+    L("preset dictionary", shown(await run(new DecompressionStream("deflate"), [new Uint8Array([0x78, 0xbb, 0, 0, 0, 1, 3, 0])])));
+    // two gzip members back to back: the second is trailing input
+    L("two gzip members", shown(await run(new DecompressionStream("gzip"), [concat([g, g])])));
+  }
+  // the sites' patterns
+  {
+    const s = JSON.stringify({ posts: [[1, "event", { a: "x".repeat(500) }]] });
+    const piped = new Response(s).body.pipeThrough(new CompressionStream("deflate"));
+    const ab = await new Response(piped).arrayBuffer();
+    L("banzai", Object.prototype.toString.call(ab), ab.byteLength, fnv(new Uint8Array(ab)), ab.byteLength < s.length);
+    const blob = await new Response(new Response(s).body.pipeThrough(new CompressionStream("gzip"))).blob();
+    L("ega blob", Object.prototype.toString.call(blob), blob.size, J(blob.type), fnv(new Uint8Array(await blob.arrayBuffer())));
+    const c = new CompressionStream("gzip"), out = new Response(c.readable).arrayBuffer(), w = c.writable.getWriter();
+    await w.write(new TextEncoder().encode(s)); await w.close();
+    const u = new Uint8Array(await out);
+    L("log ping", u.length, fnv(u));
+    const r = new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream("gzip")));
+    L("blob stream back", (await r.text()) === s, r.bodyUsed, J(r.headers.get("content-type")));
+    L("response of a locked stream", await settle(Promise.resolve().then(() => new Response(c.readable).text())));
+  }
+  T("response of a used stream", () => { const rs = new ReadableStream(); rs.getReader(); return new Response(rs); });
+  {
+    const rs = new ReadableStream({ start(c) { c.enqueue("not bytes"); c.close(); } });
+    L("response of string chunks", await settle(new Response(rs).text()));
+    const rs2 = new ReadableStream({ start(c) { c.enqueue(new Uint8Array([104, 105])); c.enqueue(new Uint8Array([33])); c.close(); } });
+    const r2 = new Response(rs2);
+    L("response of a stream", r2.body === rs2, await settle(r2.text()), r2.bodyUsed, await settle(r2.text()));
+    const rs3 = new ReadableStream({ start(c) { c.error(new TypeError("boom")); } });
+    L("response of an errored stream", await settle(new Response(rs3).arrayBuffer()));
+  }
+  // in a worker
+  {
+    const w = new Worker("compression-worker.js");
+    const got = await Promise.race([new Promise(resolve => { w.onmessage = e => resolve(e.data); w.onerror = e => resolve("error " + e.message); }), tick(3000).then(() => "timeout")]);
+    w.terminate();
+    L("worker", J(got));
+  }
+  L("done");
+})();
+</script>
+</body></html>

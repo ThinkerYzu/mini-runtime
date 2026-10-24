@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- The bridge's APIs inside a dedicated worker (W2; GAPS B82) against release Firefox:
+     bench/compare_bridge.py worker-apis (with bench/ws_echo.py on ?ws=PORT). In the worker
+     (worker-apis-worker.js): which names exist; fetch (a file, a 404, a Request, blob()); XHR (async
+     with its readyState steps, sync, an arraybuffer); a Blob, FileReader (text, data URL, array buffer,
+     binary string, the events and their order, a second read while busy, abort, a non-Blob) and
+     FileReaderSync; crypto (getRandomValues, randomUUID, digest, AES-GCM, HMAC); IndexedDB (an upgrade,
+     a put with a Blob, a get, a delete); a WebSocket to the echo server; a nested worker, a nested
+     blob: worker and a port sent to a nested worker; a Blob posted to the page. In the page: FileReader. -->
+<html><head><meta charset="utf-8"><title>worker-apis</title></head><body><p>worker apis test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : "null";
+  const ws = new URLSearchParams(location.search).get("ws");
+  // FileReader in the window
+  if (typeof FileReader !== "function") L("window FileReader", typeof FileReader);
+  else {
+    const fr = new FileReader();
+    const got = [];
+    for (const t of ["loadstart", "progress", "load", "loadend"]) fr.addEventListener(t, () => got.push(t + fr.readyState));
+    await new Promise(r => { fr.onloadend = r; fr.readAsText(new Blob(["window text"])); });
+    L("window FileReader", J([fr.result, got, FileReader.EMPTY, FileReader.LOADING, FileReader.DONE, typeof FileReaderSync,
+                             Object.getPrototypeOf(FileReader.prototype) === EventTarget.prototype, Object.prototype.toString.call(fr)]));
+  }
+  const w = new Worker("worker-apis-worker.js");
+  await new Promise(resolve => {
+    w.onmessage = async e => {
+      if (typeof e.data === "string") { L(e.data.replace(location.origin, "<origin>")); if (e.data === "done") resolve(); }
+      else if (e.data && e.data.blob) L("blob from worker", J([e.data.blob.size, e.data.blob.type, await e.data.blob.text()]));
+    };
+    w.onerror = e => { L("worker error", e.message); resolve(); };
+    w.postMessage({ ws });
+  });
+  await new Promise(r => setTimeout(r, 100));
+  L("end");
+})();
+</script>
+</body></html>

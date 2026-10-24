@@ -1,0 +1,76 @@
+diff --git a/layout/base/PresShell.cpp b/layout/base/PresShell.cpp
+index 5b52c35994ce5..c3f961ae18daf 100644
+--- a/layout/base/PresShell.cpp
++++ b/layout/base/PresShell.cpp
+@@ -6,6 +6,10 @@
+ 
+ #include "PresShell.h"
+ 
++#include <unordered_map>
++#include "nsTextFrame.h"
++#include "gfxTextRun.h"
++
+ #include <algorithm>
+ 
+ #include "AnchorPositioningUtils.h"
+@@ -12080,8 +12084,58 @@ size_t PresShell::SizeOfTextRuns(MallocSizeOf aMallocSizeOf) const {
+                                          /* clear = */ true);
+ 
+   // collect the total memory in use for textruns
+-  return nsLayoutUtils::SizeOfTextRunsForFrames(rootFrame, aMallocSizeOf,
+-                                                /* clear = */ false);
++  size_t total = nsLayoutUtils::SizeOfTextRunsForFrames(
++      rootFrame, aMallocSizeOf, /* clear = */ false);
++  if (const char* path = getenv("HIB_TEXTRUN_STATS")) {
++    // Counting patch (bench/firefox_textruns.patch, not committed): count what the walk above reaches.
++    struct Walk {
++      static void Go(nsIFrame* aFrame, std::unordered_map<void*, uint32_t>& aFramesPerRun,
++                     std::unordered_map<void*, uint32_t>& aFlowsPerRun, uint64_t& aTextFrames,
++                     uint64_t& aFramesWithRun, uint64_t& aFlows, uint64_t& aContinuing) {
++        if (aFrame->IsTextFrame()) {
++          auto* tf = static_cast<nsTextFrame*>(aFrame);
++          aTextFrames++;
++          bool first = !tf->GetPrevContinuation();
++          if (first) aFlows++; else aContinuing++;
++          gfxTextRun* run = tf->GetTextRun(nsTextFrame::eNotInflated);
++          if (run) {
++            aFramesWithRun++;
++            aFramesPerRun[run]++;
++            if (first) aFlowsPerRun[run]++;
++          }
++          return;
++        }
++        for (const auto& list : aFrame->ChildLists())
++          for (nsIFrame* f : list.mList)
++            Go(f, aFramesPerRun, aFlowsPerRun, aTextFrames, aFramesWithRun, aFlows, aContinuing);
++      }
++    };
++    std::unordered_map<void*, uint32_t> framesPerRun, flowsPerRun;
++    uint64_t textFrames = 0, framesWithRun = 0, flows = 0, continuing = 0;
++    Walk::Go(rootFrame, framesPerRun, flowsPerRun, textFrames, framesWithRun, flows, continuing);
++    uint64_t chars = 0, multiFrame = 0, multiFlow = 0, maxFrames = 0;
++    for (auto& kv : framesPerRun) {
++      chars += static_cast<gfxTextRun*>(kv.first)->GetLength();
++      if (kv.second > 1) multiFrame++;
++      if (kv.second > maxFrames) maxFrames = kv.second;
++    }
++    for (auto& kv : flowsPerRun) if (kv.second > 1) multiFlow++;
++    nsAutoCString spec;
++    if (mDocument && mDocument->GetDocumentURI()) mDocument->GetDocumentURI()->GetSpec(spec);
++    if (FILE* f = fopen(path, "a")) {
++      fprintf(f, "{\"url\": \"%s\", \"runs\": %zu, \"chars\": %llu, \"text_frames\": %llu, "
++                 "\"frames_with_run\": %llu, \"flows\": %llu, \"continuing_frames\": %llu, "
++                 "\"runs_multi_frame\": %llu, \"runs_multi_flow\": %llu, \"max_frames\": %llu, "
++                 "\"reported_bytes\": %zu}\n",
++              spec.get(), framesPerRun.size(), (unsigned long long)chars,
++              (unsigned long long)textFrames, (unsigned long long)framesWithRun,
++              (unsigned long long)flows, (unsigned long long)continuing,
++              (unsigned long long)multiFrame, (unsigned long long)multiFlow,
++              (unsigned long long)maxFrames, total);
++      fclose(f);
++    }
++  }
++  return total;
+ }
+ 
+ void PresShell::MarkPositionedFrameForReflow(nsIFrame* aFrame) {

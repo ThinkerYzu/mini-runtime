@@ -1,0 +1,78 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>scroll</title>
+<style>
+  body { margin: 0; height: 5000px; font: 16px sans-serif; }
+  #start { position: absolute; top: 10px; left: 10px; width: 300px; height: 300px; background: #eee; }
+  #f { position: fixed; top: 10px; right: 10px; width: 120px; height: 40px; background: #ccf; }
+  #go { position: fixed; top: 60px; right: 10px; width: 120px; height: 40px; }
+  /* (#a 101 px high: centred in the 869 px viewport it scrolls to a whole pixel; a half pixel reads
+     615 in Firefox, then 616 after a scrollIntoView that does not move, GAPS B155) */
+  #a, #b { position: absolute; left: 400px; width: 200px; height: 101px; background: #cfc; }
+  #a { top: 1000px; }
+  #b { top: 2600px; }
+</style>
+<!-- Scrolling (Phase 5.4, task 846d): the owner's wheel turns, done with WebDriver actions
+     (scroll.actions.json) in Firefox's tab and in the bridge tab, which gives the runtime its offset;
+     then the page's own scrolling, started by a click on a fixed button: scrollTo, scrollBy, the
+     scrolling element's scrollTop, scrollIntoView, a clamped scrollTo. Logged: the scroll and
+     scrollend events at the window (once a step: a wheel turn scrolls smoothly, through positions
+     that differ from run to run), the offsets, the client rectangles of a static and a fixed element,
+     elementFromPoint and the IntersectionObserver entries. -->
+<div id="start">start</div>
+<div id="f">fixed</div>
+<button id="go">go</button>
+<div id="a">a</div>
+<div id="b">b</div>
+<script>
+window.__log = [];
+let on = false, step = "load", seen = new Set();
+const log = s => { if (on) window.__log.push(s); };
+const desc = n => !n ? String(n) : n === window ? "window" : n === document ? "document" : n.id ? "#" + n.id : n.localName || n.nodeName;
+const top_ = id => Math.round(document.getElementById(id).getBoundingClientRect().top);
+const state = what => log(`${what}: scrollX=${scrollX} scrollY=${scrollY} pageYOffset=${pageYOffset} scrollTop=${document.scrollingElement.scrollTop}`
+  + ` a.top=${top_("a")} b.top=${top_("b")} f.top=${top_("f")} at(450,${top_("a") + 50})=${desc(document.elementFromPoint(450, top_("a") + 50))}`
+  + ` at(20,20)=${desc(document.elementFromPoint(20, 20))} at(1300,20)=${desc(document.elementFromPoint(document.documentElement.clientWidth - 70, 20))}`);
+for (const type of ["scroll", "scrollend"]) {
+  window.addEventListener(type, e => {
+    if (seen.has(type)) return;
+    seen.add(type);
+    log(`${step}: ${type} ${e.constructor.name} target=${desc(e.target)} phase=${e.eventPhase} bubbles=${e.bubbles} cancelable=${e.cancelable} isTrusted=${e.isTrusted}`);
+  });
+}
+// the end of a wheel turn's smooth scrolling
+window.addEventListener("scrollend", () => { if (step.startsWith("wheel")) state(`${step} end`); });
+new IntersectionObserver(entries => {
+  for (const e of entries) log(`${step}: io ${desc(e.target)} isIntersecting=${e.isIntersecting} ratio=${e.intersectionRatio > 0 ? ">0" : 0}`);
+}).observe(document.getElementById("a"));
+const nextStep = name => { step = name; seen = new Set(); };
+window.addEventListener("pointermove", e => {
+  if (!on && e.target === document.getElementById("start")) setTimeout(() => { on = true; state("start"); nextStep("wheel down"); }, 0);
+});
+window.addEventListener("wheel", e => { if (step === "page done") nextStep("wheel up"); });
+// the page's own scrolling, one step every 400 ms: the offset right after the call, then the state the
+// step's first scroll event finds
+const steps = [
+  ["scrollTo(0, 2000)", () => scrollTo(0, 2000)],
+  ["scrollBy({top: -500})", () => scrollBy({ top: -500 })],
+  ["scrollTop = 100.6", () => { document.scrollingElement.scrollTop = 100.6; }],
+  ["b.scrollIntoView()", () => document.getElementById("b").scrollIntoView()],
+  ["a.scrollIntoView(center)", () => document.getElementById("a").scrollIntoView({ block: "center" })],
+  ["a.scrollIntoView(nearest)", () => document.getElementById("a").scrollIntoView({ block: "nearest" })],
+  ["scroll({top: 99999})", () => scroll({ top: 99999 })],
+  ["scrollTo(NaN, 300)", () => scrollTo(NaN, 300)],
+];
+document.getElementById("go").addEventListener("click", () => {
+  let i = 0;
+  const run = () => {
+    if (i === steps.length) { state("page end"); nextStep("page done"); return; }
+    const [name, fn] = steps[i++];
+    nextStep(name);
+    fn();
+    log(`${name}: right after scrollY=${scrollY}`);
+    setTimeout(run, 400);
+  };
+  run();
+});
+window.addEventListener("scroll", () => { if (!step.startsWith("wheel") && !step.startsWith("page") && seen.size === 1) state(`${step} at scroll`); });
+</script>

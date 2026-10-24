@@ -1,0 +1,84 @@
+<!doctype html>
+<!-- Absolutely and fixed positioned boxes (GAPS C3, session 54) against release Firefox:
+     bench/compare_bridge.py abspos. Each box's getBoundingClientRect. Since session 59 the runtime is
+     laid out at the bridge tab's viewport (GAPS B28), so fixed boxes are logged where they are, with
+     the viewport's size. -->
+<html><head><title>abspos</title>
+<style>
+  body { margin: 8px; font: 16px/20px sans-serif; width: 600px; }
+  .cb { position: relative; border: 3px solid; padding: 5px 7px 9px 11px; margin: 4px 0; height: 60px; }
+  .k { background: #ccc; }
+  #a1 { position: absolute; left: 10px; top: 6px; width: 30px; height: 20px; }
+  #a2 { position: absolute; right: 0; bottom: 0; width: 30px; height: 20px; }
+  #a3 { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
+  #a4 { position: absolute; right: 5px; top: 5px; }
+  #a5 { position: absolute; width: 50%; height: 50%; left: 25%; top: 10%; }
+  #a6 { position: absolute; left: 0; right: 0; width: 100px; margin: 0 auto; top: 0; height: 10px; }
+  #a7 { position: absolute; }
+  #a8 { position: absolute; display: inline; }
+  #a9 { position: absolute; top: 0; left: 0; padding: 4px; border: 2px solid; box-sizing: border-box; width: 50px; height: 30px; }
+  #f1 { position: fixed; bottom: 0; right: 0; width: 40px; height: 10px; }
+  #f2 { position: fixed; top: 0; left: 0; right: 0; height: 12px; }
+  #t { transform: translateX(0); height: 80px; border: 1px solid; }
+  #t3 { position: fixed; bottom: 0; left: 0; width: 20px; height: 10px; }
+  #flex { display: flex; position: relative; height: 50px; justify-content: center; align-items: flex-end; }
+  #flexkid { position: absolute; width: 20px; height: 10px; }
+  #inl { position: relative; padding: 2px; border: 1px solid; }
+  #inlkid { position: absolute; left: 3px; top: 4px; width: 7px; height: 8px; }
+  #nested { position: absolute; left: 20px; top: 30px; width: 200px; height: 100px; padding: 10px; }
+  #nestedkid { position: absolute; right: 10%; bottom: 0; width: 25%; height: 20px; }
+  #static { position: absolute; width: 10px; height: 10px; }
+  #shrink { position: absolute; left: 0; top: 0; }
+  #tbl { position: absolute; left: 0; top: 0; }
+  #app { position: absolute; top: 0; left: 0; right: 0; }
+  #grid { display: grid; position: relative; grid-template-columns: 100px 150px 80px; grid-template-rows: 30px 40px; gap: 5px; padding: 6px; border: 2px solid; width: 400px; }
+  #g1 { position: absolute; grid-column: 2 / 4; grid-row: 2; left: 3px; top: 4px; right: 0; bottom: 0; }
+  #g2 { position: absolute; grid-column: 2; width: 20px; height: 10px; }
+  #g3 { position: absolute; width: 20px; height: 10px; justify-self: center; align-self: end; }
+  #g4 { position: absolute; grid-row: 1 / span 2; grid-column: auto / 2; left: 0; right: 0; top: 0; }
+  #appkid { height: 30px; }
+</style></head>
+<body>
+<div class="cb" id="c1"><span id="a1" class="k"></span><span id="a2" class="k"></span></div>
+<div class="cb" id="c2"><div id="a3" class="k"></div></div>
+<div class="cb" id="c3"><div id="a4" class="k">shrink to fit text</div></div>
+<div class="cb" id="c4"><div id="a5" class="k"></div><div id="a6" class="k"></div></div>
+<div class="cb" id="c5">before<div id="a7" class="k">static block</div>after <span id="a8">static inline</span> end</div>
+<div class="cb" id="c6"><div id="a9" class="k">x</div></div>
+<div id="f1"></div><div id="f2"></div>
+<div id="t"><div id="t3"></div></div>
+<div id="flex"><div id="flexkid"></div><div style="width: 30px; height: 20px"></div></div>
+<p>An <span id="inl">inline <span id="inlkid"></span>containing block</span> in a line.</p>
+<div class="cb" id="c7"><div id="nested"><div id="nestedkid"></div></div></div>
+<div class="cb" id="c8"><p style="margin: 0">first line</p><div id="static"></div></div>
+<div class="cb" id="c9"><div id="shrink"><span style="display:inline-block;width:70px;height:5px"></span> <span style="display:inline-block;width:40px;height:5px"></span></div></div>
+<div class="cb" id="c10"><table id="tbl"><tr><td>a</td><td>bb</td></tr></table></div>
+<div class="cb" id="c11"><div id="app"><div id="appkid"></div></div></div>
+<div id="grid"><div>a</div><div>b</div><div id="g1"></div><div id="g2"></div><div id="g3"></div><div id="g4">x</div></div>
+<script>
+  window.__log = [];
+  const r = (v) => Math.round(v * 100) / 100;
+  const ids = ["c1", "a1", "a2", "c2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "t", "t3", "flex", "flexkid",
+               "inl", "inlkid", "nested", "nestedkid", "c8", "static", "shrink", "tbl", "app", "appkid", "c11",
+               "grid", "g1", "g2", "g3", "g4"];
+  for (const id of ids) {
+    const b = document.getElementById(id).getBoundingClientRect();
+    window.__log.push([id, r(b.left), r(b.top), r(b.width), r(b.height)].join(" "));
+  }
+  // f1 is 40 wide at the bottom right; f2 is 12 high across the top (each line keeps only what
+  // does not depend on the window's size)
+  {
+    const b = document.getElementById("f1").getBoundingClientRect();
+    window.__log.push(["f1", "from right", r(innerWidth - b.right), "from bottom", r(innerHeight - b.bottom), "width", r(b.width), "height", r(b.height)].join(" "));
+    const c = document.getElementById("f2").getBoundingClientRect();
+    window.__log.push(["f2", "from right", r(innerWidth - c.right), "innerWidth less width", r(innerWidth - c.width), "top", r(c.top), "left", r(c.left), "height", r(c.height)].join(" "));
+  }
+  // the same window on both sides (GAPS B28): the fixed boxes where they are
+  window.__log.push(["viewport", innerWidth, innerHeight, document.documentElement.clientWidth, document.documentElement.clientHeight].join(" "));
+  for (const id of ["f1", "f2", "t3"]) {
+    const b = document.getElementById(id).getBoundingClientRect();
+    window.__log.push([id, "at", r(b.left), r(b.top), r(b.width), r(b.height)].join(" "));
+  }
+  window.__log.push("body " + document.body.offsetHeight + " scroll " + document.documentElement.scrollHeight);
+  window.__log.push("done");
+</script></body></html>

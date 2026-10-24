@@ -1,0 +1,45 @@
+<!doctype html>
+<!-- Node.isEqualNode against release Firefox: bench/compare_bridge.py is-equal-node (GAPS B112,
+     task 3843). Elements with attributes in another order, a different value or count, text,
+     comments, children in order, documents, fragments, doctypes, nodes of another document, the
+     argument's errors, and X's react-helmet-async test of a new head tag against the old ones. -->
+<html><head><title>is-equal-node</title><meta charset="utf-8">
+<meta name="description" content="d" data-rh="true"><link rel="canonical" href="https://x.test/" data-rh="true">
+</head><body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.map(String).join(" "));
+const el = html => { const t = document.createElement("template"); t.innerHTML = html; return t.content.firstChild; };
+const pairs = [
+  ['<a href="1" id="x">t</a>', '<a id="x" href="1">t</a>'],
+  ['<a href="1">t</a>', '<a href="2">t</a>'],
+  ['<a href="1">t</a>', '<a href="1" id="">t</a>'],
+  ['<a>t</a>', '<a>u</a>'],
+  ['<a>t</a>', '<A>t</A>'],
+  ['<p><b>1</b><i>2</i></p>', '<p><b>1</b><i>2</i></p>'],
+  ['<p><b>1</b><i>2</i></p>', '<p><i>2</i><b>1</b></p>'],
+  ['<p><b>1</b></p>', '<p><b>1</b><!--c--></p>'],
+  ['<p>a<!--c--></p>', '<p>a<!--d--></p>'],
+  ['<svg><rect/></svg>', '<svg><rect/></svg>'],
+  ['<div></div>', '<span></span>'],
+];
+for (const [a, b] of pairs) log(a, b, el(a).isEqualNode(el(b)), el(b).isEqualNode(el(a)));
+const t1 = document.createTextNode("x"), t2 = document.createTextNode("x"), c1 = document.createComment("x");
+log("text", t1.isEqualNode(t2), t1.isEqualNode(c1), t1.isEqualNode(t1), t1.isEqualNode(null), t1.isEqualNode(undefined));
+const f1 = document.createDocumentFragment(), f2 = document.createDocumentFragment();
+f1.append("a", el("<b>c</b>")); f2.append("a", el("<b>c</b>"));
+log("fragment", f1.isEqualNode(f2), f1.isEqualNode(document.createDocumentFragment()));
+const parsed = new DOMParser().parseFromString("<!doctype html><title>q</title>", "text/html");
+log("doctype", document.doctype.isEqualNode(parsed.doctype), parsed.documentElement.firstChild.isEqualNode(el("<head><title>q</title></head>")));
+log("document", parsed.isEqualNode(new DOMParser().parseFromString("<!doctype html><title>q</title>", "text/html")), parsed.isEqualNode(document));
+for (const bad of [{}, 1, "a"]) { try { log("arg", t1.isEqualNode(bad)); } catch (e) { log("arg", e.name); } }
+log("length", Node.prototype.isEqualNode.length, typeof Object.getOwnPropertyDescriptor(Node.prototype, "isEqualNode").value);
+// react-helmet-async's updateTags: a new tag set by attributes, then tested against the old ones
+const old = [].slice.call(document.head.querySelectorAll("meta[data-rh],link[data-rh]"));
+for (const [tag, attrs] of [["meta", { name: "description", content: "d" }], ["meta", { name: "description", content: "e" }], ["link", { rel: "canonical", href: "https://x.test/" }]]) {
+  const n = document.createElement(tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  n.setAttribute("data-rh", "true");
+  log("helmet", tag, JSON.stringify(attrs), old.findIndex(o => n.isEqualNode(o)));
+}
+</script>

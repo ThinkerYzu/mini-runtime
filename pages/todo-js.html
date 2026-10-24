@@ -1,0 +1,48 @@
+<!doctype html><html><head><meta charset="utf-8"><title>todo-js</title>
+<style>body{font:14px sans-serif;margin:16px}ul{list-style:none;padding:0}li{display:flex;gap:8px;padding:4px;border-bottom:1px solid #ddd}
+li.done .t{text-decoration:line-through;color:#888}.t{flex:1}button{font:12px sans-serif}#count{font-weight:bold}</style></head>
+<body><h1>Todos</h1><p>Open: <span id="count"></span></p><ul id="list"></ul><script>
+// A todo app: 500 items from a data model, a click listener on every item and its button, simulated
+// clicks, deletions, and three more batches added by timers. Each listener closure is kept alive by
+// the item it is on, as in a real app.
+var todos = [];
+for (var i = 0; i < 500; i++) todos.push({ id: i, title: "Task number " + i + ": write the report for project " + (i % 37), done: false });
+var list = document.getElementById("list"), count = document.getElementById("count");
+function updateCount() { count.textContent = String(todos.filter(function (t) { return !t.done; }).length); }
+function render(todo) {
+  var li = document.createElement("li");
+  li.id = "todo-" + todo.id;
+  var text = document.createElement("span");
+  text.className = "t";
+  text.textContent = todo.title;
+  var del = document.createElement("button");
+  del.textContent = "Delete";
+  li.appendChild(text);
+  li.appendChild(del);
+  li.addEventListener("click", function () {
+    todo.done = !todo.done;
+    li.classList.toggle("done", todo.done);
+    updateCount();
+  });
+  del.addEventListener("click", function (e) {
+    e.stopPropagation();
+    todos.splice(todos.indexOf(todo), 1);
+    list.removeChild(li);
+    updateCount();
+  });
+  list.appendChild(li);
+}
+todos.forEach(render);
+updateCount();
+// the user ticks every fifth item and deletes every tenth one
+for (var j = 0; j < 500; j += 5) document.getElementById("todo-" + j).dispatchEvent(new Event("click", { bubbles: true }));
+for (var k = 1; k < 500; k += 10) document.getElementById("todo-" + k).lastChild.dispatchEvent(new Event("click", { bubbles: true }));
+// three more batches arrive later
+var next = 500;
+function batch() {
+  for (var n = 0; n < 100; n++) { var t = { id: next, title: "Task number " + next + ": follow up", done: false }; next++; todos.push(t); render(t); }
+  updateCount();
+  if (next < 800) setTimeout(batch, 200);
+}
+setTimeout(batch, 200);
+</script></body></html>

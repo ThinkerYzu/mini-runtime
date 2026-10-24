@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- A frame of this site inside a frame of another site, against release Firefox: bench/compare_bridge.py
+     ancestor-frame (GAPS B161). localhost's page holds a 127.0.0.1 frame, which holds a localhost
+     frame: Gecko makes the inner frame a third party (ThirdPartyUtil looks at every ancestor) with the
+     partition key's foreign-ancestor bit, so it sees neither the page's cookies nor its localStorage,
+     and what it writes stays in its own partition. The inner frame reports through the middle one. -->
+<html><head><meta charset="utf-8"><title>ancestor-frame</title></head><body><p>ancestor frame</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const mine = () => JSON.stringify(document.cookie.split("; ").filter(c => c.startsWith("anc")).sort());
+  // (the bridge's first visit runs this page in Firefox's tab before the runtime does)
+  for (const n of ["anc", "anc2"]) document.cookie = `${n}=; max-age=0; path=/`;
+  localStorage.clear();
+  document.cookie = "anc=top; path=/";
+  localStorage.setItem("anc", "top");
+  L("top before", mine(), localStorage.getItem("anc"));
+  await new Promise(resolve => {
+    window.addEventListener("message", e => {
+      if (e.data === "done") resolve();
+      else L("inner", e.data);
+    });
+    const f = document.createElement("iframe");
+    f.src = `http://127.0.0.1:${location.port}/ancestor-frame-middle.html`;
+    document.body.appendChild(f);
+  });
+  L("top after", mine(), localStorage.getItem("anc"));
+  L("done");
+})();
+</script></body></html>

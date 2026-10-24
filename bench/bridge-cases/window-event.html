@@ -1,0 +1,114 @@
+<!doctype html>
+<!-- window.event against release Firefox: bench/compare_bridge.py window-event (GAPS B63). Gecko sets
+     the window's current event around each listener call (EventListenerManager::
+     HandleEventSingleListener, nsPIDOMWindowInner::SetEvent) and puts the old one back after it; the
+     window is the listener's incumbent global, or the target's for a handler property; none when the
+     current target is a node in a shadow tree (WindowFromListener, mItemInShadowTree). -->
+<html><head><title>window-event</title><meta charset="utf-8"></head><body>
+<div id="host"></div>
+<div id="plain"><span id="inner"></span></div>
+<script>
+  window.__log = [];
+  // values seen later, logged at the end (when timers and DOMContentLoaded run differs between the two)
+  const late = {};
+  const log = (...a) => window.__log.push(a.join(" "));
+  const ev = () => (window.event === undefined ? "undefined" : window.event.type);
+  const d = Object.getOwnPropertyDescriptor(window, "event");
+  log("descriptor", d ? [typeof d.get, typeof d.set, d.enumerable, d.configurable].join(",") : "none",
+      "in", "event" in window, "script", ev());
+
+  // listeners, a handler property, a handleEvent object, at the target and while bubbling
+  const plain = document.getElementById("plain"), inner = document.getElementById("inner");
+  plain.addEventListener("ping", e => log("bubble listener", ev(), window.event === e));
+  plain.addEventListener("ping", e => log("capture listener", ev()), true);
+  inner.onping = null;
+  inner.addEventListener("ping", { handleEvent(e) { log("handleEvent", ev(), window.event === e); } });
+  plain.addEventListener("click", function () { log("onclick-like listener", ev()); });
+  plain.onclick = () => log("handler property", ev());
+  inner.dispatchEvent(new Event("ping", { bubbles: true }));
+  plain.click();
+  log("after dispatch", ev());
+
+  // a nested dispatch: the inner event while it runs, the outer one again after it
+  plain.addEventListener("outer", () => {
+    log("outer before", ev());
+    plain.dispatchEvent(new Event("nested"));
+    log("outer after", ev());
+    Promise.resolve().then(() => { late.microtaskFromDispatch = ev(); });
+    setTimeout(() => { late.timerFromListener = ev(); }, 0);
+  });
+  plain.addEventListener("nested", () => log("nested", ev()));
+  plain.dispatchEvent(new Event("outer"));
+  log("after outer", ev());
+
+  // a listener that throws: the old event is put back
+  plain.addEventListener("boom", () => { throw new Error("boom"); });
+  plain.addEventListener("boom", () => log("after a throwing listener", ev()));
+  window.addEventListener("error", e => { e.preventDefault(); });
+  plain.dispatchEvent(new Event("boom"));
+  log("after boom", ev());
+
+  // shadow trees: none for a node in one, the event for its host and for the shadow root itself
+  const host = document.getElementById("host");
+  const root = host.attachShadow({ mode: "open" });
+  root.innerHTML = "<b id=b>x</b>";
+  const b = root.getElementById("b");
+  b.addEventListener("shadow", () => log("shadow node", ev()));
+  root.addEventListener("shadow", () => log("shadow root", ev()));
+  host.addEventListener("shadow", () => log("shadow host", ev()));
+  b.dispatchEvent(new Event("shadow", { bubbles: true, composed: true }));
+  const closed = document.createElement("div");
+  document.body.appendChild(closed);
+  const croot = closed.attachShadow({ mode: "closed" });
+  croot.innerHTML = "<i>y</i>";
+  croot.firstChild.onfoo = () => {};
+  croot.firstChild.addEventListener("foo", () => log("closed shadow node", ev()));
+  croot.firstChild.dispatchEvent(new Event("foo"));
+
+  // targets that are not nodes, and the window and document
+  const t = new EventTarget();
+  t.addEventListener("x", () => log("EventTarget", ev()));
+  t.dispatchEvent(new Event("x"));
+  window.addEventListener("custom", e => log("window listener", ev(), e.target === window));
+  window.dispatchEvent(new CustomEvent("custom"));
+  document.addEventListener("doc", () => log("document listener", ev()));
+  document.dispatchEvent(new Event("doc"));
+  const xhr = new XMLHttpRequest();
+  xhr.addEventListener("fake", () => log("XHR target", ev()));
+  xhr.dispatchEvent(new Event("fake"));
+  const detached = document.createElement("p");
+  detached.addEventListener("d", () => log("detached node", ev()));
+  detached.dispatchEvent(new Event("d"));
+
+  // a same-origin frame: its window's event, not the parent's
+  const frame = document.createElement("iframe");
+  document.body.appendChild(frame);
+  const fw = frame.contentWindow, fdoc = frame.contentDocument;
+  const fev = () => (fw.event === undefined ? "undefined" : fw.event.type);
+  fdoc.addEventListener("own", fw.eval("(function () { parent.__frameSaw = [typeof event === 'undefined' ? 'undefined' : event.type]; })"));
+  fdoc.dispatchEvent(new fw.Event("own"));
+  log("frame's own listener", window.__frameSaw);
+  fdoc.addEventListener("fromparent", () => log("parent's listener on the frame's document: parent", ev(), "frame", fev()));
+  fdoc.dispatchEvent(new fw.Event("fromparent"));
+  log("frame after", fev());
+
+  // the window's load event (Gmail reads window.event.type in its first navigation)
+  window.addEventListener("load", e => {
+    late.loadListener = ev() + " " + (e.target === document);
+    // a microtask checkpoint after each listener of an event the browser fires (nsAutoMicroTask)
+    Promise.resolve().then(() => { late.microtaskFromLoad = ev(); late.order.push("microtask"); });
+    late.order = ["listener"];
+  });
+  window.onload = () => { late.onload = ev(); late.order.push("onload"); };
+  document.addEventListener("DOMContentLoaded", () => { late.DOMContentLoaded = ev(); });
+  window.addEventListener("load", () => setTimeout(() => {
+    late.timerAfterLoad = ev();
+    late.order = late.order.join(",");
+    for (const k of Object.keys(late).sort()) log(k, late[k]);
+    // [Replaceable]: an assignment makes an own data property
+    window.event = 5;
+    const d2 = Object.getOwnPropertyDescriptor(window, "event");
+    log("replaced", window.event, "value" in d2, d2.writable, d2.enumerable, d2.configurable);
+    log("done");
+  }, 10));
+</script></body></html>

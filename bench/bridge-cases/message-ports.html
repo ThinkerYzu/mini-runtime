@@ -1,0 +1,241 @@
+<!doctype html>
+<!-- MessagePorts (GAPS B61, B82; Gecko's dom/messagechannel) against release Firefox: bench/compare_bridge.py
+     message-ports. The interfaces; a port holds its messages until start() or onmessage; the event's
+     fields; the clone; what cannot be transferred (the port itself, a port not in the transfer list, a
+     port already sent or closed); a sent port neutered, and the messages it held going with it;
+     close(); structuredClone and window.postMessage with a port; then ports to and from workers
+     (message-ports-worker.js): a port sent to a worker, a channel a worker makes and sends to the page
+     (Facebook's channelImport), a port handed back, two workers talking over a port the page gave
+     them, a port forwarded from one worker to the other, messages posted before the worker had the
+     port, and a shared worker answering on a port sent over its own (message-ports-shared.js). -->
+<html><head><meta charset="utf-8"><title>message-ports</title></head><body><p>message ports test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const next = (target, pred = () => true) => new Promise(r => {
+    const l = e => { if (pred(e.data)) { target.removeEventListener("message", l); r(e); } };
+    target.addEventListener("message", l);
+  });
+  // what a port receives within `ms`
+  const collect = (port, ms) => { const got = []; port.onmessage = e => got.push(e.data); return sleep(ms).then(() => got); };
+
+  // the interfaces
+  T("shape", () => [typeof MessagePort, Object.getPrototypeOf(MessagePort.prototype) === EventTarget.prototype,
+                    Object.prototype.toString.call(MessagePort.prototype), Object.keys(MessagePort.prototype).sort(),
+                    Object.keys(MessageChannel.prototype).sort(), MessageChannel.length]);
+  T("new MessagePort", () => new MessagePort());
+  T("MessageChannel()", () => MessageChannel());
+  {
+    const ch = new MessageChannel();
+    T("channel", () => [ch.port1 === ch.port1, ch.port1 !== ch.port2, Object.prototype.toString.call(ch.port1), ch.port1.onmessage,
+                        ch.port1 instanceof EventTarget, Object.keys(ch)]);
+  }
+
+  // held until started: addEventListener alone does not start a port, start() does
+  {
+    const ch = new MessageChannel();
+    const got = [];
+    ch.port2.addEventListener("message", e => got.push(e.data));
+    ch.port1.postMessage("a");
+    ch.port1.postMessage("b");
+    await sleep(50);
+    L("before start", J(got));
+    ch.port2.start();
+    await sleep(50);
+    L("after start", J(got));
+  }
+  // onmessage starts it
+  {
+    const ch = new MessageChannel();
+    ch.port1.postMessage("x");
+    L("onmessage", J(await collect(ch.port2, 50)));
+  }
+  // one message per task: a microtask queued by the first listener runs before the second message
+  {
+    const ch = new MessageChannel();
+    const order = [];
+    ch.port2.onmessage = e => { order.push(e.data); Promise.resolve().then(() => order.push("micro " + e.data)); };
+    ch.port1.postMessage(1);
+    ch.port1.postMessage(2);
+    await sleep(50);
+    L("tasks", J(order));
+  }
+  // the event and the clone
+  {
+    const ch = new MessageChannel();
+    const value = { n: 1, list: [1, 2] };
+    ch.port1.postMessage(value);
+    value.n = 2;
+    const e = await new Promise(r => { ch.port2.onmessage = r; });
+    L("event", J(e.data), e.data === value, e.constructor.name, e.type, J(e.origin), J(e.lastEventId), e.source, e.ports.length,
+      Object.isFrozen(e.ports), e.target === ch.port2, e.bubbles, e.cancelable);
+  }
+  T("uncloneable", () => new MessageChannel().port1.postMessage({ f() {} }));
+  T("uncloneable window", () => window.postMessage({ f() {} }, "*"));
+  T("uncloneable structuredClone", () => structuredClone(Symbol("s")));
+
+  // what cannot be transferred
+  {
+    const ch = new MessageChannel(), other = new MessageChannel();
+    T("itself", () => ch.port1.postMessage(1, [ch.port1]));
+    T("not in transfer", () => ch.port1.postMessage({ p: other.port1 }));
+    T("duplicate", () => ch.port1.postMessage(1, [other.port1, other.port1]));
+    T("sent", () => { ch.port1.postMessage(1, [other.port1]); return "first"; });
+    T("sent again", () => ch.port1.postMessage(1, [other.port1]));
+    const closed = new MessageChannel();
+    closed.port1.close();
+    T("closed", () => ch.port1.postMessage(1, [closed.port1]));
+    T("options", () => { ch.port1.postMessage(1, { transfer: [new MessageChannel().port1] }); return "ok"; });
+    T("not a sequence", () => ch.port1.postMessage(1, 5));
+  }
+
+  // a port sent: its messages go with it, posted before and after; the old object is dead
+  {
+    const ch = new MessageChannel(), carrier = new MessageChannel();
+    ch.port1.postMessage("m1");
+    carrier.port1.postMessage({ port: ch.port2 }, [ch.port2]);
+    ch.port1.postMessage("m2");
+    ch.port2.postMessage("from the dead one");
+    const e = await new Promise(r => { carrier.port2.onmessage = r; });
+    const moved = e.ports[0];
+    L("moved", moved !== ch.port2, e.data.port === moved, e.ports.length);
+    L("moved messages", J(await collect(moved, 50)));
+    moved.postMessage("back");
+    L("moved answers", J(await collect(ch.port1, 50)));
+  }
+
+  // close(): no message after it, either way; what was queued before it
+  {
+    const ch = new MessageChannel();
+    ch.port1.postMessage("before");
+    ch.port1.close();
+    ch.port1.postMessage("after");
+    ch.port2.postMessage("to closed");
+    const got1 = [];
+    ch.port1.onmessage = e => got1.push(e.data);
+    L("close", J(await collect(ch.port2, 50)), J(got1));
+    ch.port2.close();
+    ch.port2.close();
+    L("close twice", "ok");
+  }
+
+  // structuredClone with a port
+  {
+    const ch = new MessageChannel();
+    T("structuredClone without transfer", () => structuredClone(ch.port1));
+    const c = structuredClone({ p: ch.port1 }, { transfer: [ch.port1] });
+    L("structuredClone", c.p !== ch.port1, Object.prototype.toString.call(c.p));
+    c.p.postMessage("cloned");
+    L("structuredClone port", J(await collect(ch.port2, 50)));
+  }
+
+  // window.postMessage with a port
+  {
+    const ch = new MessageChannel();
+    const e = await new Promise(r => {
+      const l = ev => { if (ev.data === "win") { window.removeEventListener("message", l); r(ev); } };
+      window.addEventListener("message", l);
+      window.postMessage("win", "*", [ch.port1]);
+    });
+    L("window", e.ports.length, e.ports[0] !== ch.port1, Object.prototype.toString.call(e.ports[0]));
+    e.ports[0].postMessage("via window");
+    L("window port", J(await collect(ch.port2, 50)));
+  }
+
+  // ---- workers ----
+  const w = new Worker("message-ports-worker.js");
+  // a port sent to a worker, answered on
+  {
+    const ch = new MessageChannel();
+    w.postMessage({ cmd: "echo-on", port: ch.port2 }, [ch.port2]);
+    L("worker got", J((await next(w, d => d && d.got)).data.got));
+    ch.port1.postMessage({ hello: [1, 2] });
+    const e = await new Promise(r => { ch.port1.onmessage = r; });
+    L("worker echo", J(e.data), e.ports.length, e.target === ch.port1);
+  }
+  T("worker not in transfer", () => w.postMessage({ p: new MessageChannel().port1 }));
+  T("worker itself", () => { const ch = new MessageChannel(); w.postMessage(1, [ch.port1, ch.port1]); });
+  // a channel the worker makes, one end sent to the page (Facebook's channelImport)
+  let imported;
+  {
+    w.postMessage({ cmd: "import" });
+    const e = await next(w, d => d && d.type === "channelImport");
+    imported = e.ports[0];
+    L("import", e.data.type, e.data.channelName, e.data.port === imported, e.ports.length, Object.prototype.toString.call(imported));
+    imported.postMessage("from the page");
+    L("import answer", J(await collect(imported, 100)));
+  }
+  // the port handed back to the worker and back again
+  {
+    w.postMessage({ cmd: "hand-back" }, [imported]);
+    const e = await next(w, d => d && d.back);
+    const again = e.ports[0];
+    L("handed back", again !== imported, e.ports.length);
+    again.postMessage("twice");
+    L("handed back answer", J(await collect(again, 100)));
+  }
+  // errors inside the worker
+  w.postMessage({ cmd: "errors" });
+  L("worker errors", J((await next(w, d => d && d.errors)).data.errors));
+  // messages posted before the worker had the port, and while it was not started
+  {
+    const ch = new MessageChannel();
+    ch.port1.postMessage("l1");
+    w.postMessage({ cmd: "late" }, [ch.port2]);
+    ch.port1.postMessage("l2");
+    setTimeout(() => ch.port1.postMessage("l3"), 10);
+    L("late", J((await next(w, d => d && d.late)).data.late));
+  }
+  // a port whose other end the page closed: the worker's message is dropped
+  {
+    const ch = new MessageChannel();
+    w.postMessage({ cmd: "closed-peer" }, [ch.port2]);
+    ch.port1.close();
+    const got = [];
+    ch.port1.onmessage = e => got.push(e.data);
+    await next(w, d => d && d.posted);
+    await sleep(50);
+    L("closed peer", J(got));
+  }
+
+  // two workers over one channel
+  const a = new Worker("message-ports-worker.js"), b = new Worker("message-ports-worker.js");
+  {
+    const ch = new MessageChannel();
+    a.postMessage({ cmd: "peer", name: "a" }, [ch.port1]);
+    b.postMessage({ cmd: "peer", name: "b" }, [ch.port2]);
+    a.postMessage({ cmd: "ping-peer" });
+    L("peers", J((await next(a, d => d && d.peer)).data));
+    b.postMessage({ cmd: "ping-peer" });
+    L("peers back", J((await next(b, d => d && d.peer)).data));
+  }
+  // a port forwarded from a to b, answered by the page's end
+  {
+    const ch = new MessageChannel();
+    a.postMessage({ cmd: "forward" }, [ch.port2]);
+    const e = await next(b, d => d && d.peer === "forwarding");
+    L("forwarded", J(e.data));
+    // b's peer handler got the port in e.ports; b reports only the data, so ask the page's end
+    ch.port1.postMessage("to b");
+    L("forwarded answer", J(await collect(ch.port1, 100)));
+  }
+
+  // a port sent over a shared worker's port
+  {
+    const s = new SharedWorker("message-ports-shared.js");
+    s.port.start();
+    const ch = new MessageChannel();
+    s.port.postMessage({ port: ch.port2 }, [ch.port2]);
+    L("shared got", J((await next(s.port, d => d && "gotPort" in d)).data));
+    ch.port1.postMessage("over shared");
+    L("shared answer", J(await collect(ch.port1, 100)));
+  }
+  L("done");
+})().catch(e => window.__log.push("case threw " + e));
+</script>
+</body></html>

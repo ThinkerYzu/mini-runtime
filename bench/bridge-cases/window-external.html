@@ -1,0 +1,64 @@
+<!doctype html>
+<!-- window.external (Gecko's dom/base/External.cpp: a [LegacyNoInterfaceObject] interface whose two
+     methods do nothing, one object per inner window) against release Firefox:
+     bench/compare_bridge.py window-external. The object and its prototype, the methods' lengths,
+     names and brand checks, the window's property ([Replaceable]), and a same-origin frame's. The
+     sites only test it (X, Amazon, Gmail, Google Docs; session 92). -->
+<html><head><meta charset="utf-8"><title>window-external</title></head><body><p>window-external test</p>
+<script>
+(function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const tag = o => Object.prototype.toString.call(o);
+  const x = window.external, proto = Object.getPrototypeOf(x);
+
+  T("typeof", () => [typeof x, typeof window.External, "External" in window, !!x, x == null]);
+  T("same object", () => [window.external === x, self.external === x, globalThis.external === x]);
+  T("tags", () => [tag(x), tag(proto), String(x), proto[Symbol.toStringTag]]);
+  T("chain", () => [Object.getPrototypeOf(proto) === Object.prototype, proto.constructor === Object, x instanceof Object]);
+  T("proto names", () => Object.getOwnPropertyNames(proto).sort());
+  T("proto symbols", () => Object.getOwnPropertySymbols(proto).map(String));
+  T("own names", () => [Object.getOwnPropertyNames(x), Object.keys(x)]);
+  T("for in", () => { const k = []; for (const n in x) k.push(n); return k; });
+  T("methods", () => ["AddSearchProvider", "IsSearchProviderInstalled"].map(m => {
+    const d = Object.getOwnPropertyDescriptor(proto, m);
+    return [m, typeof d.value, d.value.length, d.value.name, d.writable, d.enumerable, d.configurable];
+  }));
+  T("calls", () => [x.AddSearchProvider(), x.IsSearchProviderInstalled(), x.AddSearchProvider("a", "b"), x.IsSearchProviderInstalled("u")]);
+  T("wrong this Add", () => proto.AddSearchProvider.call({}));
+  T("wrong this Is", () => proto.IsSearchProviderInstalled.call(window));
+  T("proto call", () => proto.IsSearchProviderInstalled());
+  T("new", () => new proto.AddSearchProvider());
+  T("lowercase", () => [typeof x.addSearchProvider, typeof x.isSearchProviderInstalled, "AddSearchProvider" in x]);
+  T("json", () => J(x));
+  T("expando", () => { x.foo = 1; return [window.external.foo, Object.keys(x)]; });
+  T("window in", () => ["external" in window, window.hasOwnProperty("external"), Object.keys(window).includes("external")]);
+  T("window descriptor", () => {
+    const d = Object.getOwnPropertyDescriptor(window, "external");
+    return d && [typeof d.get, typeof d.set, d.enumerable, d.configurable, d.get.name, d.set && d.set.name, d.get.length];
+  });
+  T("getter wrong this", () => Object.getOwnPropertyDescriptor(window, "external").get.call({}));
+  T("getter undefined this", () => Object.getOwnPropertyDescriptor(window, "external").get.call(undefined) === x);
+
+  // a same-origin frame: its own object and prototype
+  const frame = document.createElement("iframe");
+  document.body.appendChild(frame);
+  const fw = frame.contentWindow;
+  T("frame", () => [fw.external !== x, Object.getPrototypeOf(fw.external) !== proto, tag(fw.external),
+                    fw.external.IsSearchProviderInstalled(), Object.getPrototypeOf(Object.getPrototypeOf(fw.external)) === fw.Object.prototype]);
+  T("frame cross call", () => proto.IsSearchProviderInstalled.call(fw.external));
+
+  // [Replaceable]: an assignment makes an own data property; delete then removes the attribute
+  T("replace", () => {
+    window.external = 5;
+    const d = Object.getOwnPropertyDescriptor(window, "external");
+    return [window.external, "value" in d, d.writable, d.enumerable, d.configurable];
+  });
+  T("delete", () => [delete window.external, typeof window.external, "external" in window]);
+  T("frame replace", () => { fw.external = null; return [fw.external, Object.getOwnPropertyDescriptor(fw, "external").writable]; });
+  L("done");
+})();
+</script></body></html>

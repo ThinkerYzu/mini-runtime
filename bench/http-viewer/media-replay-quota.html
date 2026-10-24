@@ -1,0 +1,49 @@
+<!doctype html><meta charset="utf-8"><video id="video" muted></video>
+<script>
+// Runtime protocol fixture: the test supplies codec/source/buffer replies.
+const video=document.getElementById('video'), type='video/mp4; codecs="avc1.42c01e"';
+const once=(o,t)=>new Promise(r=>o.addEventListener(t,r,{once:true}));
+async function open(){
+ const ms=new MediaSource();video.src=URL.createObjectURL(ms);await once(ms,'sourceopen');
+ return [ms,ms.addSourceBuffer(type)];
+}
+(async()=>{
+ let [ms,sb]=await open(), count=0;
+ if(location.search.includes('unlimited')){
+  // 15 MiB of bytes is over 32 MiB after base64/UTF-16 retention accounting.
+  for(let i=0;i<15;i++){
+   const done=once(sb,'updateend');sb.appendBuffer(new Uint8Array(1024*1024));await done;
+  }
+  console.log('UNLIMITED_BYTES');
+  // Also cross the independent retained-command budget without losing the source.
+  for(let i=0;i<10005;i++)sb.timestampOffset=0;
+  const done=once(sb,'updateend');sb.appendBuffer(new Uint8Array(1));await done;
+  if(ms.readyState!=='open')throw new Error('Unlimited history lost its source');
+  console.log('UNLIMITED_COMMANDS');
+  try{sb.appendBuffer(new Uint8Array(5*1024*1024));throw new Error('Live append limit was disabled');}
+  catch(e){if(e.name!=='QuotaExceededError'||sb.updating)throw e;}
+  console.log('LIVE_APPEND_QUOTA');
+  video.src='';
+  console.log('UNLIMITED_DONE');
+  return;
+ }
+ while(count<20){
+  try{const done=once(sb,'updateend');sb.appendBuffer(new Uint8Array(1024*1024));await done;count++;}
+  catch(e){if(e.name!=='QuotaExceededError'||sb.updating)throw e;break;}
+ }
+ if(count===20)throw new Error('Replay bytes were unbounded');
+ console.log('BYTE_QUOTA '+count);
+ video.src='';[ms,sb]=await open();
+ // attach + addsb + 9998 config commands fill the shared command budget.
+ for(let i=0;i<9998;i++)sb.timestampOffset=0;
+ try{sb.appendBuffer(new Uint8Array(1));throw new Error('Replay commands were unbounded');}
+ catch(e){if(e.name!=='QuotaExceededError'||sb.updating)throw e;}
+ console.log('COMMAND_QUOTA');
+ // Configuration overflow cannot throw append quota: it explicitly loses the source.
+ const closed=once(ms,'sourceclose');sb.timestampOffset=0;await closed;
+ console.log('QUOTA_SOURCE_CLOSED');
+ video.src='';[ms,sb]=await open();
+ const done=once(sb,'updateend');sb.appendBuffer(new Uint8Array(1024*1024));await done;
+ console.log('CACHE_RELEASED');
+})().catch(e=>console.log('QUOTA_ERROR '+e));
+</script>

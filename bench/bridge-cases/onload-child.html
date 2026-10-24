@@ -1,0 +1,9 @@
+<!doctype html>
+<!-- A frame of bench/bridge-cases/onload.html: a script it inserts delays its load, and so its parent's. -->
+<html><head><title>onload-child</title><meta charset="utf-8"></head>
+<body><p>child</p>
+<script>
+  const s = document.createElement("script");
+  s.src = "onload-child.js";
+  document.head.appendChild(s);
+</script></body></html>

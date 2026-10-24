@@ -1,0 +1,11 @@
+<!doctype html>
+<!-- Every name of a dedicated worker's global, by where it lives (worker-names-child.js): run in release
+     Firefox it gives mrt-js/tools/worker_names.json; in the mini runtime it shows what a worker lacks. -->
+<html><head><meta charset="utf-8"><title>worker-names</title></head><body>
+<script>
+window.__log = [];
+new Worker("worker-names-child.js").onmessage = e => {
+  for (const [k, v] of Object.entries(e.data)) window.__log.push(k + " " + JSON.stringify(v));
+};
+</script>
+</body></html>

@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ancestor-frame middle</title></head><body>
+<script>
+  // the inner frame's reports, passed on to the page
+  window.addEventListener("message", e => parent.postMessage(e.data, "*"));
+  const f = document.createElement("iframe");
+  f.src = `http://localhost:${location.port}/ancestor-frame-child.html`;
+  document.body.appendChild(f);
+</script></body></html>

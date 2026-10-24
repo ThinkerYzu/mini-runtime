@@ -1,0 +1,180 @@
+<!doctype html>
+<!-- fetch and XMLHttpRequest against release Firefox: bench/compare_bridge.py fetch (the bridge tab's
+     fetch, or the API process's with API_PROCESS=all, Phase 6.3). Against ws_echo.py's /h (?ws=PORT),
+     on localhost (another origin of this site) and 127.0.0.1 (another site): modes, credentials, the
+     CORS checks and preflights (and their cache), exposed headers, redirects (follow, error, manual,
+     303 and 307, a tainted origin), no-cors and opaque answers, CORP, referrer policies, the Origin,
+     Referer, Cookie and Sec-Fetch-* headers as the server saw them (/log), cookies a response set,
+     forbidden headers, encoded bodies, data: URLs, XHR's fields, and a script of another site. -->
+<html><head><meta charset="utf-8"><title>fetch</title></head><body><p>fetch test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const ws = new URLSearchParams(location.search).get("ws");
+  // another origin of this site, and another site
+  const E = `http://localhost:${ws}`, X = `http://127.0.0.1:${ws}`;
+  const h = (base, o) => `${base}/h?` + new URLSearchParams(o);
+  // (a run's nonce, `n`, left out: it keeps Firefox's preflight cache, warmed by the driver's first visit, out)
+  const short = u => u.replace(location.origin, "SELF").replace(E, "E").replace(X, "X").replace(/&n=\d+/, "");
+  const n = String(Date.now());
+  // the server's view of the requests tagged `id`, in order
+  const seen = async id => {
+    const all = await (await fetch(`${E}/log`)).json();
+    return all.filter(e => e.id === id).map(e => e.method + " " + JSON.stringify(e.h).replaceAll(location.origin, "SELF")
+      .replaceAll(E, "E").replaceAll(X, "X"));
+  };
+  // (`reason` false: the status text is left out, for the case server's own reason phrases, GAPS B162)
+  const F = async (what, url, init, reason = true) => {
+    try {
+      const r = await fetch(url, init);
+      let body;
+      try { body = (await r.text()).replaceAll(location.origin, "SELF").replaceAll(E, "E").replaceAll(X, "X").slice(0, 400); }
+      catch (e) { body = "read " + e.name; }
+      const names = [...r.headers].map(([k]) => k).filter(k => !["date", "server", "last-modified"].includes(k));
+      L(what, r.type, r.status, reason ? JSON.stringify(r.statusText) : "-", r.ok, r.redirected, JSON.stringify(short(r.url)), JSON.stringify(names), body);
+      return r;
+    } catch (e) { L(what, "throws", e.name); }
+  };
+  const S = async (what, id) => L(what, JSON.stringify(await seen(id)));
+  await fetch(`${E}/log?clear`);
+  // the cookies this case sets, HttpOnly ones too, cleared from the server (the driver's first visit ran it)
+  const names = ["ft1", "ft2", "ft3", "ft4", "ft5", "fx1", "fx2"];
+  const clear = names.map(n => `${n}=; max-age=0; path=/`).join("\n");
+  await fetch(h(E, { acao: "echo", acac: "true", setcookie: clear }), { credentials: "include" });
+  await fetch(h(X, { acao: "echo", acac: "true", setcookie: names.map(n => `${n}=; max-age=0; path=/; SameSite=None; Secure`).join("\n") }), { credentials: "include" });
+
+  // same-origin: the case's own server (a basic answer, every header)
+  await F("same-origin", "fetch.html", {});
+  await F("same-origin 404", "nothing-here.txt", {}, false);
+  await F("same-origin mode", "fetch.html", { mode: "same-origin" });
+  await F("same-origin mode, other origin", h(E, { acao: "*" }), { mode: "same-origin" });
+  // CORS: another origin of this site
+  await F("cors echo", h(E, { acao: "echo", id: "c1" }));
+  await F("cors star", h(E, { acao: "*", id: "c2" }));
+  await F("cors none", h(E, { id: "c3" }));
+  await F("cors wrong origin", h(E, { acao: "http://example.com" }));
+  await F("cors star with credentials", h(E, { acao: "*" }), { credentials: "include" });
+  await F("cors credentials without acac", h(E, { acao: "echo" }), { credentials: "include" });
+  await S("cors requests", "c1");
+  // cookies: set by a response, read back by script and sent with requests
+  await F("set cookies", h(E, { acao: "echo", acac: "true", setcookie: "ft1=a; path=/\nft2=b; HttpOnly; path=/\nft3=c; SameSite=Strict; path=/" }), { credentials: "include" });
+  L("document.cookie", JSON.stringify(document.cookie.split("; ").filter(c => c.startsWith("ft")).sort()));
+  await F("set without credentials", h(E, { acao: "*", setcookie: "ft4=d; path=/" }));
+  L("document.cookie", JSON.stringify(document.cookie.split("; ").filter(c => c.startsWith("ft")).sort()));
+  await F("include sends", h(E, { acao: "echo", acac: "true", id: "k1" }), { credentials: "include" });
+  await F("same-origin credentials to another origin", h(E, { acao: "echo", id: "k2" }));
+  await F("omit", h(E, { acao: "*", id: "k3" }), { credentials: "omit" });
+  await S("cookie requests", "k1");
+  await S("cookie requests 2", "k2");
+  await S("cookie requests 3", "k3");
+  // another site: its cookies are this site's partition, SameSite=None only
+  await F("cross-site set", h(X, { acao: "echo", acac: "true", setcookie: "fx1=x; path=/\nfx2=y; SameSite=Lax; path=/" }), { credentials: "include" });
+  await F("cross-site sends", h(X, { acao: "echo", acac: "true", id: "x1" }), { credentials: "include" });
+  await S("cross-site requests", "x1");
+  // preflights: a header or a method that is not safelisted, the answer cached for Max-Age
+  await F("preflight header", h(E, { acao: "echo", acah: "x-custom", maxage: "60", id: "p1", n }), { headers: { "x-custom": "1" } });
+  await F("preflight cached", h(E, { acao: "echo", acah: "x-custom", maxage: "60", id: "p1", n }), { headers: { "x-custom": "2" } });
+  await S("preflight requests", "p1");
+  await F("preflight refused header", h(E, { acao: "echo", id: "p2" }), { headers: { "x-custom": "1" } });
+  await F("preflight PUT", h(E, { acao: "echo", acam: "PUT", id: "p3" }), { method: "PUT", body: "put body" });
+  await F("preflight refused method", h(E, { acao: "echo", id: "p4" }), { method: "DELETE" });
+  await F("preflight not ok", h(E, { acao: "echo", acah: "x-custom", pstatus: "404", id: "p5" }), { headers: { "x-custom": "1" } });
+  await F("preflight star", h(E, { acao: "*", acah: "*", acam: "*", id: "p6" }), { method: "PATCH", headers: { "x-custom": "1" } });
+  await F("content-type json preflights", h(E, { acao: "echo", acah: "content-type", id: "p7" }), { method: "POST", body: "{}", headers: { "content-type": "application/json" } });
+  await S("preflight requests 3", "p3");
+  await S("preflight requests 6", "p6");
+  await S("preflight requests 7", "p7");
+  // exposed headers
+  await F("expose one", h(E, { acao: "echo", aceh: "x-a" }));
+  await F("expose star", h(E, { acao: "*", aceh: "*" }));
+  await F("expose star with credentials", h(E, { acao: "echo", acac: "true", aceh: "*" }), { credentials: "include" });
+  // redirects
+  const target = h(E, { acao: "echo", id: "r1" });
+  await F("redirect same origin", h(E, { status: "302", loc: target, acao: "echo", id: "r0" }));
+  await S("redirect requests", "r1");
+  await F("redirect to another site", h(E, { status: "302", acao: "echo", loc: h(X, { acao: "echo", id: "r2" }) }));
+  await S("tainted origin", "r2");
+  await F("redirect tainted with star", h(E, { status: "302", acao: "echo", loc: h(X, { acao: "*", id: "r3" }) }));
+  await F("redirect error", h(E, { status: "302", loc: target, acao: "echo" }), { redirect: "error" });
+  await F("redirect manual", h(E, { status: "302", loc: target, acao: "echo" }), { redirect: "manual" });
+  await F("redirect manual no-cors", h(X, { status: "302", loc: target }), { redirect: "manual", mode: "no-cors" });
+  await F("303 POST", h(E, { status: "303", acao: "echo", loc: h(E, { acao: "echo", id: "r4" }) }), { method: "POST", body: "x" });
+  await S("303 requests", "r4");
+  await F("307 POST", h(E, { status: "307", acao: "echo", loc: h(E, { acao: "echo", id: "r5" }) }), { method: "POST", body: "kept" });
+  await S("307 requests", "r5");
+  await F("redirect to data:", h(E, { status: "302", acao: "echo", loc: "data:text/plain,hi" }));
+  // no-cors: an opaque answer; CORP
+  await F("no-cors", h(X, { id: "n1" }), { mode: "no-cors" });
+  await F("no-cors POST", h(X, { id: "n2" }), { mode: "no-cors", method: "POST", body: "ping", headers: { "x-custom": "dropped", "content-type": "text/plain" } });
+  await F("no-cors PUT", h(X, {}), { mode: "no-cors", method: "PUT" });
+  await S("no-cors requests", "n1");
+  await S("no-cors POST requests", "n2");
+  await F("corp same-origin", h(X, { corp: "same-origin" }), { mode: "no-cors" });
+  await F("corp same-site, other site", h(X, { corp: "same-site" }), { mode: "no-cors" });
+  await F("corp same-site, this site", h(E, { corp: "same-site" }), { mode: "no-cors" });
+  await F("corp on a cors answer", h(E, { acao: "echo", corp: "same-origin" }));
+  // referrer policies
+  for (const p of ["no-referrer", "origin", "unsafe-url", "same-origin", "strict-origin", "no-referrer-when-downgrade"])
+    await F("referrer " + p, h(E, { acao: "echo", id: "f-" + p }), { referrerPolicy: p });
+  await F("referrer policy on POST", h(E, { acao: "echo" }), { method: "POST", body: "", referrerPolicy: "no-referrer" });
+  // forbidden headers and a method override
+  await F("forbidden headers", h(E, { acao: "echo", acah: "x-http-method-override", id: "fb" }),
+    { headers: { "cookie": "no=1", "referer": "http://evil/", "x-http-method-override": "TRACE", "accept": "text/x-test" } });
+  await S("forbidden requests", "fb");
+  // bodies
+  await F("gzip", h(E, { acao: "*", enc: "gzip", body: "zipped text", type: "text/plain" }));
+  await F("deflate", h(E, { acao: "*", enc: "deflate", body: "deflated text", type: "text/plain" }));
+  await F("HEAD", h(E, { acao: "*" }), { method: "HEAD" });
+  await F("status 418", h(E, { acao: "*", status: "418", body: "teapot", type: "text/plain" }));
+  await F("204", h(E, { acao: "*", status: "204" }));
+  await F("POST string body", h(E, { acao: "echo" }), { method: "POST", body: "a=1&b=2" });
+  await F("POST urlencoded", h(E, { acao: "echo" }), { method: "POST", body: new URLSearchParams({ a: 1, b: "x y" }) });
+  await F("POST bytes", h(E, { acao: "echo" }), { method: "POST", body: new Uint8Array([104, 105]) });
+  const json = await (await fetch(h(E, { acao: "*", body: '{"x":[1,2]}' }))).json();
+  L("json", JSON.stringify(json));
+  const buf = await (await fetch(h(E, { acao: "*", body: "AB", type: "application/octet-stream" }))).arrayBuffer();
+  L("arrayBuffer", buf.byteLength, new Uint8Array(buf).join(","));
+  await F("data:", "data:text/plain;charset=utf-8,hello%20data");
+  await F("data: base64", "data:;base64,aGk=");
+  await F("data: no-cors", "data:text/html,<b>x</b>", { mode: "no-cors" });
+  await F("bad scheme", "ftp://example.com/x");
+  await F("unreachable", "http://127.0.0.1:9/x");
+  // XMLHttpRequest
+  const xhr = (what, method, url, setup, body) => new Promise(done => {
+    const x = new XMLHttpRequest();
+    x.open(method, url);
+    if (setup) setup(x);
+    x.onloadend = () => {
+      L(what, x.readyState, x.status, JSON.stringify(x.statusText), JSON.stringify(short(x.responseURL)), JSON.stringify(x.getResponseHeader("x-a")),
+        JSON.stringify(x.getResponseHeader("content-type")), x.responseText.replaceAll(location.origin, "SELF").replaceAll(E, "E").slice(0, 300));
+      done();
+    };
+    x.send(body);
+  });
+  await xhr("xhr cors", "GET", h(E, { acao: "echo", aceh: "x-a", id: "xh1" }));
+  await xhr("xhr credentials", "GET", h(E, { acao: "echo", acac: "true", id: "xh2" }), x => { x.withCredentials = true; });
+  await xhr("xhr refused", "GET", h(E, {}));
+  await xhr("xhr header preflight", "POST", h(E, { acao: "echo", acah: "x-custom", id: "xh3" }), x => x.setRequestHeader("X-Custom", "v"), "data");
+  await xhr("xhr same-origin", "GET", "fetch.html");
+  await S("xhr requests", "xh2");
+  await S("xhr preflight requests", "xh3");
+  // a script of another site, as <script src>: no CORS
+  await new Promise(done => {
+    const s = document.createElement("script");
+    s.src = h(X, { type: "text/javascript", body: "window.__crossScript = 'ran';", id: "s1" });
+    s.onload = () => { L("cross-site script", window.__crossScript); done(); };
+    s.onerror = () => { L("cross-site script error"); done(); };
+    document.head.appendChild(s);
+  });
+  await new Promise(done => {
+    const s = document.createElement("script");
+    s.src = h(X, { status: "404", type: "text/javascript", body: "window.__bad = 1;" });
+    s.onload = () => { L("script 404 loaded", window.__bad); done(); };
+    s.onerror = () => { L("script 404 error"); done(); };
+    document.head.appendChild(s);
+  });
+  await fetch(h(E, { acao: "echo", acac: "true", setcookie: clear }), { credentials: "include" });
+  L("done");
+})();
+</script></body></html>

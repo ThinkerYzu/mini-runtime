@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><title>Media capabilities</title>
+<pre id="caps"></pre>
+<script>
+// Compare to actual Firefox in bridge mode. Standalone has no playback backend,
+// so all capabilities remain negative even if the viewer can decode these types.
+window.__log = [];
+const types = ["", "not a mime type", "video/unknown", "video/mp4", "audio/mp4",
+  'video/mp4; codecs="avc1.42E01E"', 'video/mp4; codecs="avc1.640028"',
+  'video/mp4; codecs="avc1.4d401f,mp4a.40.2"', 'audio/mp4; codecs="mp4a.40.2"',
+  'video/mp4; codecs="av01.0.04M.08"', 'video/mp4; codecs="hvc1.1.6.L93.B0"',
+  'video/mp4; codecs="unknown"', 'video/mp4; codecs=""',
+  "video/webm", "audio/webm", 'video/webm; codecs="vp8,vorbis"',
+  'video/webm; codecs="vp9,opus"', 'video/webm; codecs="av1"',
+  'audio/webm; codecs="opus"', 'audio/webm; codecs="vorbis"',
+  "video/ogg", "audio/ogg", 'video/ogg; codecs="theora,vorbis"',
+  'audio/ogg; codecs="opus"', 'audio/ogg; codecs="vorbis"',
+  "audio/mpeg", "audio/aac", "audio/wav", 'audio/wav; codecs="1"',
+  "audio/flac", "video/x-matroska", "application/vnd.apple.mpegurl",
+  "application/dash+xml", "VIDEO/MP4", 'video/mp4;codecs="avc1.42E01E"',
+  'video/mp4; codecs="avc1.42E01E"; width=640', 'video/mp4; codecs="vp9"'];
+const video = document.createElement("video"), audio = document.createElement("audio");
+for (const type of types) __log.push(JSON.stringify([type, MediaSource.isTypeSupported(type), video.canPlayType(type), audio.canPlayType(type)]));
+document.getElementById("caps").textContent = JSON.stringify(__log);
+console.log("MEDIA_TYPES " + JSON.stringify(__log));
+</script>

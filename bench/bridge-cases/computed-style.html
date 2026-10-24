@@ -1,0 +1,116 @@
+<!doctype html>
+<!-- getComputedStyle against release Firefox: bench/compare_bridge.py computed-style (Gecko's
+     nsComputedDOMStyle). Values Stylo serializes (colors, font sizes, em lengths, shorthands, custom
+     properties), the ones read from the frames (width and height of boxes and of inlines, padding and
+     margin percentages, auto margins, the four offsets of relative, absolute and static boxes,
+     min-width auto in and out of a flex container), elements without a frame, pseudo-elements, and
+     Amazon's a-truncate widget, which reads max-height and the height of an offscreen copy through
+     jQuery's css() (GAPS B17). -->
+<html><head><title>computed style</title>
+<meta charset="utf-8">
+<style>
+  :root { --gap: 12px; --brand:  #c45500 ; }
+  body { margin: 8px; font: 16px/20px sans-serif; width: 600px; color: rgb(10, 20, 30); }
+  #box { width: 200px; height: 50px; padding: 5px 10%; margin: 4px auto; border: 3px solid red; box-sizing: content-box; }
+  #bb { width: 200px; padding: 10px; border: 2px solid; box-sizing: border-box; }
+  #auto { padding: 2% 0; }
+  #inline { padding: 3px; margin: 1em; font-size: 12px; }
+  #rel { position: relative; top: 10px; left: 5%; }
+  #rel2 { position: relative; bottom: 7px; }
+  #abs-cb { position: relative; width: 300px; height: 200px; border: 4px solid; padding: 6px; }
+  #abs { position: absolute; top: 10%; right: 20px; width: 50px; height: 25px; margin: 3px; }
+  #abs2 { position: absolute; left: 15px; width: 40px; height: 10px; }
+  #static { top: 10px; left: auto; }
+  #flex { display: flex; }
+  #flex > div { width: 30px; }
+  #hidden { display: none; font-size: 2em; }
+  #pseudo::before { content: "x"; color: blue; margin-left: 4px; }
+  #em { max-height: 2.6em; font-size: 14px; line-height: 1.3em; }
+  #shorthand { border-top: 1px dashed green; margin: 1px 2px 3px 4px; }
+  #lh { line-height: normal; }
+  #pct { width: 50%; height: auto; min-height: 10px; max-width: none; }
+  .a-offscreen { position: absolute !important; left: -10000px !important; top: auto; width: 1px !important; height: 1px !important; overflow: hidden !important; clip: rect(0 0 0 0) !important; }
+  .a-truncate { display: block; position: relative; overflow: hidden; }
+  .a-truncate-calc { width: 100% !important; height: auto !important; }
+  .t-wrap { width: 180px; font-size: 13px; }
+</style></head>
+<body>
+<div id="box">box</div>
+<div id="bb">border-box</div>
+<div id="auto">auto</div>
+<p>An <span id="inline">inline span</span> here.</p>
+<div id="rel">rel</div>
+<div id="rel2">rel2</div>
+<div id="abs-cb"><div id="abs">abs</div><div id="abs2">abs2</div></div>
+<div id="static">static</div>
+<div id="flex"><div id="fitem">f</div></div>
+<div id="hidden"><span id="hidden-child">x</span></div>
+<div id="pseudo">p</div>
+<div id="em">em</div>
+<div id="shorthand">s</div>
+<div id="lh">lh</div>
+<div id="pct">pct</div>
+<div class="t-wrap"><span class="a-truncate" id="trunc" data-a-max-rows="2" style="line-height:1.3em !important;max-height:2.6em"><span class="a-truncate-full">Apple 2026 MacBook Neo 13-inch Laptop with A18 Pro chip: Built for AI and Apple Intelligence, Liquid Retina Display, 8GB Unified Memory</span></span></div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const cs = (id, pseudo) => getComputedStyle(document.getElementById(id), pseudo);
+  const props = {
+    box: ["width", "height", "padding-left", "padding-top", "margin-left", "margin-right", "margin-top", "border-top-width", "border-top-color", "color", "display", "box-sizing"],
+    bb: ["width", "height", "padding", "border-width"],
+    auto: ["width", "height", "padding-top", "margin-left"],
+    inline: ["width", "height", "padding-left", "margin-left", "margin-top", "font-size", "display"],
+    rel: ["top", "left", "bottom", "right", "position"],
+    rel2: ["top", "bottom", "left", "right"],
+    abs: ["top", "right", "bottom", "left", "width", "height", "margin-top"],
+    abs2: ["top", "right", "bottom", "left"],
+    static: ["top", "left", "right", "position"],
+    fitem: ["min-width", "min-height", "width"],
+    box2: [],
+    hidden: ["display", "font-size", "width", "height", "min-width"],
+    "hidden-child": ["font-size", "width", "display", "color"],
+    em: ["max-height", "line-height", "font-size", "height"],
+    shorthand: ["margin", "border-top", "border-top-style", "border-top-color", "border"],
+    lh: ["line-height", "font-family", "font-weight", "font-style"],
+    pct: ["width", "height", "min-height", "max-width", "min-width", "overflow", "visibility", "opacity", "float", "z-index"],
+  };
+  for (const [id, list] of Object.entries(props)) {
+    if (!list.length) continue;
+    const s = cs(id);
+    log(id, list.map(p => p + "=" + s.getPropertyValue(p)).join(" | "));
+  }
+  const root = getComputedStyle(document.documentElement);
+  log("custom", JSON.stringify(root.getPropertyValue("--gap")), JSON.stringify(root.getPropertyValue("--brand")), JSON.stringify(root.getPropertyValue("--none")));
+  const b = cs("box");
+  log("camel", b.paddingLeft, b.marginTop, b.borderTopWidth, b.cssFloat, b.backgroundColor, typeof b.notAProperty);
+  log("api", b.cssText === "", b.getPropertyPriority("width") === "", b.length > 200, typeof b.item(0), b.getPropertyValue("not-a-prop") === "");
+  try { b.setProperty("width", "1px"); log("set: no throw"); } catch (e) { log("set:", e.name); }
+  try { b.width = "1px"; log("assign: no throw", b.width); } catch (e) { log("assign:", e.name); }
+  const p = cs("pseudo", "::before");
+  log("before", p.content, p.color, p.marginLeft, p.display);
+  log("after-none", JSON.stringify(cs("pseudo", "::after").content));
+  // live: the object reads the current style
+  const live = cs("box");
+  document.getElementById("box").style.width = "123px";
+  log("live", live.width);
+  // detached
+  const d = document.createElement("div");
+  d.style.width = "5px";
+  log("detached", JSON.stringify(getComputedStyle(d).width), JSON.stringify(getComputedStyle(d).display));
+  try { getComputedStyle(document.createTextNode("x")); log("text: no throw"); } catch (e) { log("text:", e.name); }
+  // a-truncate's measure (AmazonUITruncate): max-height rounded up, then the height of an offscreen
+  // copy with the full text and with shorter prefixes
+  const t = document.getElementById("trunc");
+  const maxH = Math.ceil(parseFloat(getComputedStyle(t).maxHeight));
+  const calc = document.createElement("span");
+  calc.className = "a-truncate-calc a-offscreen";
+  t.appendChild(calc);
+  const full = t.querySelector(".a-truncate-full").innerHTML;
+  calc.innerHTML = full;
+  const fullH = parseFloat(getComputedStyle(calc).height);
+  let lo = 0, hi = full.length;
+  while (hi > lo) { const mid = Math.floor((lo + hi) / 2); calc.innerHTML = full.substring(0, mid + 1) + "…"; if (parseFloat(getComputedStyle(calc).height) > maxH) hi = mid; else lo = mid + 1; }
+  calc.remove();
+  log("truncate maxH", maxH, "fullH", fullH, "fits", fullH <= maxH, "cut at", hi);
+  log("done");
+</script></body></html>

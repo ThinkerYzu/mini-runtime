@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><title>synthetic-js</title>
+<style>body{margin:0}.r{display:flex;gap:4px;padding:2px;border:1px solid #ccc}.c{flex:1;font:12px sans-serif;color:#333}</style></head>
+<body><div id="root"></div><script>
+// The DOM of synthetic.html (4000 flex rows of 5 cells), built from a data model of 100,000 records,
+// as an app renders the first part of a large list. The script removes itself at the end, so the DOM
+// is the same as synthetic.html's.
+var store = [];
+for (var i = 0; i < 100000; i++) store.push({ id: i, row: (i / 5) | 0, cell: i % 5, value: i * 0.5, done: false });
+var root = document.getElementById("root");
+for (var r = 0; r < 4000; r++) {
+  var row = document.createElement("div");
+  row.className = "r";
+  for (var c = 0; c < 5; c++) {
+    var rec = store[r * 5 + c];
+    var span = document.createElement("span");
+    span.className = "c";
+    span.textContent = "row " + rec.row + " cell " + rec.cell + " lorem ipsum dolor";
+    row.appendChild(span);
+  }
+  root.appendChild(row);
+}
+document.body.removeChild(document.querySelector("script"));
+</script></body></html>

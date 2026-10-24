@@ -1,0 +1,39 @@
+<!doctype html>
+<!-- A cross-origin frame against release Firefox: bench/compare_bridge.py xframes (SPEC decisions 15 and
+     16: the frame in a mini runtime of its own). The page is on localhost, the frame on 127.0.0.1 (another
+     origin, the same server): the frame element's contentWindow and contentDocument, what a cross-origin
+     WindowProxy allows, postMessage both ways with origin and source, targetOrigin. The order of the
+     frame's first message and its load event varies in Firefox, so it is not checked. -->
+<html><head><title>xframes</title><meta charset="utf-8"></head>
+<body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const f = document.createElement("iframe");
+  f.src = location.href.replace("localhost", "127.0.0.1").replace("xframes.html", "xframes-child.html");
+  // the frame's "hello", posted while it loads, races its load event in Firefox (two processes on
+  // real time), so it is logged at the end
+  let hello = null;
+  window.addEventListener("message", e => {
+    const d = e.data;
+    const line = ["message", JSON.stringify(d), e.origin.split(":")[1].replace("//", ""), e.source === f.contentWindow].join(" ");
+    if (d.hello) hello = line;
+    else log(line);
+    if (d.pong === "ping 2") {
+      log(hello);
+      log("done");
+    }
+  });
+  f.onload = () => {
+    const w = f.contentWindow;
+    log("load", f.contentDocument === null, typeof w, w === f.contentWindow, w.closed, w.length, w.window === w, w.parent === window, w.top === window);
+    for (const p of ["document", "location.href", "name", "opener"]) {
+      try { const v = p === "location.href" ? w.location.href : w[p]; log("read", p, "no throw", typeof v); } catch (e) { log("read", p, e.name); }
+    }
+    try { w.foo = 1; log("write no throw"); } catch (e) { log("write", e.name); }
+    w.postMessage("ping 1", "http://example.com");
+    w.postMessage("ping 2", "*");
+  };
+  document.body.appendChild(f);
+  log("inserted", f.contentDocument === null);
+</script></body></html>

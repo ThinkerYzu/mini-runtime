@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Runtime viewer</title>
+<style>
+html,body{height:100%;margin:0;font:14px system-ui;background:#f6f7fa;color:#202124}
+body{display:flex;flex-direction:column}header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #ccc}
+button,select{font:inherit;padding:5px 10px}#status{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}iframe{width:100%;flex:1;border:0;min-height:0;background:white}
+</style>
+<header><button id="back" title="Go back" disabled>Back</button><button id="forward" title="Go forward" disabled>Forward</button><label>Runtime <select id="runtime"></select></label><button id="attach">Connect</button>
+<button id="detach" disabled>Disconnect</button><span id="status">Connecting…</span></header>
+<iframe id="page" title="Runtime page" sandbox="allow-same-origin" src="/frame"></iframe>
+<script src="/media.js" defer></script>
+<script src="/webgl.js" defer></script>
+<script src="/adopted.js" defer></script>
+<script src="/viewer.js" defer></script>
+</html>

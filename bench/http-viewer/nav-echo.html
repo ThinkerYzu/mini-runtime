@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Navigation destination</title>
+<pre id="info"></pre>
+<p><button id="cross">Assign to the other origin</button>
+<button id="replace">Replace through a redirect</button>
+<button id="back">Back</button>
+<button id="reload">Reload</button>
+<button id="home">Home</button>
+<button id="sameSite">Same-site link back</button></p>
+<form id="post" method="post" action="http://localhost:@PORT@/nav-echo?step=post" enctype="@ENCTYPE@">
+<input name="a" value="1"><textarea name="b">x y
+z</textarea><input id="required" name="r" @REQUIRED@><button id="submit" name="s" value="go">Post</button></form>
+<script>
+console.log("NAV_ECHO " + location.href);
+const info = () => { document.getElementById("info").textContent = JSON.stringify({ href: location.href, referrer: document.referrer,
+  length: history.length, ss: sessionStorage.getItem("k"), type: performance.navigation.type, origin: location.origin }); };
+info();
+sessionStorage.setItem("k", (sessionStorage.getItem("k") || "") + "+" + new URL(location.href).searchParams.get("step"));
+const go = (id, f) => document.getElementById(id).addEventListener("click", f);
+go("cross", () => { location.assign("http://127.0.0.1:@PORT@/nav-echo?step=cross"); });
+go("replace", () => { location.replace("/nav-redirect?to=" + encodeURIComponent("/nav-echo?step=redirected")); });
+go("back", () => history.back());
+go("reload", () => location.reload());
+go("home", () => { location.href = "/nav-start"; });
+go("sameSite", () => { const a = document.createElement("a"); a.href = "http://localhost:@PORT@/nav-echo?step=lax"; document.body.append(a); a.click(); });
+</script>

@@ -1,0 +1,349 @@
+<!doctype html>
+<!-- WebGL executed in the API process against release Firefox (GAPS B169): API_PROCESS=all
+     compare_bridge.py webgl-native. Each answer here needs a real context: limits and extensions
+     of both versions, rendering read back (attributes, blending, depth, stencil, a framebuffer with
+     a texture), textures from typed arrays (float, half float), ImageData, another WebGL canvas and
+     an <img> under UNPACK_FLIP_Y and UNPACK_PREMULTIPLY_ALPHA, a cross-origin image (tainted), and
+     WebGL 2's vertex arrays, instancing, uniform blocks, transform feedback, integer targets,
+     samplers, queries and syncs. Shader logs are not compared (Firefox's come from ANGLE). -->
+<html><head><title>webgl-native</title><meta charset="utf-8"></head><body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.map(v => (Array.isArray(v) || ArrayBuffer.isView(v) ? "[" + Array.from(v).join(",") + "]" : String(v))).join(" "));
+  const tryIt = (what, f) => { try { log(what, f()); } catch (e) { log(what, e.name, e.message); } };
+  const other = new URLSearchParams(location.search).get("other");
+
+  function make(gl, vsrc, fsrc) {
+    const sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o); return o; };
+    const p = gl.createProgram();
+    gl.attachShader(p, sh(gl.VERTEX_SHADER, vsrc));
+    gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fsrc));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) log("link failed");
+    gl.useProgram(p);
+    return p;
+  }
+  function quad(gl, p) {
+    const b = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const at = gl.getAttribLocation(p, "p");
+    gl.enableVertexAttribArray(at);
+    gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0);
+  }
+  const px = (gl, x, y, n = 1) => { const a = new Uint8Array(4 * n); gl.readPixels(x, y, n, 1, gl.RGBA, gl.UNSIGNED_BYTE, a); return a; };
+  const VS = "attribute vec2 p; varying vec2 v; void main() { v = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }";
+
+  // limits and identity, WebGL 1 and 2
+  const c1 = document.createElement("canvas");
+  c1.width = 16; c1.height = 16;
+  const gl = c1.getContext("webgl");
+  const P = n => { const v = gl.getParameter(gl[n]); return n + "=" + (ArrayBuffer.isView(v) ? "[" + Array.from(v) + "]" : v); };
+  log("attrs1", JSON.stringify(gl.getContextAttributes()));
+  log("limits1", ["MAX_TEXTURE_SIZE", "MAX_CUBE_MAP_TEXTURE_SIZE", "MAX_RENDERBUFFER_SIZE", "MAX_VIEWPORT_DIMS", "MAX_VERTEX_ATTRIBS",
+    "MAX_VERTEX_UNIFORM_VECTORS", "MAX_FRAGMENT_UNIFORM_VECTORS", "MAX_VARYING_VECTORS", "MAX_TEXTURE_IMAGE_UNITS",
+    "MAX_VERTEX_TEXTURE_IMAGE_UNITS", "MAX_COMBINED_TEXTURE_IMAGE_UNITS", "ALIASED_POINT_SIZE_RANGE", "ALIASED_LINE_WIDTH_RANGE"].map(P).join(" "));
+  log("bits1", ["RED_BITS", "GREEN_BITS", "BLUE_BITS", "ALPHA_BITS", "DEPTH_BITS", "STENCIL_BITS", "SAMPLES", "SAMPLE_BUFFERS",
+    "IMPLEMENTATION_COLOR_READ_FORMAT", "IMPLEMENTATION_COLOR_READ_TYPE", "SUBPIXEL_BITS"].map(P).join(" "));
+  log("state1", ["BLEND", "DITHER", "DEPTH_FUNC", "FRONT_FACE", "CULL_FACE_MODE", "STENCIL_WRITEMASK", "STENCIL_VALUE_MASK", "UNPACK_ALIGNMENT",
+    "PACK_ALIGNMENT", "UNPACK_FLIP_Y_WEBGL", "UNPACK_PREMULTIPLY_ALPHA_WEBGL", "UNPACK_COLORSPACE_CONVERSION_WEBGL", "GENERATE_MIPMAP_HINT",
+    "ACTIVE_TEXTURE", "SCISSOR_BOX", "DEPTH_RANGE", "FRAMEBUFFER_BINDING"].map(P).join(" "));
+  tryIt("webgl2 enum on webgl1", () => [gl.getParameter(0x8073), gl.getError()]);
+  tryIt("copy buffer target on webgl1", () => { gl.bindBuffer(0x8F36, null); return gl.getError(); });
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  log("renderer", gl.getParameter(gl.RENDERER), gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL), gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL));
+  log("getError1", gl.getError());
+
+  const c2 = document.createElement("canvas");
+  c2.width = 8; c2.height = 8;
+  const g2 = c2.getContext("webgl2");
+  const P2 = n => { const v = g2.getParameter(g2[n]); return n + "=" + (ArrayBuffer.isView(v) ? "[" + Array.from(v) + "]" : v); };
+  log("extensions2", g2.getSupportedExtensions().join(","));
+  log("limits2", ["MAX_3D_TEXTURE_SIZE", "MAX_ARRAY_TEXTURE_LAYERS", "MAX_DRAW_BUFFERS", "MAX_COLOR_ATTACHMENTS", "MAX_SAMPLES",
+    "MAX_UNIFORM_BUFFER_BINDINGS", "MAX_UNIFORM_BLOCK_SIZE", "MAX_VERTEX_UNIFORM_BLOCKS", "MAX_ELEMENT_INDEX", "MAX_SERVER_WAIT_TIMEOUT",
+    "UNIFORM_BUFFER_OFFSET_ALIGNMENT", "MAX_CLIENT_WAIT_TIMEOUT_WEBGL", "MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS", "MAX_VARYING_COMPONENTS",
+    "MIN_PROGRAM_TEXEL_OFFSET", "MAX_PROGRAM_TEXEL_OFFSET", "MAX_TEXTURE_LOD_BIAS", "SAMPLES"].map(P2).join(" "));
+  log("state2", ["READ_BUFFER", "DRAW_BUFFER0", "READ_FRAMEBUFFER_BINDING", "VERTEX_ARRAY_BINDING", "TRANSFORM_FEEDBACK_BINDING",
+    "UNPACK_ROW_LENGTH", "RASTERIZER_DISCARD", "SAMPLER_BINDING"].map(P2).join(" "));
+  log("getError2", g2.getError());
+
+  // drawing: a gradient, blending, depth and stencil in the drawing buffer
+  {
+    const c = document.createElement("canvas");
+    c.width = 8; c.height = 8;
+    const g = c.getContext("webgl", { antialias: false, stencil: true });
+    log("attrs stencil", JSON.stringify(g.getContextAttributes()), g.getParameter(g.STENCIL_BITS) > 0, g.getParameter(g.DEPTH_BITS) > 0);
+    const p = make(g, VS, "precision mediump float; varying vec2 v; uniform vec4 c; uniform float z; void main() { gl_FragColor = c.a < 0.0 ? vec4(v, 0.0, 1.0) : c; }");
+    quad(g, p);
+    g.uniform4f(g.getUniformLocation(p, "c"), 0, 0, 0, -1);
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+    log("gradient", px(g, 0, 0), px(g, 7, 0), px(g, 0, 7), px(g, 3, 4));
+    g.enable(g.BLEND);
+    g.blendFunc(g.SRC_ALPHA, g.ONE_MINUS_SRC_ALPHA);
+    g.uniform4f(g.getUniformLocation(p, "c"), 1, 1, 1, 0.5);
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+    log("blended", px(g, 0, 0), px(g, 7, 7));
+    g.disable(g.BLEND);
+    g.clearColor(0, 0, 0, 1);
+    g.clearStencil(0);
+    g.clear(g.COLOR_BUFFER_BIT | g.STENCIL_BUFFER_BIT | g.DEPTH_BUFFER_BIT);
+    g.enable(g.SCISSOR_TEST);
+    g.scissor(0, 0, 4, 8);
+    g.enable(g.STENCIL_TEST);
+    g.stencilFunc(g.ALWAYS, 1, 0xff);
+    g.stencilOp(g.KEEP, g.KEEP, g.REPLACE);
+    g.colorMask(false, false, false, false);
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+    g.disable(g.SCISSOR_TEST);
+    g.colorMask(true, true, true, true);
+    g.stencilFunc(g.EQUAL, 1, 0xff);
+    g.uniform4f(g.getUniformLocation(p, "c"), 1, 0, 0, 1);
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+    log("stencil", px(g, 1, 1), px(g, 6, 1), g.getParameter(g.STENCIL_FUNC) === g.EQUAL, g.getParameter(g.STENCIL_REF));
+    log("getError draw", g.getError());
+  }
+
+  // a framebuffer with a texture, drawn to and sampled; its status and attachments
+  {
+    const p = make(gl, VS, "precision mediump float; varying vec2 v; uniform sampler2D t; uniform int mode; void main() { gl_FragColor = mode == 0 ? vec4(0.25, 0.5, 0.75, 1.0) : texture2D(t, v); }");
+    quad(gl, p);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 4, 4, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    log("fb", gl.checkFramebufferStatus(gl.FRAMEBUFFER), gl.getParameter(gl.FRAMEBUFFER_BINDING) === fb, gl.isFramebuffer(fb),
+        gl.getFramebufferAttachmentParameter(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE),
+        gl.getFramebufferAttachmentParameter(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME) === tex);
+    gl.viewport(0, 0, 4, 4);
+    gl.uniform1i(gl.getUniformLocation(p, "mode"), 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    log("fb pixels", px(gl, 1, 1));
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    log("default fb", gl.getParameter(gl.FRAMEBUFFER_BINDING), gl.checkFramebufferStatus(gl.FRAMEBUFFER));
+    gl.viewport(0, 0, 16, 16);
+    gl.uniform1i(gl.getUniformLocation(p, "mode"), 1);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    log("sampled", px(gl, 8, 8));
+    const rb = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_STENCIL, 4, 4);
+    log("renderbuffer", gl.getRenderbufferParameter(gl.RENDERBUFFER, gl.RENDERBUFFER_WIDTH), gl.getRenderbufferParameter(gl.RENDERBUFFER, gl.RENDERBUFFER_INTERNAL_FORMAT), gl.getError());
+    gl.deleteFramebuffer(fb);
+    log("deleted fb", gl.isFramebuffer(fb), gl.getParameter(gl.FRAMEBUFFER_BINDING));
+    gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 4, 4, 2, 2, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, gl.createFramebuffer());
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    log("copied", px(gl, 0, 0), gl.getError());
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  // textures from arrays: float and half float, alignment, flip and premultiply on a view
+  {
+    const c = document.createElement("canvas");
+    c.width = 2; c.height = 2;
+    const g = c.getContext("webgl", { antialias: false });
+    const p = make(g, VS, "precision highp float; varying vec2 v; uniform sampler2D t; uniform float k; void main() { gl_FragColor = texture2D(t, v) * k; }");
+    quad(g, p);
+    const t = g.createTexture();
+    g.bindTexture(g.TEXTURE_2D, t);
+    g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.NEAREST);
+    g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.NEAREST);
+    log("float ext", !!g.getExtension("OES_texture_float"), !!g.getExtension("OES_texture_half_float"));
+    g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, 2, 1, 0, g.RGBA, g.FLOAT, new Float32Array([2, 0, 0, 2, 0, 1, 0, 2]));
+    g.uniform1f(g.getUniformLocation(p, "k"), 0.5);
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+    log("float texture", px(g, 0, 0, 2), g.getError());
+    const half = g.getExtension("OES_texture_half_float");
+    g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, 1, 1, 0, g.RGBA, half.HALF_FLOAT_OES, new Uint16Array([0x3c00, 0x3800, 0, 0x3c00]));
+    g.uniform1f(g.getUniformLocation(p, "k"), 1);
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+    log("half texture", px(g, 0, 0), g.getError());
+    g.pixelStorei(g.UNPACK_ALIGNMENT, 1);
+    g.texImage2D(g.TEXTURE_2D, 0, g.RGB, 1, 2, 0, g.RGB, g.UNSIGNED_BYTE, new Uint8Array([255, 0, 0, 0, 0, 255]));
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+    log("rgb rows", px(g, 0, 0), px(g, 0, 1));
+    g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, true);
+    g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, 1, 2, 0, g.RGBA, g.UNSIGNED_BYTE, new Uint8Array([200, 100, 50, 128, 0, 255, 0, 255]));
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+    log("flipped premultiplied view", px(g, 0, 0), px(g, 0, 1), g.getParameter(g.UNPACK_FLIP_Y_WEBGL));
+    // ImageData and another WebGL canvas as sources (flipped and premultiplied still)
+    const d = document.createElement("canvas").getContext("2d").createImageData(1, 2);
+    d.data.set([10, 20, 30, 255, 40, 50, 60, 255]);
+    g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, d);
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+    log("imagedata", px(g, 0, 0), px(g, 0, 1), g.getError());
+    g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, false);
+    g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    const src = document.createElement("canvas");
+    src.width = 2; src.height = 2;
+    const s = src.getContext("webgl", { preserveDrawingBuffer: true });
+    s.enable(s.SCISSOR_TEST);
+    s.clearColor(0, 1, 0, 1); s.clear(s.COLOR_BUFFER_BIT);
+    s.scissor(0, 0, 2, 1); s.clearColor(1, 0, 1, 1); s.clear(s.COLOR_BUFFER_BIT);
+    g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, src);
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+    log("webgl canvas source", px(g, 0, 0), px(g, 0, 1), g.getError());
+    window.texCheck = { g, p };
+  }
+
+  // WebGL 2: vertex arrays, instancing, uniform blocks, transform feedback, integer targets, samplers
+  {
+    const g = g2;
+    const vs = `#version 300 es
+      in vec2 p; in float off; uniform U { vec4 tint; float scale; };
+      flat out int id; out vec4 col;
+      void main() { id = gl_InstanceID; col = tint * scale; gl_Position = vec4(p.x * 0.25 + off, p.y, 0.0, 1.0); }`;
+    const fs = `#version 300 es
+      precision highp float; flat in int id; in vec4 col; out vec4 o;
+      void main() { o = id == 1 ? col : vec4(0.0, 0.0, 1.0, 1.0); }`;
+    const p = make(g, vs, fs);
+    const vao = g.createVertexArray();
+    g.bindVertexArray(vao);
+    const b = g.createBuffer();
+    g.bindBuffer(g.ARRAY_BUFFER, b);
+    g.bufferData(g.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), g.STATIC_DRAW);
+    const pl = g.getAttribLocation(p, "p");
+    g.enableVertexAttribArray(pl);
+    g.vertexAttribPointer(pl, 2, g.FLOAT, false, 0, 0);
+    const ob = g.createBuffer();
+    g.bindBuffer(g.ARRAY_BUFFER, ob);
+    g.bufferData(g.ARRAY_BUFFER, new Float32Array([-0.75, 0.75]), g.STATIC_DRAW);
+    const ol = g.getAttribLocation(p, "off");
+    g.enableVertexAttribArray(ol);
+    g.vertexAttribPointer(ol, 1, g.FLOAT, false, 0, 0);
+    g.vertexAttribDivisor(ol, 1);
+    const ub = g.createBuffer();
+    g.bindBuffer(g.UNIFORM_BUFFER, ub);
+    g.bufferData(g.UNIFORM_BUFFER, new Float32Array([1, 0.5, 0, 1, 1, 0, 0, 0]), g.DYNAMIC_DRAW);
+    const bi = g.getUniformBlockIndex(p, "U");
+    g.uniformBlockBinding(p, bi, 0);
+    g.bindBufferBase(g.UNIFORM_BUFFER, 0, ub);
+    log("block", bi, g.getActiveUniformBlockName(p, bi), g.getActiveUniformBlockParameter(p, bi, g.UNIFORM_BLOCK_DATA_SIZE),
+        g.getActiveUniformBlockParameter(p, bi, g.UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES).length,
+        g.getActiveUniformBlockParameter(p, bi, g.UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER),
+        g.getIndexedParameter(g.UNIFORM_BUFFER_BINDING, 0) === ub);
+    const idx = g.getUniformIndices(p, ["tint", "scale", "nope"]);
+    log("uniform indices", idx.length, idx[2], g.getActiveUniforms(p, [idx[1]], g.UNIFORM_OFFSET), g.getActiveUniforms(p, [idx[0]], g.UNIFORM_TYPE));
+    g.clearColor(0, 0, 0, 0);
+    g.clear(g.COLOR_BUFFER_BIT);
+    g.drawArraysInstanced(g.TRIANGLE_STRIP, 0, 4, 2);
+    log("instanced", px(g, 1, 4), px(g, 6, 4), px(g, 4, 4), g.getParameter(g.VERTEX_ARRAY_BINDING) === vao, g.getError());
+    g.bindVertexArray(null);
+    // transform feedback
+    const tvs = `#version 300 es
+      in float x; out float y; void main() { y = x * 2.0 + 1.0; gl_Position = vec4(0.0); }`;
+    const tfs = `#version 300 es
+      precision mediump float; out vec4 o; void main() { o = vec4(1.0); }`;
+    const sh = (t, s) => { const o = g.createShader(t); g.shaderSource(o, s); g.compileShader(o); return o; };
+    const tp = g.createProgram();
+    g.attachShader(tp, sh(g.VERTEX_SHADER, tvs));
+    g.attachShader(tp, sh(g.FRAGMENT_SHADER, tfs));
+    g.transformFeedbackVaryings(tp, ["y"], g.SEPARATE_ATTRIBS);
+    g.linkProgram(tp);
+    const varying = g.getTransformFeedbackVarying(tp, 0);
+    log("tf program", g.getProgramParameter(tp, g.LINK_STATUS), varying.name, varying.type, g.getProgramParameter(tp, g.TRANSFORM_FEEDBACK_VARYINGS));
+    g.useProgram(tp);
+    const inb = g.createBuffer();
+    g.bindBuffer(g.ARRAY_BUFFER, inb);
+    g.bufferData(g.ARRAY_BUFFER, new Float32Array([1, 2, 3]), g.STATIC_DRAW);
+    const xl = g.getAttribLocation(tp, "x");
+    g.enableVertexAttribArray(xl);
+    g.vertexAttribPointer(xl, 1, g.FLOAT, false, 0, 0);
+    const outb = g.createBuffer();
+    g.bindBuffer(g.TRANSFORM_FEEDBACK_BUFFER, outb);
+    g.bufferData(g.TRANSFORM_FEEDBACK_BUFFER, 12, g.STREAM_READ);
+    g.bindBuffer(g.TRANSFORM_FEEDBACK_BUFFER, null);
+    const tf = g.createTransformFeedback();
+    g.bindTransformFeedback(g.TRANSFORM_FEEDBACK, tf);
+    g.bindBufferBase(g.TRANSFORM_FEEDBACK_BUFFER, 0, outb);
+    g.enable(g.RASTERIZER_DISCARD);
+    g.beginTransformFeedback(g.POINTS);
+    g.drawArrays(g.POINTS, 0, 3);
+    g.endTransformFeedback();
+    g.disable(g.RASTERIZER_DISCARD);
+    g.bindTransformFeedback(g.TRANSFORM_FEEDBACK, null);
+    g.bindBuffer(g.COPY_READ_BUFFER, outb);
+    const back = new Float32Array(3);
+    g.getBufferSubData(g.COPY_READ_BUFFER, 0, back);
+    log("transform feedback", back, g.getParameter(g.TRANSFORM_FEEDBACK_BINDING), g.getError());
+    // an integer texture as a target, read back as RGBA_INTEGER
+    const it = g.createTexture();
+    g.bindTexture(g.TEXTURE_2D, it);
+    g.texStorage2D(g.TEXTURE_2D, 1, g.RGBA32I, 2, 2);
+    const ifb = g.createFramebuffer();
+    g.bindFramebuffer(g.FRAMEBUFFER, ifb);
+    g.framebufferTexture2D(g.FRAMEBUFFER, g.COLOR_ATTACHMENT0, g.TEXTURE_2D, it, 0);
+    g.clearBufferiv(g.COLOR, 0, new Int32Array([-5, 7, 1000, -1]));
+    const ip = new Int32Array(4);
+    g.readPixels(0, 0, 1, 1, g.RGBA_INTEGER, g.INT, ip);
+    log("integer target", ip, g.getParameter(g.READ_FRAMEBUFFER_BINDING) === ifb, g.getTexParameter(g.TEXTURE_2D, g.TEXTURE_IMMUTABLE_FORMAT), g.getError());
+    g.bindFramebuffer(g.FRAMEBUFFER, null);
+    // samplers, a 3D texture's parameters, internal formats
+    const smp = g.createSampler();
+    g.samplerParameteri(smp, g.TEXTURE_MIN_FILTER, g.NEAREST);
+    g.samplerParameterf(smp, g.TEXTURE_MAX_LOD, 3.5);
+    g.bindSampler(0, smp);
+    log("sampler", g.isSampler(smp), g.getSamplerParameter(smp, g.TEXTURE_MIN_FILTER), g.getSamplerParameter(smp, g.TEXTURE_MAX_LOD), g.getParameter(g.SAMPLER_BINDING) === smp);
+    log("internalformat", g.getInternalformatParameter(g.RENDERBUFFER, g.RGBA8, g.SAMPLES));
+    const t3 = g.createTexture();
+    g.bindTexture(g.TEXTURE_3D, t3);
+    g.texImage3D(g.TEXTURE_3D, 0, g.R8, 2, 2, 2, 0, g.RED, g.UNSIGNED_BYTE, new Uint8Array(8));
+    log("texture 3d", g.getParameter(g.TEXTURE_BINDING_3D) === t3, g.getTexParameter(g.TEXTURE_3D, g.TEXTURE_WRAP_R), g.getError());
+    // uniforms of each kind read back
+    const up = make(g, `#version 300 es
+      uniform mat3 m; uniform uvec2 u; uniform ivec3 iv; uniform bool b; void main() { gl_Position = vec4(m[0][0] + float(u.x + uint(iv.x)) + (b ? 1.0 : 0.0)); }`,
+      `#version 300 es
+      precision mediump float; out vec4 o; void main() { o = vec4(1.0); }`);
+    g.uniformMatrix3fv(g.getUniformLocation(up, "m"), false, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    g.uniform2ui(g.getUniformLocation(up, "u"), 3, 4);
+    g.uniform3iv(g.getUniformLocation(up, "iv"), new Int32Array([9, -2, 5, 6]), 1);
+    g.uniform1i(g.getUniformLocation(up, "b"), 1);
+    log("uniforms", g.getUniform(up, g.getUniformLocation(up, "m")), g.getUniform(up, g.getUniformLocation(up, "u")),
+        g.getUniform(up, g.getUniformLocation(up, "iv")), g.getUniform(up, g.getUniformLocation(up, "b")), g.getError());
+    // a sync and a query, read on a later task
+    const q = g.createQuery();
+    g.beginQuery(g.ANY_SAMPLES_PASSED, q);
+    g.drawArrays(g.TRIANGLES, 0, 3);
+    g.endQuery(g.ANY_SAMPLES_PASSED);
+    log("query", g.getQuery(g.ANY_SAMPLES_PASSED, g.CURRENT_QUERY), g.isQuery(q));
+    const sync = g.fenceSync(g.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    g.flush();
+    setTimeout(() => {
+      log("later", g.getQueryParameter(q, g.QUERY_RESULT_AVAILABLE), g.getQueryParameter(q, g.QUERY_RESULT),
+          g.clientWaitSync(sync, 0, 0) !== g.WAIT_FAILED, g.getSyncParameter(sync, g.SYNC_STATUS), g.getError());
+    }, 50);
+  }
+
+  // an <img> (same origin, flipped), then another origin's: tainted without CORS
+  {
+    const { g, p } = window.texCheck;
+    const img = new Image();
+    img.onload = () => {
+      g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, true);
+      g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, img);
+      g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+      log("image", img.width, img.height, px(g, 0, 0), g.getError());
+      g.texImage2D(g.TEXTURE_2D, 0, g.LUMINANCE, g.LUMINANCE, g.UNSIGNED_BYTE, img);
+      g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+      log("luminance", px(g, 0, 0), g.getError());
+      g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, false);
+      const cross = new Image();
+      cross.onload = () => {
+        tryIt("cross-origin", () => { g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, cross); return g.getError(); });
+        const cors = new Image();
+        cors.crossOrigin = "anonymous";
+        cors.onload = () => log("cors image loaded");
+        cors.onerror = () => { log("cors image error"); log("done"); };
+        cors.src = `http://localhost:${other}/images-a.png?cors`;
+      };
+      cross.onerror = () => { log("cross error"); log("done"); };
+      cross.src = `http://localhost:${other}/images-a.png`;
+    };
+    img.src = "images-a.png";
+  }
+</script>
+</body></html>

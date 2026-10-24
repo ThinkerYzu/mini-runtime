@@ -1,0 +1,84 @@
+<!doctype html>
+<!-- Session history within the document against release Firefox (task 0e92): pushState and
+     replaceState, the state as a structured clone, back,
+     forward and go on a later task with popstate (its state, target, trust, the URL it finds), a
+     fragment-only move's hashchange, a go past either end doing nothing (go(0), a reload in
+     Firefox, is not tried). X's back arrow on a post is history.back(). The case ends at the URL
+     it was loaded at (mini_realsites.py loads the runtime from the URL Firefox's tab ends at). -->
+<html><head><title>history</title><meta charset="utf-8"></head>
+<body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const tail = u => String(u).replace(/^.*\//, "");
+  // (history.length is not logged: Firefox's comes from the parent process's session history, and
+  // the case's pushes added 2 or 3 to it from one run to the next)
+  const where = () => [tail(location.href), JSON.stringify(history.state)].join(" ");
+  const popped = () => new Promise(resolve => {
+    const events = [];
+    const on = e => {
+      events.push([e.type, e.constructor.name, e.isTrusted, e.target === window, JSON.stringify(e.state ?? null),
+                   tail(location.href), JSON.stringify(history.state)].join(" "));
+      if (e.type === "popstate") setTimeout(() => { removeEventListener("popstate", on); removeEventListener("hashchange", on); resolve(events); }, 50);
+    };
+    addEventListener("popstate", on);
+    addEventListener("hashchange", on);
+  });
+  const move = async (what, f) => {
+    const p = popped();
+    f();
+    log(what, "at once:", where());
+    for (const line of await p) log(what, "event:", line);
+    log(what, "after:", where());
+  };
+  log("start", typeof history.length, JSON.stringify(history.state), history.scrollRestoration, Object.prototype.toString.call(history));
+
+  window.addEventListener("load", async () => {
+    // 1. entries added and changed
+    history.pushState({ a: 1 }, "", "history.html?p=1");
+    log("push 1", where());
+    const o = { b: [1, 2], d: new Date(0) };
+    history.pushState(o, "", "?p=2");
+    log("push 2", where(), history.state === o, history.state.d instanceof Date);
+    history.replaceState("r", "", "?p=2r");
+    log("replace", where());
+    let err;
+    try { history.pushState(() => 1, "", "?bad"); err = "none"; } catch (e) { err = e.name; }
+    log("push a function", err, where());
+    try { history.pushState(null, "", "https://other.example/"); err = "none"; } catch (e) { err = e.name; }
+    log("push another origin", err, where());
+
+    // 2. moving
+    await move("back", () => history.back());
+    await move("forward", () => history.forward());
+    await move("go -2", () => history.go(-2));
+    // (go(0) reloads the document in Firefox: not tried)
+    history.go(-5);
+    history.go(9);
+    await new Promise(r => setTimeout(r, 100));
+    log("go -5, 9", where());
+
+    // 3. a push after going back drops the entries after the current one
+    await move("go 1", () => history.go(1));
+    history.pushState({ c: 3 }, "", "?p=3");
+    log("push 3", where());
+    history.forward();
+    await new Promise(r => setTimeout(r, 100));
+    log("forward at the end", where());
+
+    // 4. a fragment-only entry
+    history.pushState(null, "", "#frag");
+    log("push #frag", where());
+    await move("back from #frag", () => history.back());
+
+    // 5. scrollRestoration
+    history.scrollRestoration = "manual";
+    const m = history.scrollRestoration;
+    history.scrollRestoration = "bogus";
+    log("scrollRestoration", m, history.scrollRestoration);
+    history.scrollRestoration = "auto";
+    history.replaceState(null, "", "history.html");
+    log("end", tail(location.href));
+  });
+</script>
+</body></html>

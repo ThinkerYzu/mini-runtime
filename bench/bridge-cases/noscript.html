@@ -1,0 +1,37 @@
+<!doctype html>
+<!-- <noscript> against release Firefox: bench/compare_bridge.py noscript. With scripting on, the HTML
+     parser keeps a <noscript>'s content as text (nsHtml5TreeBuilder::setScriptingEnabled): in the
+     document, whose scripts run, and in every fragment (nsHtml5StringParser::ParseFragment);
+     DOMParser parses with scripting off, as elements (GAPS B13). Its box: none, by html.css's
+     @media (scripting), and author rules with the scripting media feature (task 3843). -->
+<html><head><title>noscript</title><meta charset="utf-8">
+<noscript><style>body { color: red }</style></noscript>
+</head><body>
+<noscript><img alt="Apple" src="a.png"><div class='rhf-border'>Viewed <b>items</b></div></noscript>
+<div id="frag"></div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const ns = document.querySelectorAll("noscript");
+  log("document", ns.length, [...ns].map(n => n.childNodes.length + ":" + n.firstChild.nodeType + ":" + JSON.stringify(n.textContent)).join(" "));
+  log("head style applied", getComputedStyle(document.body).color);
+  const f = document.getElementById("frag");
+  f.innerHTML = "<noscript><p>para</p></noscript>";
+  log("innerHTML", f.firstChild.childNodes.length, f.firstChild.firstChild.nodeType, JSON.stringify(f.innerHTML));
+  const d = new DOMParser().parseFromString("<noscript><p>para</p></noscript>", "text/html");
+  const dn = d.querySelector("noscript");
+  // scripting off: the <noscript> is in the head (in head noscript), and the <p> ends it and goes to the body
+  log("DOMParser", dn.parentNode.localName, dn.childNodes.length, d.querySelectorAll("p").length, JSON.stringify(d.body.innerHTML));
+  const d2 = new DOMParser().parseFromString("<body><noscript><p>para</p></noscript>", "text/html");
+  log("DOMParser body", d2.querySelector("noscript").childNodes.length, d2.querySelector("noscript").firstChild.nodeType, JSON.stringify(d2.body.innerHTML));
+  // html.css hides <noscript> under @media (scripting) (task 3843: X's was laid out, 242 px tall)
+  const bn = document.body.querySelector("noscript"), r = bn.getBoundingClientRect();
+  log("box", getComputedStyle(bn).display, r.width, r.height, getComputedStyle(document.head.querySelector("noscript")).display);
+  const st = document.createElement("style");
+  st.textContent = "#frag { width: 10px } @media (scripting) { #frag { width: 20px } } @media (scripting: enabled) { #frag { height: 7px } } @media (scripting: none) { #frag { width: 30px } } @media (scripting: initial-only) { #frag { height: 9px } }";
+  document.head.appendChild(st);
+  log("sheet", getComputedStyle(f).width, getComputedStyle(f).height);
+  log("matchMedia", ["(scripting)", "(scripting: enabled)", "(scripting: none)", "(scripting: initial-only)", "not (scripting)"].map(q => matchMedia(q).matches).join(" "));
+  log("elements", document.getElementsByTagName("*").length);
+  log("done");
+</script></body></html>

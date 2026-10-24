@@ -1,0 +1,114 @@
+<!doctype html>
+<!-- Images loading against release Firefox: bench/compare_bridge.py images (GAPS B128, task 09c9).
+     Gecko's nsImageLoadingContent and HTMLImageElement: load and error, naturalWidth and naturalHeight,
+     complete, currentSrc, width and height of an image that is not rendered, decode(), the pending
+     request, a src set again or removed, blob: and data: URLs, images the parser and innerHTML made,
+     and the window's load waiting for them. Google Maps draws its tiles and icons after their load
+     and decode(). One step at a time, so that the order does not depend on the network. -->
+<html><head><title>images</title><meta charset="utf-8"></head><body>
+<img id="parsed" src="images-a.png">
+<img id="parsed-hidden" src="images-b.png" style="display: none">
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.map(String).join(" "));
+const name = u => /^blob:/.test(u) ? "blob" : /^data:/.test(u) ? "data" : String(u).replace(/^.*\//, "");
+const state = img => [img.complete, img.naturalWidth, img.naturalHeight, img.width, img.height, name(img.currentSrc)].join(",");
+// load or error, whichever comes first
+const settled = img => new Promise(resolve => {
+  const done = e => { img.removeEventListener("load", done); img.removeEventListener("error", done); resolve(e.type); };
+  img.addEventListener("load", done);
+  img.addEventListener("error", done);
+});
+const decoded = img => img.decode().then(() => "decoded", e => e.name + ": " + e.message);
+const parsed = document.getElementById("parsed");
+log("parsed at its script", parsed.complete, parsed.naturalWidth);
+window.addEventListener("load", () => {
+  log("window load", state(parsed), state(document.getElementById("parsed-hidden")));
+  run();
+});
+async function run() {
+  // new Image(): nothing until src; then a task loads it
+  const a = new Image();
+  log("new", state(a), typeof a.decode);
+  const d0 = decoded(a);
+  log("no src decode", await d0);
+  a.src = "images-a.png";
+  log("src set", state(a));
+  await Promise.resolve();
+  log("after a microtask", state(a));
+  const da = decoded(a);
+  log("a", await settled(a), state(a));
+  log("a decode", await da, await decoded(a));
+  // decode() at once after src, as Google Maps calls it
+  const f = new Image();
+  f.src = "images-b.png?fresh";
+  log("decode after src", await decoded(f), state(f));
+  // the same src again loads again
+  a.src = "images-a.png";
+  log("same src", await settled(a), state(a));
+  // a new src while the current has loaded: pending until it ends
+  a.src = "images-b.png";
+  await Promise.resolve();
+  log("b pending", state(a));
+  log("b", await settled(a), state(a));
+  // a broken image, a missing one, an empty src
+  a.src = "images-bad.png";
+  const dbad = decoded(a);
+  log("bad", await settled(a), state(a), await dbad);
+  const m = new Image();
+  m.src = "images-missing.png";
+  log("missing", await settled(m), state(m), await decoded(m));
+  const e = new Image();
+  e.src = "images-a.png";
+  await settled(e);
+  e.src = "";
+  log("empty", await settled(e), state(e));
+  // removed while loading: no event, complete
+  const r = new Image();
+  r.src = "images-b.png";
+  let fired = "";
+  r.onload = r.onerror = ev => { fired += ev.type; };
+  await Promise.resolve();
+  r.removeAttribute("src");
+  log("removed", state(r));
+  await new Promise(res => setTimeout(res, 200));
+  log("removed later", JSON.stringify(fired), state(r));
+  // attributes win over the image's size; the setters
+  const w = new Image(30);
+  w.src = "images-b.png";
+  await settled(w);
+  log("width attribute", state(w), w.getAttribute("width"));
+  w.width = 12.7;
+  w.removeAttribute("height");
+  log("width set", w.width, w.height, w.getAttribute("width"));
+  // blob: and data: URLs
+  const bytes = await (await fetch("images-b.png")).blob();
+  const bu = URL.createObjectURL(bytes);
+  const b = new Image();
+  b.src = bu;
+  log("blob", await settled(b), state(b));
+  const dimg = new Image();
+  dimg.src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAADCAYAAABfwxXFAAAAEklEQVR4nGM4ISf3HxdmIFsSACewKkA2MpUQAAAAAElFTkSuQmCC";
+  log("data", await settled(dimg), state(dimg));
+  // innerHTML in the document, and createElement then append
+  const div = document.createElement("div");
+  document.body.appendChild(div);
+  div.innerHTML = '<img src="images-b.png">';
+  const inner = div.firstChild;
+  log("innerHTML", await settled(inner), state(inner));
+  const c = document.createElement("img");
+  c.setAttribute("src", "images-a.png");
+  document.body.appendChild(c);
+  log("created", await settled(c), state(c));
+  // load does not bubble; a capture listener at the document sees it
+  let captured = 0;
+  document.addEventListener("load", ev => { if (ev.target.localName === "img") captured++; }, true);
+  const k = new Image();
+  document.body.appendChild(k);
+  k.src = "images-b.png";
+  await settled(k);
+  log("captured at the document", captured);
+  log("done");
+}
+</script>
+</body></html>

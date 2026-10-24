@@ -1,0 +1,26 @@
+<!doctype html><meta charset="utf-8"><title>Controlled editable mirror regression</title>
+<style>#editor{white-space:pre-wrap;min-height:50px}</style>
+<div id="editor" contenteditable="true" role="textbox"><span><br></span></div>
+<div id="native" contenteditable="true" role="textbox"></div><output id="native-model"></output>
+<p>Model: <output id="model"></output></p>
+<script>
+document.getElementById('native').addEventListener('input',()=>document.getElementById('native-model').textContent=document.getElementById('native').textContent);
+const editor=document.getElementById('editor');let model='';
+editor.addEventListener('beforeinput',e=>{
+  const s=getSelection();
+  let start=s.anchorNode?.nodeType===3?s.anchorOffset:0;
+  let end=s.focusNode?.nodeType===3?s.focusOffset:0;
+  [start,end]=[Math.min(start,end),Math.max(start,end)];
+  let text='';
+  if(e.inputType==='insertText')text=e.data;
+  else if(e.inputType==='insertParagraph'||e.inputType==='insertLineBreak')text='\n';
+  else if(e.inputType==='deleteContentBackward'){if(start===end)start=Math.max(0,start-1);}
+  else if(e.inputType==='deleteContentForward'){if(start===end)end=Math.min(model.length,end+1);}
+  else return;
+  model=model.slice(0,start)+text+model.slice(end);
+  e.preventDefault();
+  const span=document.createElement('span');span.textContent=model;editor.replaceChildren(span);
+  document.getElementById('model').textContent=model;
+  getSelection().collapse(span.firstChild,start+text.length);
+});
+</script>

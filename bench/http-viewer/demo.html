@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Attachable runtime demo</title>
+<link rel="stylesheet" href="demo.css">
+<style>
+body{font:18px system-ui;max-width:700px;margin:48px auto;padding:0 24px;color:#17213a;background:#fafbff}
+button,input{font:inherit;padding:8px 14px}button{cursor:pointer}output{font-weight:600}
+.space{height:1400px;background:linear-gradient(#e3eafc,#fafbff);margin-top:40px;border-radius:12px;padding:24px}
+</style>
+<h1>A page that stays running</h1>
+<p>Runtime starts: <output id="starts">0</output> · Timer ticks: <output id="ticks">0</output></p>
+<p><button id="increment">Count a click</button> <output id="count">0</output></p>
+<p><label>Draft <input id="draft" placeholder="Type something"></label></p>
+<p>Your draft: <output id="echo"></output></p>
+<p>Viewport: <output id="size"></output></p>
+<p>Runtime scroll position: <output id="scroll">0</output></p>
+<div id="shadow"></div>
+<p>Disconnect the viewer, then connect again. Your count and draft should remain.</p>
+<div class="space">Scroll down, then reconnect to check the scroll position.</div>
+<script>
+window.__starts = (window.__starts || 0) + 1;
+document.getElementById("starts").textContent = String(window.__starts);
+let count = 0, ticks = 0;
+document.getElementById("increment").addEventListener("click", () => {
+  document.getElementById("count").textContent = String(++count);
+});
+document.getElementById("draft").addEventListener("input", e => {
+  document.getElementById("echo").textContent = e.target.value;
+});
+setInterval(() => { document.getElementById("ticks").textContent = String(++ticks); }, 100);
+function size() { document.getElementById("size").textContent = innerWidth + " × " + innerHeight; }
+size(); window.addEventListener("resize", size);
+document.addEventListener("scroll", () => { document.getElementById("scroll").textContent = String(Math.round(scrollY)); });
+const shadow = document.getElementById("shadow").attachShadow({mode:"open"});
+shadow.innerHTML = '<p>Shadow tree: <span>ready</span></p>';
+// This rule has no text-node representation and must survive a new viewer snapshot.
+document.querySelector("style").sheet.insertRule("h1 { color: rgb(35, 66, 120); }", 0);
+console.log("DEMO_STARTED");
+</script></html>

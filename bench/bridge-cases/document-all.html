@@ -1,0 +1,94 @@
+<!doctype html>
+<!-- document.all (Gecko's HTMLAllCollection: a DOM proxy whose class emulates undefined) against
+     release Firefox: bench/compare_bridge.py document-all. typeof, truthiness and equality, also in
+     a loop hot enough for the JITs; the sites' tests (YouTube's `c === document.all`, core-js's
+     isCallable, is-callable's toString check, gapi's old-IE branch); indexed and named lookup
+     (ids on any element, names on the IsAllNamedElement tags only, two matches an HTMLCollection);
+     item(), namedItem() and the legacy caller; own keys; liveness; assignment and definition; the
+     interface and its brand checks. -->
+<html><head><meta charset="utf-8"><title>document-all</title></head><body>
+<div id="one">one</div>
+<a name="link1" href="#">a</a><input name="field"><div name="divname">d</div>
+<span id="dup"></span><p id="dup"></p>
+<form name="f1"><input name="dup2"><button name="dup2">b</button></form>
+<span id="item"></span><span id="length"></span><span id="0x"></span>
+<svg><circle id="svgc" name="link1"></circle></svg>
+<script>
+(function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const tag = o => Object.prototype.toString.call(o);
+  const desc = n => n === null ? "null" : n === undefined ? "undefined" : n.nodeType ? n.localName + "#" + (n.id || n.getAttribute("name") || "") : tag(n) + ":" + n.length;
+  const A = document.all;
+
+  T("typeof", () => [typeof A, typeof document.all, typeof A.item, typeof HTMLAllCollection]);
+  T("truthiness", () => [!A, !!A, A ? 1 : 2, A && 1, A || 2, A ?? 3, A?.length > 0, Boolean(A)]);
+  T("equality", () => [A == null, A == undefined, A === undefined, A === null, A == 0, A == "", A === A, A === document.all]);
+  T("hot loop", () => {
+    let t = 0, u = 0, e = 0, n = 0;
+    const f = x => (x ? 1 : 0), g = x => typeof x, h = x => x == null, k = x => x === undefined;
+    for (let i = 0; i < 200000; i++) { t += f(A); u += g(A) === "undefined"; e += h(A); n += k(A); }
+    return [t, u, e, n];
+  });
+  // YouTube's dSk: `c || c === document.all ? k(c) : c`
+  T("youtube", () => [undefined, null, 0, "", A].map(c => (c || c === document.all ? "call" : "pass")));
+  // core-js's isCallable and is-callable's document.all test
+  T("core-js", () => { const d = "object" == typeof document && document.all; return [void 0 === d && void 0 !== d, typeof d]; });
+  T("is-callable", () => { const u = Object.prototype.toString, f = document.all; return [u.call(f) === u.call(document.all), u.call(f)]; });
+  T("gapi", () => !!(document.all && 1));
+  T("tags", () => [tag(A), tag(HTMLAllCollection.prototype), String(A), A + ""]);
+  T("instanceof", () => [A instanceof HTMLAllCollection, Object.getPrototypeOf(A) === HTMLAllCollection.prototype,
+                         A instanceof Function, A instanceof Object]);
+  T("interface", () => [HTMLAllCollection.length, HTMLAllCollection.name, Object.getOwnPropertyNames(HTMLAllCollection.prototype).sort()]);
+  T("new HTMLAllCollection", () => new HTMLAllCollection());
+  T("HTMLAllCollection()", () => HTMLAllCollection());
+  T("getter", () => { const d = Object.getOwnPropertyDescriptor(Document.prototype, "all");
+    return [!!d.get, !!d.set, d.enumerable, d.configurable, d.get.name, "all" in document, document.hasOwnProperty("all")]; });
+  T("getter wrong this", () => Object.getOwnPropertyDescriptor(Document.prototype, "all").get.call({}));
+  T("length", () => [A.length === document.getElementsByTagName("*").length, A.length > 10]);
+  T("indexed", () => [A[0] === document.documentElement, A["1"] === document.head, desc(A[A.length - 1]), A[A.length], A[-1], A["01"], A[1.5]]);
+  T("named", () => [desc(A.one), desc(A.link1), desc(A.field), A.divname, desc(A.f1), desc(A.svgc), desc(A["0x"])]);
+  T("two matches", () => [tag(A.dup), A.dup.length, desc(A.dup[0]), desc(A.dup[1]), tag(A.dup2), A.dup2.length, A.dup instanceof HTMLCollection]);
+  T("shadowed by the prototype", () => [typeof A.item, typeof A.length, typeof A.namedItem, desc(A.namedItem("item")), desc(A.namedItem("length"))]);
+  T("missing", () => [A.nope, A[""], "nope" in A]);
+  T("item", () => [desc(A.item(0)), desc(A.item("0")), desc(A.item("one")), desc(A.item("dup")), A.item(), A.item(undefined), A.item(null),
+                   desc(A.item(1.5)), A.item("01"), A.item(4294967295), A.item(-1), A.item("")]);
+  T("namedItem", () => [desc(A.namedItem("one")), desc(A.namedItem("dup")), A.namedItem("nope"), A.namedItem(""), desc(A.namedItem(0)), A.namedItem.length, A.item.length]);
+  T("namedItem no argument", () => A.namedItem());
+  T("call", () => [desc(A(0)), desc(A("one")), desc(A("dup")), A(), A(undefined), A("nope"), desc(A("1"))]);
+  T("call with this", () => [desc(A.call(null, "one")), desc(Reflect.apply(A, {}, [0]))]);
+  T("new", () => new A());
+  T("in", () => ["0" in A, "one" in A, "link1" in A, "divname" in A, "item" in A, String(A.length) in A, Symbol.iterator in A]);
+  T("own", () => [A.hasOwnProperty("0"), A.hasOwnProperty("one"), A.hasOwnProperty("item"), A.hasOwnProperty("length")]);
+  T("descriptors", () => [Object.getOwnPropertyDescriptor(A, "0") && Object.entries(Object.getOwnPropertyDescriptor(A, "0")).map(([k, v]) => k + "=" + (k === "value" ? desc(v) : v)),
+                          Object.getOwnPropertyDescriptor(A, "one") && Object.entries(Object.getOwnPropertyDescriptor(A, "one")).map(([k, v]) => k + "=" + (k === "value" ? desc(v) : v)),
+                          Object.getOwnPropertyDescriptor(A, "nope")]);
+  T("keys", () => { const k = Object.keys(A); return [k.length === A.length, k[0], k[k.length - 1] === String(A.length - 1)]; });
+  T("own names", () => Object.getOwnPropertyNames(A).filter(k => !/^\d+$/.test(k)));
+  T("for in", () => { const k = []; for (const x in A) if (!/^\d+$/.test(x)) k.push(x); return k; });
+  T("live", () => { const n0 = A.length; const s = document.createElement("span"); s.id = "fresh"; document.body.appendChild(s);
+    const r = [A.length - n0, A.fresh === s, A[A.length - 1] === s]; s.remove(); return r.concat([A.length - n0, A.fresh]); });
+  T("assign index", () => { A[0] = 1; A[A.length + 5] = 1; return [A[0] === document.documentElement, A[A.length + 5]]; });
+  T("assign index strict", () => { "use strict"; A[0] = 1; });
+  T("assign name strict", () => { "use strict"; A.one = 1; });
+  T("expando", () => { A.foo = 7; const r = [A.foo, A.hasOwnProperty("foo"), Object.keys(A).includes("foo")]; delete A.foo; return r.concat([A.foo]); });
+  T("define index", () => Object.defineProperty(A, "0", { value: 1 }));
+  T("define name", () => Object.defineProperty(A, "one", { value: 1, configurable: true }));
+  T("delete", () => [delete A[0], delete A.one, delete A[A.length + 5], delete A.nope]);
+  T("delete strict", () => { "use strict"; delete A[0]; });
+  T("preventExtensions", () => Object.preventExtensions(A));
+  T("isExtensible", () => Object.isExtensible(A));
+  T("wrong this item", () => HTMLAllCollection.prototype.item.call(document.body, 0));
+  T("wrong this length", () => Object.getOwnPropertyDescriptor(HTMLAllCollection.prototype, "length").get.call({}));
+  T("json", () => J(A));
+  T("spread", () => [...A].length);
+  T("array from", () => Array.from(A).length === A.length);
+  T("other document", () => { const d = document.implementation.createHTMLDocument("x"); const a = d.all;
+    return [typeof a, a === A, a.length, d.all === a, desc(a[0])]; });
+  L("done");
+})();
+</script>
+</body></html>

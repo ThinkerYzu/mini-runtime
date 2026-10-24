@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ancestor-frame child</title></head><body>
+<script>
+  const report = (...a) => parent.postMessage(a.join(" "), "*");
+  const mine = () => JSON.stringify(document.cookie.split("; ").filter(c => c.startsWith("anc")).sort());
+  // its own partition from an earlier visit, not the page's anc
+  document.cookie = "anc2=; max-age=0; path=/";
+  localStorage.removeItem("anc2");
+  report("before", mine(), localStorage.getItem("anc"), localStorage.length);
+  document.cookie = "anc2=child; path=/";
+  document.cookie = "anc3=strict; path=/; samesite=strict";
+  localStorage.setItem("anc2", "child");
+  report("after", mine(), localStorage.getItem("anc2"), localStorage.length);
+  document.cookie = "anc2=; max-age=0; path=/";
+  localStorage.removeItem("anc2");
+  parent.postMessage("done", "*");
+</script></body></html>

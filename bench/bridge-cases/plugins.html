@@ -1,0 +1,53 @@
+<!doctype html>
+<!-- navigator.plugins and navigator.mimeTypes (Gecko's nsPluginArray and nsMimeTypeArray: the HTML
+     spec's hard-coded PDF viewer plugins) against release Firefox: bench/compare_bridge.py plugins.
+     The interfaces, the five plugins and two MIME types, indexed and named access, item() and
+     namedItem(), the iterator, own keys, the links between them, and Castle's (X's) reading of them:
+     Array.from(navigator.plugins) and each plugin's name, description, length and filename. -->
+<html><head><meta charset="utf-8"><title>plugins</title></head><body><p>plugins test</p>
+<script>
+(function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const tag = o => Object.prototype.toString.call(o);
+  const P = navigator.plugins, M = navigator.mimeTypes;
+
+  T("interfaces", () => [typeof PluginArray, typeof Plugin, typeof MimeTypeArray, typeof MimeType, PluginArray.length, Plugin.name]);
+  T("new PluginArray", () => new PluginArray());
+  T("PluginArray()", () => PluginArray());
+  T("protos", () => [Object.getOwnPropertyNames(PluginArray.prototype).sort(), Object.getOwnPropertyNames(Plugin.prototype).sort(),
+                     Object.getOwnPropertyNames(MimeTypeArray.prototype).sort(), Object.getOwnPropertyNames(MimeType.prototype).sort()]);
+  T("iterators", () => [PluginArray.prototype[Symbol.iterator] === Array.prototype.values, Plugin.prototype[Symbol.iterator] === Array.prototype.values,
+                        MimeTypeArray.prototype[Symbol.iterator] === Array.prototype.values, Symbol.iterator in MimeType.prototype]);
+  T("tags", () => [tag(P), tag(M), tag(P[0]), tag(M[0]), tag(PluginArray.prototype), String(P)]);
+  T("instanceof", () => [P instanceof PluginArray, M instanceof MimeTypeArray, P[0] instanceof Plugin, M[0] instanceof MimeType]);
+  T("same object", () => [navigator.plugins === P, navigator.mimeTypes === M, P[0] === P[0], P.item(0) === P[0], P.namedItem("PDF Viewer") === P[0]]);
+  T("pdfViewerEnabled", () => navigator.pdfViewerEnabled);
+  T("lengths", () => [P.length, M.length, P[0].length, P[4].length]);
+  T("plugins", () => Array.from(P, p => [p.name, p.description, p.filename, p.length]));
+  T("mimeTypes", () => Array.from(M, m => [m.type, m.description, m.suffixes, m.enabledPlugin.name]));
+  T("links", () => [P[0][0] === M[0], P[3][1] === M[1], M[0].enabledPlugin === P[0], P[2]["application/pdf"] === M[0], P[1].item(1) === M[1]]);
+  T("keys", () => [Object.keys(P), Object.keys(M), Object.keys(P[0]), Object.keys(M[0])]);
+  T("own names", () => [Object.getOwnPropertyNames(P), Object.getOwnPropertyNames(M), Object.getOwnPropertyNames(P[0])]);
+  T("for in", () => { const k = []; for (const x in P) k.push(x); return k; });
+  T("in", () => ["PDF Viewer" in P, "0" in P, "5" in P, "text/pdf" in M, "item" in P, P.hasOwnProperty("Chrome PDF Viewer")]);
+  T("descriptors", () => [Object.getOwnPropertyDescriptor(P, "0"), Object.getOwnPropertyDescriptor(P, "PDF Viewer") && Object.keys(Object.getOwnPropertyDescriptor(P, "PDF Viewer"))]);
+  T("out of range", () => [P[5], P.item(5), P.item(-1), P.item(4294967296) === P[0], P.namedItem("nope"), M.namedItem("application/pdf") === M[0], P["nope"]]);
+  T("item conversions", () => [P.item("1") === P[1], P.item(1.9) === P[1], P.item(NaN) === P[0], P.item(null) === P[0]]);
+  T("item no argument", () => P.item());
+  T("namedItem no argument", () => P.namedItem());
+  T("refresh", () => [P.refresh(), P.refresh.length, P.item.length]);
+  T("assign", () => { P[0] = 1; P.length = 9; P.foo = 1; return [P[0] === navigator.plugins[0], P.length, P.foo]; });
+  T("wrong this", () => Object.getOwnPropertyDescriptor(PluginArray.prototype, "length").get.call({}));
+  T("wrong this item", () => PluginArray.prototype.item.call(M, 0));
+  T("json", () => [J(P), J(M[0])]);
+  // Castle's nuU: each plugin's name, description, length and filename
+  T("castle", () => Array.from(navigator.plugins).map(p => p.name + p.description + p.length + p.filename));
+  T("spread", () => [...P].length);
+  L("done");
+})();
+</script>
+</body></html>

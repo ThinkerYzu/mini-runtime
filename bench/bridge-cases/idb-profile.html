@@ -1,0 +1,126 @@
+<!doctype html>
+<!-- IndexedDB databases a profile already holds (GAPS B168): bench/compare_bridge.py idb-profile first runs
+     idb-profile-seed.html in Firefox on a fresh profile, then this page on a copy of that profile on each side.
+     With API_PROCESS=all the API process imports the profile's idb/*.sqlite: Gecko's schema, keys and stored
+     structured clones, a value over the data threshold in its own file, Blobs and Files. Logged: the databases,
+     each store's and index's schema, every record by cursor, shared and cyclic references, index order, the key
+     generators continued, an upgrade of the imported database. -->
+<html><head><meta charset="utf-8"><title>idb-profile</title></head><body><p>idb profile test</p>
+<script>
+(function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const blobs = [];
+  const d = v => {
+    if (v === undefined) return "undefined";
+    if (typeof v === "number") return Object.is(v, -0) ? "-0" : String(v);
+    if (typeof v === "bigint") return v + "n";
+    if (typeof v !== "object" || v === null) return JSON.stringify(v);
+    const t = Object.prototype.toString.call(v).slice(8, -1);
+    if (t === "Date") return "Date(" + v.getTime() + ")";
+    if (t === "RegExp") return "RegExp(" + String(v) + ")";
+    if (t === "ArrayBuffer") return "AB[" + Array.from(new Uint8Array(v)).join(",") + "]";
+    if (t === "DataView") return "DV[" + Array.from(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)).join(",") + "]";
+    if (ArrayBuffer.isView(v)) {
+      if (v.length > 64) { let sum = 0; for (const x of v) sum = (sum * 31 + x) >>> 0; return t + "(" + v.length + " sum " + sum + ")"; }
+      return t + "[" + Array.from(v, x => String(x)).join(",") + "]";
+    }
+    if (t === "Map") return "Map{" + Array.from(v, ([k, x]) => d(k) + "=>" + d(x)).join(",") + "}";
+    if (t === "Set") return "Set{" + Array.from(v, d).join(",") + "}";
+    if (t === "Boolean" || t === "Number" || t === "String" || t === "BigInt") return "W" + t + "(" + d(v.valueOf()) + ")";
+    if (t === "Error") return "Err(" + v.constructor.name + "," + v.name + "," + JSON.stringify(v.message) + ")";
+    if (t === "File") { blobs.push(v); return "File(" + v.name + "," + v.size + "," + v.type + "," + v.lastModified + ")"; }
+    if (t === "Blob") { blobs.push(v); return "Blob(" + v.size + "," + v.type + ")"; }
+    if (Array.isArray(v)) return "[" + Array.from({ length: v.length }, (_, i) => i in v ? d(v[i]) : "hole").join(",") + "](" + v.length + ")";
+    if (v.self === v) return "{cyclic:" + d(v.name) + "}";
+    return "{" + Object.keys(v).map(k => k + ":" + d(v[k])).join(",") + "}";
+  };
+  const E = e => e ? e.name : "null";
+  const P = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = ev => { ev.preventDefault(); rej(r.error); }; });
+  const done = tx => new Promise(res => { tx.oncomplete = () => res("complete"); tx.onabort = () => res("abort " + E(tx.error)); });
+  const cursor = (source, range, dir, f) => new Promise((res, rej) => {
+    const r = source.openCursor(range, dir);
+    r.onsuccess = () => { const c = r.result; if (!c) return res(); f(c); c.continue(); };
+    r.onerror = () => rej(r.error);
+  });
+
+  async function main() {
+    const list = await indexedDB.databases();
+    L("databases", list.map(x => x.name + ":" + x.version).sort().join(" "));
+    const db = await new Promise((res, rej) => {
+      const r = indexedDB.open("mrt-p");
+      r.onupgradeneeded = () => L("unexpected upgrade");
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    L("open", db.name, db.version, Array.from(db.objectStoreNames).join(","));
+    const names = Array.from(db.objectStoreNames);
+    const tx = db.transaction(names, "readonly");
+    for (const n of names) {
+      const s = tx.objectStore(n);
+      L("store", n, JSON.stringify(s.keyPath), s.autoIncrement, Array.from(s.indexNames).join(","));
+      for (const i of Array.from(s.indexNames)) {
+        const x = s.index(i);
+        L("index", n, i, JSON.stringify(x.keyPath), x.unique, x.multiEntry);
+      }
+      L("count", n, await P(s.count()));
+    }
+    const out = tx.objectStore("out");
+    await cursor(out, null, "next", c => L("out", d(c.key), d(c.value)));
+    const refs = await P(out.get("refs"));
+    L("refs shared", refs.a === refs.b, refs.list[0] === refs.a, refs.list[1] === refs.cyclic, refs.cyclic.self === refs.cyclic);
+    const map = await P(out.get("map"));
+    const mk = Array.from(map.keys());
+    L("map shared", mk[2] === map.get(mk[2]));
+    const bufs = await P(out.get("buffers"));
+    // (a view keeps only its own bytes in the codec, not its buffer: GAPS B178)
+    L("buffers", bufs.ab.byteLength, bufs.u8.byteLength, bufs.dv.byteLength);
+    await cursor(out, IDBKeyRange.bound(new Date(0), "\u00e9"), "prev", c => L("range prev", d(c.key)));
+    L("keys", d(await P(out.getAllKeys(IDBKeyRange.lowerBound([1, "a"])))));
+    const inline = tx.objectStore("inline");
+    L("inline all", d(await P(inline.getAll())));
+    await cursor(inline.index("byName"), null, "prev", c => L("byName", d(c.key), d(c.primaryKey)));
+    await cursor(inline.index("byTags"), null, "next", c => L("byTags", d(c.key), d(c.primaryKey)));
+    await cursor(inline.index("byPair"), null, "next", c => L("byPair", d(c.key), d(c.primaryKey)));
+    L("nested", d(await P(tx.objectStore("nested").getAll())));
+    L("gen", d(await P(tx.objectStore("gen").getAllKeys())), d(await P(tx.objectStore("gen").getAll())));
+    L("pathless", d(await P(tx.objectStore("pathless").getAllKeys())));
+    L("tx", await done(tx));
+    for (const b of blobs) L("blob bytes", b.size, JSON.stringify(await b.text()));
+
+    // the imported generators and unique index go on from where Firefox left them
+    {
+      const w = db.transaction(["inline", "gen", "nested"], "readwrite");
+      L("add inline", d(await P(w.objectStore("inline").add({ name: "new", tags: "t" }))));
+      try { await P(w.objectStore("inline").add({ name: "first" })); L("dup name added"); } catch (e) { L("dup name", E(e)); }
+      L("add gen", d(await P(w.objectStore("gen").add("g4"))));
+      L("put nested", d(await P(w.objectStore("nested").put({ a: { b: 0 } }))));
+      L("write tx", await done(w));
+    }
+    db.close();
+
+    const db2 = await new Promise((res, rej) => { const r = indexedDB.open("mrt-p2", 1); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    const t2 = db2.transaction("s");
+    L("p2", db2.version, d(await P(t2.objectStore("s").get("k"))));
+    db2.close();
+
+    // an upgrade of the imported database
+    const db3 = await new Promise((res, rej) => {
+      const r = indexedDB.open("mrt-p", 4);
+      r.onupgradeneeded = ev => {
+        L("upgrade", ev.oldVersion, ev.newVersion, Array.from(r.result.objectStoreNames).join(","));
+        r.transaction.objectStore("inline").createIndex("byA", "a");
+        r.result.deleteObjectStore("pathless");
+      };
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    const t3 = db3.transaction("inline");
+    await cursor(t3.objectStore("inline").index("byA"), null, "next", c => L("byA", d(c.key), d(c.primaryKey)));
+    L("after upgrade", db3.version, Array.from(db3.objectStoreNames).join(","));
+    db3.close();
+    L("done");
+  }
+  main().catch(e => L("error", e.name, e.message));
+})();
+</script></body></html>

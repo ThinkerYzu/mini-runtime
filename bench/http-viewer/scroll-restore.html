@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>Delayed viewer scroll restoration</title>
+<link rel="stylesheet" href="scroll-restore.css">
+<button id="poke">Focusable control</button><output id="count">0</output>
+<button id="busy">Keep runtime busy</button>
+<p>Runtime scroll: <output id="scroll">0</output></p>
+<div class="space">This height comes from an external stylesheet.</div>
+<script>
+document.getElementById('poke').onclick = () => {
+ queueMicrotask(() => { const count = document.getElementById('count'); count.textContent = String(Number(count.textContent) + 1); });
+};
+document.getElementById('busy').onclick = () => {
+ console.log('BUSY_START');
+ const end = Date.now() + 1000;
+ while (Date.now() < end) {}
+ console.log('BUSY_END');
+};
+function report() {
+ document.getElementById('scroll').textContent = String(scrollY);
+ console.log('SCROLL_STATE ' + scrollY);
+}
+document.addEventListener('scroll', report);
+window.scrollTo(0,700); report();
+</script>

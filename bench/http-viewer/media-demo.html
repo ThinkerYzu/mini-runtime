@@ -1,0 +1,47 @@
+<!doctype html><meta charset="utf-8"><title>HTTP media playback</title>
+<button id="play">Play</button><button id="pause">Pause</button><button id="seek">Seek</button><button id="rebuild">Rebuild MSE</button><button id="remove">Remove range</button><button id="append">Append across reconnect</button><button id="pending">Start pending play</button>
+<video id="plain" src="../bridge-cases/media-plain.mp4" muted width="160" height="90"></video>
+<video id="mse" muted width="320" height="180"></video><video id="stall" muted></video><pre id="state"></pre><pre id="log"></pre>
+<script>
+const plain=document.getElementById('plain'), video=document.getElementById('mse');
+const type='video/mp4; codecs="avc1.42c01e"';
+function log(s){document.getElementById('log').textContent+=s+'\n';console.log(s);}
+const once=(o,t)=>new Promise(resolve=>o.addEventListener(t,resolve,{once:true}));
+log('MEDIA_INITIAL '+MediaSource.isTypeSupported(type));
+plain.play().catch(e=>log('DETACHED_PLAY '+e.name));
+plain.addEventListener('loadedmetadata',()=>{if(plain.currentTime<.5)plain.currentTime=1;});
+let ms, buffers=[], videoBytes;
+async function build(){
+ buffers=[]; ms=new MediaSource(); ms.addEventListener('sourceclose',()=>{log('SOURCE_CLOSED');log('DETACHED_CAP '+MediaSource.isTypeSupported(type));});
+ video.src=URL.createObjectURL(ms); await once(ms,'sourceopen');
+ log('SUPPORTED '+MediaSource.isTypeSupported(type)+' '+plain.canPlayType(type));
+ for(const [kind,file] of [[type,'../bridge-cases/media-v.mp4'],['audio/mp4; codecs="mp4a.40.2"','../bridge-cases/media-a.mp4']]){
+  const sb=ms.addSourceBuffer(kind); buffers.push(sb);
+  const bytes=await fetch(file).then(r=>r.arrayBuffer());
+  if(kind===type)videoBytes=bytes;
+  const done=once(sb,'updateend');sb.appendBuffer(bytes);await done;
+  if(!sb.buffered.length)throw new Error('No buffered range');
+  try { sb.appendBuffer(new Uint8Array(4*1024*1024+1)); throw new Error('Oversized append accepted'); }
+  catch(e){if(e.name!=='QuotaExceededError'||sb.updating)throw e;}
+ }
+ if(video.readyState<3)await once(video,'canplay');log('MSE_READY');
+}
+build().catch(e=>log('BUILD_ERROR '+e));
+document.getElementById('rebuild').onclick=()=>build().catch(e=>log('BUILD_ERROR '+e));
+document.getElementById('play').onclick=()=>video.play().then(()=>log('PLAY_OK'),e=>log('PLAY_ERROR '+e.name));
+document.getElementById('pause').onclick=()=>video.pause();
+document.getElementById('seek').onclick=()=>video.currentTime=2;
+document.getElementById('remove').onclick=async()=>{
+ const sb=buffers[0],done=once(sb,'updateend');sb.remove(1,2);await done;log('REMOVE_OK '+sb.buffered.length);
+};
+document.getElementById('append').onclick=async()=>{
+ const sb=buffers[0],done=once(sb,'updateend');sb.timestampOffset=4;sb.appendBuffer(videoBytes);
+ log('APPEND_PENDING');await done;log('APPEND_RECOVERED');
+};
+document.getElementById('pending').onclick=async()=>{
+ const stalled=document.getElementById('stall'), source=new MediaSource();stalled.src=URL.createObjectURL(source);
+ await once(source,'sourceopen');log('PENDING_START');
+ stalled.play().then(()=>log('UNEXPECTED_PENDING_PLAY'),e=>log('PENDING_ERROR '+e.name));
+};
+setInterval(()=>document.getElementById('state').textContent=[video.currentTime.toFixed(1),video.paused,video.readyState,video.buffered.length].join(' '),100);
+</script>

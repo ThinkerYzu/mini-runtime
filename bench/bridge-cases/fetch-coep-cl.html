@@ -1,0 +1,40 @@
+<!doctype html>
+<!-- COEP credentialless over the document's requests (GAPS B162), against release Firefox: bench/compare_bridge.py
+     fetch-coep-cl, served by ws_echo.py's /doc/ with Cross-Origin-Embedder-Policy: credentialless
+     (fetch-coep-cl.html.headers). A no-cors request to another origin goes without cookies (and stores none);
+     CORS requests and this origin's keep them; no CORP is needed. -->
+<html><head><meta charset="utf-8"><title>fetch coep credentialless</title></head><body><p>fetch coep credentialless test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const SELF = location.origin, X = `http://127.0.0.1:${location.port}`;
+  const h = (base, o) => `${base}/h?` + new URLSearchParams(o);
+  const seen = async id => (await (await fetch(`${SELF}/log`)).json()).filter(e => e.id === id)
+    .map(e => e.method + " " + JSON.stringify((e.h.cookie || "").split("; ").filter(c => c.startsWith("fp")).sort()));
+  const F = async (what, url, init) => {
+    try { const r = await fetch(url, init); L(what, r.type, r.status); }
+    catch (e) { L(what, "throws", e.name); }
+  };
+  const S = async (what, id) => L(what, JSON.stringify(await seen(id)));
+  const include = { credentials: "include" };
+  await fetch(`${SELF}/log?clear`);
+  await fetch(h(X, { acao: "echo", acac: "true", setcookie: "fp2=x; path=/\nfp3=; max-age=0; path=/" }), include);
+  document.cookie = "fp1=1; path=/";
+  await F("no-cors to another site", h(X, { id: "k1" }), { mode: "no-cors", credentials: "include" });
+  await F("cors to another site", h(X, { acao: "echo", acac: "true", id: "k2" }), include);
+  await F("no-cors to this origin", h(SELF, { id: "k3" }), { mode: "no-cors", credentials: "include" });
+  await F("no-cors response's cookie", h(X, { setcookie: "fp3=y; path=/" }), { mode: "no-cors", credentials: "include" });
+  await F("cors after it", h(X, { acao: "echo", acac: "true", id: "k4" }), include);
+  await new Promise(done => {
+    const s = document.createElement("script");
+    s.src = h(X, { type: "text/javascript", body: "window.__k5 = 1;", id: "k5" });
+    s.onload = s.onerror = e => { L("cross-site script", e.type, window.__k5); done(); };
+    document.head.appendChild(s);
+  });
+  for (const id of ["k1", "k2", "k3", "k4", "k5"]) await S(id, id);
+  await fetch(h(X, { acao: "echo", acac: "true", setcookie: "fp2=; max-age=0; path=/\nfp3=; max-age=0; path=/" }), include);
+  document.cookie = "fp1=; max-age=0; path=/";
+  L("done");
+})();
+</script></body></html>

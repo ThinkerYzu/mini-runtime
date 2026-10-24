@@ -1,0 +1,133 @@
+<!doctype html>
+<!-- Shared workers (GAPS B85; Gecko's dom/workers/sharedworkers) against release Firefox: bench/compare_bridge.py
+     shared-worker. The SharedWorker interface and its constructor's checks, its port, the connect event,
+     a second SharedWorker of the same URL and name connecting to the same worker (and one of another
+     name, or another type, not), the worker's global (its shape; every name is in
+     shared-worker-names.html), the structured clone, errors (in a task, at the
+     top level, a script that fails to load), close() and a module shared worker. The worker's scripts
+     are shared-worker-*.js. -->
+<html><head><meta charset="utf-8"><title>shared-worker</title></head><body><p>shared worker test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const base = name => String(name).replace(/^.*\//, "");
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const next = (port, pred = () => true) => new Promise(r => {
+    const l = e => { if (pred(e.data)) { port.removeEventListener("message", l); r(e); } };
+    port.addEventListener("message", l);
+  });
+  const errorOf = (w, ms = 2000) => Promise.race([new Promise(r => w.addEventListener("error", r, { once: true })), sleep(ms).then(() => null)]);
+  const describeError = ev => ev ? [ev.constructor.name, ev.type, ev.message, base(ev.filename), ev.lineno, ev.colno,
+                                    ev.error === undefined ? "undef" : ev.error === null ? "null" : E(ev.error),
+                                    ev.cancelable, ev.bubbles] : "no error event";
+
+  // the interface
+  T("shape", () => [typeof SharedWorker, SharedWorker.length, Object.getPrototypeOf(SharedWorker.prototype) === EventTarget.prototype,
+                    Object.prototype.toString.call(SharedWorker.prototype), Object.keys(SharedWorker.prototype).sort(),
+                    typeof SharedWorkerGlobalScope]);
+  T("no new", () => SharedWorker("shared-worker-main.js"));
+  T("no argument", () => new SharedWorker());
+  T("brand", () => Object.getOwnPropertyDescriptor(SharedWorker.prototype, "port").get.call({}));
+  T("bad URL", () => new SharedWorker("http://[::1"));
+  T("bad type", () => new SharedWorker("shared-worker-main.js", { type: "foo" }));
+  T("bad credentials", () => new SharedWorker("shared-worker-main.js", { credentials: "foo" }));
+  // Facebook's check for module shared workers (supportsModuleWorker)
+  {
+    let read = false;
+    const options = { get type() { read = true; } };
+    try { new SharedWorker("blob://", options); L("blob:// ok", read); } catch (e) { L("blob:// throws", E(e), read); }
+  }
+  {
+    const x = new SharedWorker("http://127.0.0.1:1/x.js");
+    L("other origin", J(describeError(await errorOf(x))));
+  }
+
+  // a shared worker and its port
+  const a = new SharedWorker("shared-worker-main.js", "first");
+  T("instance", () => [Object.prototype.toString.call(a), Object.prototype.toString.call(a.port), a.port === a.port, a.onerror,
+                       Object.keys(a), a.port.onmessage, typeof a.port.start, typeof a.postMessage]);
+  a.port.start();
+  const connect = (await next(a.port, d => d && d.connected)).data;
+  L("connect", J(connect));
+  a.port.postMessage({ cmd: "echo", value: "hi" });
+  const echo = await next(a.port, d => d && "echo" in d);
+  L("echo", J(echo.data), echo.constructor.name, echo.origin, echo.lastEventId, echo.source, echo.ports.length, echo.target === a.port);
+  // onmessage starts the port by itself
+  let viaHandler = null;
+  a.port.onmessage = e => { viaHandler = e.data; };
+  a.port.postMessage({ cmd: "echo", value: 2 });
+  await sleep(300);
+  L("onmessage", J(viaHandler));
+  a.port.onmessage = null;
+  a.port.postMessage({ cmd: "shape" });
+  L("worker shape", J((await next(a.port, d => d && d.shape)).data.shape));
+
+  // the same URL and name: the same worker, a second connection
+  const b = new SharedWorker("shared-worker-main.js", { name: "first" });
+  b.port.start();
+  L("second", J((await next(b.port, d => d && d.connected)).data.connected));
+  b.port.postMessage({ cmd: "all", value: "both" });
+  L("all", J((await next(a.port, d => d && "all" in d)).data), J((await next(b.port, d => d && "all" in d)).data));
+  // another name: another worker
+  const c = new SharedWorker("shared-worker-main.js", { name: "other" });
+  c.port.start();
+  L("other name", J((await next(c.port, d => d && d.connected)).data));
+  // the same name with another type: an error event, no connection
+  {
+    const m = new SharedWorker("shared-worker-main.js", { name: "first", type: "module" });
+    L("mismatch", J(describeError(await errorOf(m))));
+  }
+
+  // the structured clone
+  const value = { map: new Map([[1, "a"]]), date: new Date(1700000000000), u8: new Uint8Array([1, 2, 3]), set: new Set([1, "s"]) };
+  value.self = value;
+  a.port.postMessage({ cmd: "clone", value });
+  const cl = (await next(a.port, d => d && d.clone)).data.clone;
+  L("clone", cl.map.get(1), cl.date.getTime(), Array.from(cl.u8).join(","), cl.set.has("s"), cl.self === cl);
+  T("uncloneable", () => a.port.postMessage({ f: () => 1 }));
+
+  // an error in a task: the scope's onerror, then an ErrorEvent at every SharedWorker of the worker
+  {
+    const ea = errorOf(a), eb = errorOf(b);
+    a.port.postMessage({ cmd: "throw", value: 1 });
+    L("scope error", J((await next(a.port, d => d && d.scopeError)).data));
+    L("error at a", J(describeError(await ea)));
+    L("error at b", J(describeError(await eb)));
+  }
+  // cancelled at the SharedWorker
+  {
+    const ev = new Promise(r => a.addEventListener("error", e => { e.preventDefault(); r(e); }, { once: true }));
+    a.port.postMessage({ cmd: "throw", value: 2 });
+    L("cancelled", (await ev).defaultPrevented);
+    await sleep(200);
+  }
+  // a script that throws at its top level; a script that does not load
+  {
+    const t = new SharedWorker("shared-worker-throw.js");
+    L("top level", J(describeError(await errorOf(t))));
+    const missing = new SharedWorker("shared-worker-missing.js");
+    L("missing", J(describeError(await errorOf(missing))));
+  }
+
+  // close(): the worker ends; a SharedWorker made after that starts a new one
+  c.port.postMessage({ cmd: "close" });
+  L("closing", J((await next(c.port, d => d && "closing" in d)).data));
+  await sleep(500);
+  const c2 = new SharedWorker("shared-worker-main.js", { name: "other" });
+  c2.port.start();
+  L("after close", J((await next(c2.port, d => d && d.connected)).data.connected));
+
+  // a module shared worker
+  {
+    const mod = new SharedWorker("shared-worker-module.js", { type: "module", name: "mod" });
+    mod.port.start();
+    L("module", J((await next(mod.port)).data));
+  }
+  L("done");
+})().catch(e => window.__log.push("case threw " + e));
+</script>
+</body></html>

@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8"><title>Late native responses</title>
+<button id="start">Start slow requests</button>
+<button id="increment">Count while waiting</button><output id="count">0</output>
+<p id="state">idle</p><p id="fetch">pending</p><p id="xhr">pending</p>
+<p id="error">pending</p><p id="aborted">pending</p>
+<script>
+const $ = id => document.getElementById(id);
+let count = 0;
+$('increment').onclick = () => $('count').textContent = String(++count);
+document.cookie = 'slow=page; Path=/';
+$('start').onclick = () => {
+  $('start').disabled = true; $('state').textContent = 'started';
+  fetch('/slow?fetch').then(r => r.arrayBuffer()).then(bytes => {
+    $('fetch').textContent = [...new Uint8Array(bytes)].join(',') + ' ' + document.cookie.includes('slowreply=yes');
+  }, e => $('fetch').textContent = String(e));
+  const xhr = new XMLHttpRequest();
+  xhr.open('GET', '/slow?xhr'); xhr.responseType = 'arraybuffer';
+  xhr.onload = () => $('xhr').textContent = [...new Uint8Array(xhr.response)].join(',');
+  xhr.onerror = () => $('xhr').textContent = 'error'; xhr.send();
+  fetch('/broken-response').then(() => $('error').textContent = 'unexpected success',
+    () => $('error').textContent = 'rejected');
+  const cancelled = new XMLHttpRequest();
+  cancelled.open('GET', '/slow?cancel');
+  cancelled.onload = () => $('aborted').textContent = 'unexpected load';
+  cancelled.send();
+  setTimeout(() => {
+    cancelled.abort(); cancelled.open('GET', '/fast-reply');
+    cancelled.onload = () => $('aborted').textContent = 'reused ' + cancelled.responseText;
+    cancelled.send();
+  }, 200);
+};
+</script>

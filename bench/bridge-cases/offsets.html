@@ -1,0 +1,100 @@
+<!doctype html>
+<!-- offsetParent, offsetLeft, offsetTop, offsetWidth and offsetHeight against release Firefox:
+     bench/compare_bridge.py offsets (GAPS B87). Gecko: Element::GetOffsetRect and
+     GetUnretargetedOffsetsFor (dom/base/Element.cpp): positions relative to the offset parent's padding
+     edge; the offset parent is the nearest positioned ancestor, or a table, td or th for an element that
+     is not positioned, or the body; retargeted out of shadow trees the element is not in. -->
+<html><head><title>offsets</title><meta charset="utf-8">
+<style>
+  body { margin: 13px 0 0 21px; border: 3px solid; padding: 5px; font: 16px/20px monospace; width: 900px }
+  div { margin: 0 }
+  #rel { position: relative; border: 7px solid; padding: 4px; margin: 6px 9px; top: 5px; left: 3px }
+  #abs { position: absolute; top: 11px; left: 17px; width: 40px; height: 10px; border: 2px solid }
+  #fixed { position: fixed; top: 30px; left: 40px; width: 10px; height: 10px }
+  #bodyabs { position: absolute; top: 50px; left: 60px; width: 5px; height: 5px }
+  table { border: 4px solid; border-spacing: 2px; margin: 3px }
+  td, th { border: 1px solid; padding: 3px }
+  #cellabs { position: absolute; top: 2px; left: 2px }
+  #fakecell { display: table-cell; border: 2px solid; padding: 2px }
+  #transform { transform: translateX(10px); border: 1px solid; margin-left: 4px }
+  #flex { display: flex; gap: 6px; padding: 3px; border: 2px solid }
+  #grid { display: grid; grid-template-columns: 30px 50px; position: relative; padding: 2px }
+  #narrow { width: 120px }
+  #ib { display: inline-block; border: 3px solid; padding: 2px }
+  #none { display: none }
+</style>
+</head><body>
+<div id="plain">plain <span id="inlinespan">inline</span></div>
+<div id="rel">
+  <p id="inrel" style="margin: 2px 0">in relative</p>
+  <div id="abs"><i id="inabs">x</i></div>
+  <div id="fixed"><b id="infixed">f</b></div>
+</div>
+<div id="bodyabs"></div>
+<table id="table"><caption id="caption">cap</caption>
+  <tr><th id="th"><span id="inth">h</span></th><td id="td"><span id="intd">d</span><div id="cellabs">a</div></td></tr>
+</table>
+<div id="fakecell"><span id="infake">c</span></div>
+<div id="transform"><span id="intransform">t</span></div>
+<div id="flex"><span id="flex1">a</span><span id="flex2">bb</span></div>
+<div id="grid"><span id="grid1">1</span><span id="grid2">2</span></div>
+<div id="narrow">some words <a id="wrapped" href="#">that wrap over more than one line of the box</a> end</div>
+<span id="ib"><em id="inib">ib</em></span>
+<div id="none"><span id="innone">n</span></div>
+<div id="host"><span id="slotted">slotted</span></div>
+<svg id="svg" width="10" height="10"><rect id="rect" width="5" height="5"/></svg>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const name = e => (e === null ? "null" : e === undefined ? "undefined" : e.id || e.localName);
+  const show = e => log(name(e), "parent", name(e.offsetParent), "rect", e.offsetLeft, e.offsetTop, e.offsetWidth, e.offsetHeight);
+
+  log("on", ["offsetParent", "offsetTop", "offsetLeft", "offsetWidth", "offsetHeight"].map(p =>
+    p + ":" + (Object.getOwnPropertyDescriptor(HTMLElement.prototype, p) ? "HTMLElement" : Object.getOwnPropertyDescriptor(Element.prototype, p) ? "Element" : "none")).join(" "));
+  log("svg", "offsetParent" in document.getElementById("svg"), "offsetTop" in document.getElementById("rect"));
+  for (const e of [document.documentElement, document.body]) show(e);
+  for (const id of ["plain", "inlinespan", "rel", "inrel", "abs", "inabs", "fixed", "infixed", "bodyabs", "table", "caption", "th", "inth", "td",
+                    "intd", "cellabs", "fakecell", "infake", "transform", "intransform", "flex", "flex1", "flex2", "grid", "grid1", "grid2", "narrow",
+                    "wrapped", "ib", "inib", "none", "innone"]) {
+    show(document.getElementById(id));
+  }
+
+  // a detached element, and one added later
+  show(document.createElement("div"));
+  const later = document.createElement("div");
+  later.id = "later";
+  later.style.cssText = "margin-top: 8px; height: 12px";
+  document.getElementById("rel").appendChild(later);
+  show(later);
+  later.style.display = "none";
+  show(later);
+
+  // shadow trees: a positioned element inside the shadow tree is not the offset parent of a slotted
+  // node or of the host from outside; inside the tree it is
+  const host = document.getElementById("host");
+  const root = host.attachShadow({ mode: "open" });
+  root.innerHTML = '<div id="spos" style="position: relative; border: 2px solid; padding: 3px; top: 4px">' +
+                   '<span id="sinner">s</span><slot></slot></div>';
+  show(document.getElementById("slotted"));
+  show(root.getElementById("spos"));
+  show(root.getElementById("sinner"));
+  show(host);
+  const closed = document.createElement("div");
+  closed.id = "closedhost";
+  document.body.appendChild(closed);
+  const croot = closed.attachShadow({ mode: "closed" });
+  croot.innerHTML = '<div style="position: absolute; top: 3px; left: 4px; width: 20px; height: 7px"><b>c</b></div>';
+  show(croot.firstChild.firstChild);
+  show(croot.firstChild);
+
+  // a change of layout between reads
+  const rel = document.getElementById("rel");
+  rel.style.position = "static";
+  show(document.getElementById("inrel"));
+  show(document.getElementById("abs"));
+  rel.style.position = "";
+  document.body.style.position = "relative";
+  show(document.getElementById("bodyabs"));
+  show(document.getElementById("plain"));
+  log("done");
+</script></body></html>

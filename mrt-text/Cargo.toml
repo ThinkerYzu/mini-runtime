@@ -1,0 +1,14 @@
+[package]
+name = "mrt-text"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+# Text phase 1a: fonts and shaping. Firefox's HarfBuzz (gfx/harfbuzz/src) is vendored unchanged into
+# vendor/harfbuzz and compiled by build.rs with the same settings as Firefox's moz.build; shim/ is the
+# small C++ layer between it and the Rust code in src/. No crates: build.rs calls the compiler itself,
+# the way parser/build.sh does. See README.md.
+[dependencies]
+
+[profile.release]
+debug = false

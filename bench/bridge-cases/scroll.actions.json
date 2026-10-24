@@ -1,0 +1,4 @@
+[["move", "#start"], ["pause", 300],
+ ["wheel", "#start", 0, 600], ["pause", 1500],
+ ["click", "#go"], ["pause", 4000],
+ ["wheel", "#go", 0, -300], ["pause", 1500]]

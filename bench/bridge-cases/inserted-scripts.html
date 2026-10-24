@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- Scripts inserted by script, against release Firefox: bench/compare_bridge.py inserted-scripts. A
+     script runs when it becomes connected (ScriptElement's MaybeProcessScript from BindToTree): inside
+     a subtree inserted later, inside a fragment, in tree order; one made by innerHTML, outerHTML,
+     insertAdjacentHTML or DOMParser never runs (already started); one from createContextualFragment
+     does; a script that has run does not run again when moved. -->
+<html><head><title>inserted-scripts</title><meta charset="utf-8"></head>
+<body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  window.ran = name => log("ran", name);
+  const script = name => { const s = document.createElement("script"); s.textContent = `ran(${JSON.stringify(name)})`; return s; };
+
+  // detached subtree, attached later (Gmail's account bar)
+  const div = document.createElement("div");
+  const h = document.createElement("h1");
+  div.appendChild(h);
+  div.insertBefore(script("detached 1"), h.nextSibling);
+  div.appendChild(script("detached 2"));
+  log("detached, before attaching");
+  document.body.appendChild(div);
+  log("attached");
+
+  // a fragment with two scripts
+  const frag = document.createDocumentFragment();
+  frag.appendChild(script("fragment 1"));
+  const inner = document.createElement("span");
+  inner.appendChild(script("fragment 2, nested"));
+  frag.appendChild(inner);
+  document.body.appendChild(frag);
+  log("fragment inserted");
+
+  // moved after running: not again
+  document.head.appendChild(div);
+  log("moved");
+
+  // parsed markup
+  const p = document.createElement("div");
+  p.innerHTML = "<script>ran('innerHTML')<\/script>";
+  document.body.appendChild(p);
+  const q = document.createElement("div");
+  q.innerHTML = "<p></p>";
+  document.body.appendChild(q);
+  q.firstChild.insertAdjacentHTML("afterend", "<script>ran('insertAdjacentHTML')<\/script>");
+  q.firstChild.outerHTML = "<script>ran('outerHTML')<\/script>";
+  const d = new DOMParser().parseFromString("<script>ran('DOMParser')<\/script>", "text/html");
+  document.body.appendChild(document.adoptNode(d.querySelector("script")));
+  const holder = document.createElement("div");
+  holder.innerHTML = "<script>ran('innerHTML moved')<\/script>";
+  document.body.appendChild(holder.firstChild);
+  const r = document.createRange().createContextualFragment("<script>ran('createContextualFragment')<\/script>");
+  document.body.appendChild(r);
+  log("parsed markup done");
+  log("done");
+</script></body></html>

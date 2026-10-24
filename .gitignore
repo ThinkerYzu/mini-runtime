@@ -1,0 +1,84 @@
+# build output
+mrt/target/
+mrt-dom/target/
+mrt-style/target/
+mrt-layout/target/
+mrt-text/target/
+mrt-js/target/
+mrt-api/target/
+parser/obj/
+parser/obj-*/
+bench/*.json.gz
+
+# Third-party page snapshots: regenerate with pages/snapshot.py and check against pages/MANIFEST.md.
+# The synthetic pages are ours and are kept.
+pages/*.html
+!pages/synthetic.html
+!pages/synthetic-js.html
+!pages/todo-js.html
+!pages/table-sort-js.html
+!pages/layout-js.html
+
+# Screenshots of live third-party sites (bench/firefox_realsites.py)
+bench/realsites/
+# Firefox's finished DOM of live sites (phase 0b)
+bench/realsites-dom/
+# Full memory reports of live sites (KEEP_REPORTS=1)
+bench/realsites-reports/
+bench/realsites-reports-replay/
+bench/realsites-reports-nouse/
+bench/realsites-reports-workers/
+bench/realsites-reports-s88-*/
+bench/realsites-reports-unknown/
+bench/realsites-reports-dmd/
+bench/realsites-reports-split/
+bench/realsites-reports-ee98/
+bench/realsites-reports-21c4-desktop/
+bench/realsites-reports-phone-*/
+# DMD dumps of the sites' processes (task 178d): they hold the pages' URLs
+bench/realsites-dmd/
+bench/realsites-console/
+# Live sites run in the mini runtime (bench/mini_realsites.py)
+bench/realsites-mini/
+bench/realsites-mini-*/
+# bench/x_interactive.sh: results of hand-driven runs on the owner's X account
+bench/mini_realsites_x_*.json
+# Recorded traffic of live sites (REPLAY=..., bench/replay.py)
+bench/realsites-replay/
+bench/realsites-replay-post/
+bench/.venv-mitm/
+bench/__pycache__/
+# env's recordings of the test profile's Firefox (mini_realsites.py env_file), one per build
+bench/realsites-env/
+
+# Public source repository: generated benchmark data stays local.
+/bench/*
+!/bench/*.py
+!/bench/*.js
+!/bench/*.sh
+!/bench/*.patch
+!/bench/*.html
+!/bench/*.LICENSE
+!/bench/*.actions.json
+!/bench/bridge-cases/
+!/bench/http-viewer/
+!/bench/oracle/
+/bench/oracle/oout/
+/bench/firefox_boxes/
+**/target/
+**/__pycache__/
+*.pyc
+*.log
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.db
+*.db-*
+*.har
+*.pem
+*.key
+.env
+.env.*
+.venv/
+venv/
+.gitleaks-report*

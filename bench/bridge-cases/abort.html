@@ -1,0 +1,206 @@
+<!doctype html>
+<!-- AbortSignal and AbortController (Gecko's dom/abort) against release Firefox:
+     bench/compare_bridge.py abort. The two interfaces' shapes and brand checks; abort() with and
+     without a reason, the AbortError made once; throwIfAborted; the abort event and handler;
+     AbortSignal.abort, timeout (its conversions, the TimeoutError, its order against 0 ms timers) and
+     any (dependent signals: the order of the events, what a source's listener sees of its
+     dependents, a dependent of a dependent); a subclass; a same-origin frame; a dedicated worker
+     (abort-worker.js). The sites make AbortControllers for fetch and abort them without a reason
+     (Facebook, Google Docs, session 101). -->
+<html><head><meta charset="utf-8"><title>abort</title></head><body><p>abort test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" ").split(location.origin).join("ORIGIN"));
+  const J = v => JSON.stringify(v);
+  const E = e => e && typeof e === "object" ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : typeof e + " " + String(e);
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const tick = ms => new Promise(r => setTimeout(r, ms));
+  const desc = (o, k) => { const d = Object.getOwnPropertyDescriptor(o, k); return d && [String(k), typeof d.get, typeof d.set, "value" in d, d.writable, d.enumerable, d.configurable, d.get && d.get.name, d.set && d.set.name]; };
+  const keys = o => Reflect.ownKeys(o).map(String);
+  const members = o => Reflect.ownKeys(o).map(k => desc(o, k));
+
+  // the interfaces
+  T("interfaces", () => ["AbortSignal", "AbortController"].map(n => [n, typeof window[n], window[n].length, window[n].name, desc(window, n).slice(3)]));
+  T("chains", () => [Object.getPrototypeOf(AbortSignal) === EventTarget, Object.getPrototypeOf(AbortSignal.prototype) === EventTarget.prototype,
+    Object.getPrototypeOf(AbortController) === Function.prototype, Object.getPrototypeOf(AbortController.prototype) === Object.prototype,
+    Object.prototype.toString.call(AbortSignal.prototype), Object.prototype.toString.call(AbortController.prototype)]);
+  // (sorted: a function made in JS has its prototype before its length and name)
+  T("AbortSignal statics", () => [keys(AbortSignal).sort(), ["abort", "timeout", "any"].map(k => desc(AbortSignal, k)), AbortSignal.abort.length, AbortSignal.timeout.length, AbortSignal.any.length]);
+  T("AbortSignal members", () => members(AbortSignal.prototype));
+  T("AbortController members", () => members(AbortController.prototype));
+  T("method shapes", () => [AbortSignal.prototype.throwIfAborted.length, AbortController.prototype.abort.length, AbortController.prototype.abort.name]);
+  T("prototype descriptors", () => [desc(AbortSignal, "prototype"), desc(AbortController, "prototype")]);
+  T("new AbortSignal", () => new AbortSignal());
+  T("AbortSignal()", () => AbortSignal());
+  T("AbortController()", () => AbortController());
+  T("new AbortController(1)", () => typeof new AbortController(1));
+
+  // a controller and its signal
+  const c = new AbortController();
+  const s = c.signal;
+  T("fresh", () => [s === c.signal, s.aborted, s.reason, s.onabort, s.throwIfAborted(), Object.keys(c), Object.keys(s), keys(s), Object.prototype.toString.call(s), Object.prototype.toString.call(c),
+    s instanceof AbortSignal, s instanceof EventTarget, c instanceof AbortController]);
+  const seen = [];
+  s.addEventListener("abort", e => seen.push(["listener", e.type, e.isTrusted, e.bubbles, e.cancelable, e.composed, e.eventPhase, e.target === s, e.currentTarget === s, s.aborted,
+    Object.prototype.toString.call(e), Object.getPrototypeOf(e) === Event.prototype]));
+  s.onabort = function (e) { seen.push(["handler", this === s, e.type]); };
+  T("onabort", () => [typeof s.onabort, (s.onabort = 5, s.onabort), (s.onabort = function (e) { seen.push(["handler", this === s, e.type]); }, typeof s.onabort)]);
+  c.abort();
+  T("abort no reason", () => { const r = s.reason; return [s.aborted, E(r), r instanceof DOMException, r.code, r === s.reason, seen]; });
+  T("throwIfAborted", () => { try { s.throwIfAborted(); return "no throw"; } catch (e) { return [e === s.reason, E(e)]; } });
+  seen.length = 0;
+  c.abort("again");
+  T("abort twice", () => [E(s.reason), seen.length]);
+  for (const [what, r] of [["string", "why"], ["undefined", undefined], ["null", null], ["0", 0], ["error", new TypeError("t")], ["object", { a: 1 }]]) {
+    const k = new AbortController(); k.abort(r);
+    T("abort " + what, () => [k.signal.aborted, E(k.signal.reason), k.signal.reason === r]);
+  }
+  {
+    const o = { a: 1 }, k = new AbortController(); k.abort(o);
+    T("throwIfAborted object", () => { try { k.signal.throwIfAborted(); } catch (e) { return e === o; } });
+  }
+
+  // brand checks
+  const fake = Object.create(AbortSignal.prototype);
+  for (const [what, f] of [["get aborted", () => fake.aborted], ["get reason", () => fake.reason], ["get onabort", () => fake.onabort], ["set onabort", () => { fake.onabort = null; }],
+                           ["throwIfAborted", () => fake.throwIfAborted()], ["get signal", () => Object.getOwnPropertyDescriptor(AbortController.prototype, "signal").get.call({})],
+                           ["abort", () => AbortController.prototype.abort.call(s)], ["aborted on controller", () => Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted").get.call(c)]]) T("brand " + what, f);
+
+  // AbortSignal.abort
+  T("static abort", () => { const a = AbortSignal.abort(); const b = AbortSignal.abort("r"); return [a.aborted, E(a.reason), a.reason === a.reason, b.reason, a !== AbortSignal.abort(), Object.getPrototypeOf(a) === AbortSignal.prototype]; });
+  {
+    const a = AbortSignal.abort();
+    let fired = 0; a.addEventListener("abort", () => fired++);
+    await tick(0);
+    T("static abort event", () => fired);
+  }
+
+  // AbortSignal.timeout
+  for (const [what, f] of [["no argument", () => AbortSignal.timeout()], ["-1", () => AbortSignal.timeout(-1)], ["NaN", () => AbortSignal.timeout(NaN)],
+                           ["Infinity", () => AbortSignal.timeout(Infinity)], ["2**53", () => AbortSignal.timeout(2 ** 53)], ["2**53-1", () => AbortSignal.timeout(2 ** 53 - 1).aborted],
+                           ["string", () => AbortSignal.timeout("7").aborted], ["1.9", () => AbortSignal.timeout(1.9).aborted], ["null", () => AbortSignal.timeout(null).aborted]]) T("timeout " + what, f);
+  {
+    const order = [];
+    setTimeout(() => order.push("timer before"), 0);
+    const t0 = AbortSignal.timeout(0);
+    t0.onabort = () => order.push("timeout 0 " + E(t0.reason));
+    setTimeout(() => order.push("timer after"), 0);
+    const t5 = AbortSignal.timeout(5);
+    t5.addEventListener("abort", () => order.push("timeout 5"));
+    setTimeout(() => order.push("timer 3"), 3);
+    setTimeout(() => order.push("timer 8"), 8);
+    T("timeout at once", () => [t0.aborted, t0.reason]);
+    await tick(40);
+    T("timeout order", () => [order, t0.reason === t0.reason, t0.reason instanceof DOMException, t0.reason.code]);
+  }
+
+  // AbortSignal.any
+  for (const [what, f] of [["no argument", () => AbortSignal.any()], ["not a sequence", () => AbortSignal.any(5)], ["object", () => AbortSignal.any({})],
+                           ["not signals", () => AbortSignal.any([{}])], ["primitive", () => AbortSignal.any([5])], ["controller", () => AbortSignal.any([c])],
+                           ["empty", () => { const a = AbortSignal.any([]); return [a.aborted, a.reason, Object.getPrototypeOf(a) === AbortSignal.prototype]; }]]) T("any " + what, f);
+  {
+    const pre = new AbortController(); pre.abort();
+    const later = new AbortController();
+    const a = AbortSignal.any([later.signal, pre.signal]);
+    T("any aborted", () => [a.aborted, a.reason === pre.signal.reason, E(a.reason)]);
+    T("any of aborted", () => { const k = AbortSignal.abort("x"); return AbortSignal.any([k, k]).reason; });
+  }
+  {
+    const x = new AbortController(), y = new AbortController();
+    const order = [];
+    const d1 = AbortSignal.any([x.signal, y.signal]);
+    const d2 = AbortSignal.any([d1, y.signal]);
+    const d3 = AbortSignal.any([d1]);
+    x.signal.addEventListener("abort", () => order.push(["x", d1.aborted, d2.aborted, d3.aborted, d1.reason === x.signal.reason]));
+    d1.addEventListener("abort", () => order.push(["d1", d1.reason]));
+    d2.addEventListener("abort", () => order.push(["d2", d2.reason]));
+    d3.addEventListener("abort", () => order.push(["d3", d3.reason]));
+    y.signal.addEventListener("abort", () => order.push(["y"]));
+    x.abort("xr");
+    y.abort("yr");
+    T("any order", () => [order, y.signal.reason, d2.reason]);
+  }
+  {
+    const x = new AbortController();
+    const order = [];
+    const d = AbortSignal.any([x.signal]);
+    d.addEventListener("abort", () => order.push("d " + d.reason));
+    x.signal.addEventListener("abort", () => { order.push("x"); const late = AbortSignal.any([x.signal]); order.push("late " + late.aborted + " " + late.reason); });
+    x.abort("r");
+    T("any during abort", () => order);
+  }
+  {
+    // a dependent's abort when its sources abort in a listener of another
+    const x = new AbortController(), y = new AbortController();
+    const d = AbortSignal.any([x.signal, y.signal]);
+    const order = [];
+    d.onabort = () => order.push("d " + d.reason);
+    x.signal.addEventListener("abort", () => { order.push("x"); y.abort("from x"); });
+    y.signal.addEventListener("abort", () => order.push("y " + d.aborted));
+    x.abort("xr");
+    T("any nested abort", () => order);
+  }
+  {
+    const x = new AbortController();
+    const t = AbortSignal.timeout(2);
+    const d = AbortSignal.any([x.signal, t]);
+    await tick(20);
+    T("any of timeout", () => [d.aborted, E(d.reason), d.reason === t.reason]);
+  }
+
+  // a subclass
+  {
+    class C2 extends AbortController { constructor() { super(); this.extra = 1; } }
+    const k = new C2();
+    k.abort("sub");
+    T("subclass", () => [k instanceof C2, k.extra, k.signal.reason, Object.getPrototypeOf(k) === C2.prototype]);
+    T("subclass of signal", () => { class S2 extends AbortSignal {} return new S2(); });
+  }
+
+  // with the scheduler and locks: algorithms run before the event
+  {
+    const k = new AbortController();
+    const order = [];
+    const p = scheduler.postTask(() => order.push("ran"), { signal: k.signal, delay: 10 }).catch(e => order.push("task " + E(e)));
+    k.signal.addEventListener("abort", () => order.push("event"));
+    k.abort();
+    await p;
+    T("postTask abort", () => order);
+  }
+  {
+    const k = new AbortController();
+    const order = [];
+    let release;
+    const held = navigator.locks.request("abort-case", () => new Promise(r => { release = r; }));
+    const p = navigator.locks.request("abort-case", { signal: k.signal }, () => order.push("granted")).catch(e => order.push("lock " + E(e)));
+    k.signal.addEventListener("abort", () => order.push("event"));
+    await tick(10);
+    k.abort("stop");
+    await p;
+    release();
+    await held;
+    T("lock abort", () => order);
+  }
+
+  // a same-origin frame
+  const frame = document.createElement("iframe");
+  document.body.appendChild(frame);
+  const fw = frame.contentWindow;
+  T("frame", () => {
+    const k = new fw.AbortController();
+    const d = fw.AbortSignal.any([s, k.signal]);
+    const own = Object.getOwnPropertyDescriptor(fw.AbortSignal.prototype, "aborted").get.call(s);
+    k.abort();
+    return [fw.AbortSignal !== AbortSignal, k.signal instanceof fw.AbortSignal, k.signal instanceof AbortSignal, own, d.aborted, d.reason === s.reason,
+      Object.getPrototypeOf(d) === fw.AbortSignal.prototype, k.signal.reason instanceof fw.DOMException, k.signal.reason instanceof DOMException];
+  });
+  T("frame timeout", () => { const t = fw.AbortSignal.timeout(1); return [t.aborted, Object.getPrototypeOf(t) === fw.AbortSignal.prototype]; });
+
+  // a worker
+  const w = new Worker("abort-worker.js");
+  const lines = await new Promise(r => { w.onmessage = e => r(e.data); setTimeout(() => r(["timeout"]), 3000); });
+  for (const l of lines) L("worker", l);
+  L("done");
+})();
+</script></body></html>

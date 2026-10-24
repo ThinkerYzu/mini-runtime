@@ -1,0 +1,210 @@
+<!doctype html>
+<!-- WebGL against release Firefox: bench/compare_bridge.py webgl (task 23bb, SPEC decision 23).
+     The runtime's WebGL (glue/webgl.js) queues the calls and sends them to a real context in the bridge
+     tab in batches (bench/webgl_bridge.js). Checked: the interfaces, their constants and members,
+     getContext's rules and attributes, the bindings' argument errors, the answers of sync calls
+     (getParameter, getError, shader and program state and logs, locations, active info, precision),
+     a drawn triangle read back with readPixels, a texture from an <img>, uniforms, extensions,
+     drawing buffer sizes when the canvas changes, WebGL 2, and a context lost and restored. -->
+<html><head><title>webgl</title><meta charset="utf-8"></head><body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.map(v => (Array.isArray(v) || ArrayBuffer.isView(v) ? "[" + Array.from(v).join(",") + "]" : String(v))).join(" "));
+  const tryIt = (what, f) => { try { log(what, f()); } catch (e) { log(what, e.name, e.message); } };
+
+  // the interfaces
+  const names = ["WebGLRenderingContext", "WebGL2RenderingContext", "WebGLBuffer", "WebGLFramebuffer", "WebGLProgram", "WebGLRenderbuffer",
+                 "WebGLShader", "WebGLTexture", "WebGLUniformLocation", "WebGLVertexArrayObject", "WebGLActiveInfo",
+                 "WebGLShaderPrecisionFormat", "WebGLQuery", "WebGLSampler", "WebGLSync", "WebGLTransformFeedback", "WebGLContextEvent"];
+  log("interfaces", names.map(n => n + ":" + typeof window[n]).join(","));
+  for (const n of ["WebGLRenderingContext", "WebGLBuffer"]) tryIt("new " + n, () => new window[n]());
+  log("gl1 members", Object.getOwnPropertyNames(WebGLRenderingContext.prototype).length,
+      Object.getOwnPropertyNames(WebGLRenderingContext.prototype).filter(k => typeof Object.getOwnPropertyDescriptor(WebGLRenderingContext.prototype, k).value === "function").sort().join(","));
+  log("gl2 members", Object.getOwnPropertyNames(WebGL2RenderingContext.prototype).length);
+  log("constants", WebGLRenderingContext.TRIANGLES, WebGLRenderingContext.prototype.ARRAY_BUFFER, WebGL2RenderingContext.RGBA32F,
+      JSON.stringify(Object.getOwnPropertyDescriptor(WebGLRenderingContext, "FLOAT")));
+  log("toString", Object.prototype.toString.call(WebGLRenderingContext.prototype));
+  tryIt("event", () => { const e = new WebGLContextEvent("webglcontextlost", { statusMessage: "m", cancelable: true }); return [e.type, e.statusMessage, e.cancelable, String(e)].join(","); });
+
+  // getContext's rules
+  const canvas = document.createElement("canvas");
+  log("canvas size", canvas.width, canvas.height);
+  const gl = canvas.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
+  log("context", String(gl), gl === canvas.getContext("webgl"), gl === canvas.getContext("experimental-webgl"), canvas.getContext("2d"), canvas.getContext("webgl2"), gl.canvas === canvas);
+  tryIt("getContext no argument", () => canvas.getContext());
+  tryIt("bad powerPreference", () => document.createElement("canvas").getContext("webgl", { powerPreference: "fast" }));
+  log("attributes", JSON.stringify(gl.getContextAttributes()));
+  log("drawing buffer", gl.drawingBufferWidth, gl.drawingBufferHeight, gl.isContextLost());
+  log("extensions", gl.getSupportedExtensions().join(","));
+  log("getError", gl.getError());
+
+  // the bindings' errors and GL errors
+  tryIt("too few", () => gl.bindBuffer(gl.ARRAY_BUFFER));
+  tryIt("not an object", () => gl.bindBuffer(gl.ARRAY_BUFFER, 5));
+  tryIt("wrong interface", () => gl.bindBuffer(gl.ARRAY_BUFFER, gl.createTexture()));
+  tryIt("brand", () => WebGLRenderingContext.prototype.clear.call({}, 0));
+  gl.bindBuffer(0x1234, null);
+  log("invalid enum", gl.getError(), gl.getError());
+  log("createShader bad", gl.createShader(5), gl.getError());
+
+  // shaders and a program
+  const shader = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  const vs = shader(gl.VERTEX_SHADER, "attribute vec2 p; attribute vec2 uv; varying vec2 v; void main() { v = uv; gl_Position = vec4(p, 0.0, 1.0); }");
+  const fs = shader(gl.FRAGMENT_SHADER, "precision mediump float; uniform vec4 color; uniform sampler2D tex; uniform bool useTex; varying vec2 v; void main() { gl_FragColor = useTex ? texture2D(tex, v) : color; }");
+  const bad = shader(gl.FRAGMENT_SHADER, "void main() { gl_FragColor = nope; }");
+  log("compile", gl.getShaderParameter(vs, gl.COMPILE_STATUS), gl.getShaderParameter(bad, gl.COMPILE_STATUS), gl.getShaderParameter(fs, gl.SHADER_TYPE) === gl.FRAGMENT_SHADER);
+  log("bad log", JSON.stringify(gl.getShaderInfoLog(bad)));
+  log("source", gl.getShaderSource(vs).length);
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.bindAttribLocation(prog, 0, "p");
+  gl.linkProgram(prog);
+  log("link", gl.getProgramParameter(prog, gl.LINK_STATUS), JSON.stringify(gl.getProgramInfoLog(prog)), gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS), gl.getProgramParameter(prog, gl.ACTIVE_ATTRIBUTES));
+  const shaders = gl.getAttachedShaders(prog);
+  log("attached", shaders.length, shaders[0] === vs, shaders[1] === fs);
+  log("locations", gl.getAttribLocation(prog, "p"), gl.getAttribLocation(prog, "uv"), gl.getAttribLocation(prog, "none"));
+  const colorLoc = gl.getUniformLocation(prog, "color");
+  log("uniform location", String(colorLoc), gl.getUniformLocation(prog, "none"), colorLoc === gl.getUniformLocation(prog, "color"));
+  const info = gl.getActiveUniform(prog, 0);
+  log("active uniform", String(info), info.name, info.size, info.type);
+  const attrib = gl.getActiveAttrib(prog, 1);
+  log("active attrib", attrib.name, attrib.size, attrib.type);
+  const pf = gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT);
+  log("precision", String(pf), pf.rangeMin, pf.rangeMax, pf.precision);
+  gl.useProgram(prog);
+  log("current program", gl.getParameter(gl.CURRENT_PROGRAM) === prog);
+
+  // a triangle over the whole canvas, read back
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  const verts = new Float32Array([-1, -1, 0, 0, 3, -1, 2, 0, -1, 3, 0, 2]);
+  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+  verts.fill(0); // the call took its bytes when it was made
+  log("buffer", gl.getParameter(gl.ARRAY_BUFFER_BINDING) === buf, gl.getBufferParameter(gl.ARRAY_BUFFER, gl.BUFFER_SIZE), gl.isBuffer(buf));
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
+  log("attrib state", gl.getVertexAttrib(0, gl.VERTEX_ATTRIB_ARRAY_ENABLED), gl.getVertexAttrib(1, gl.VERTEX_ATTRIB_ARRAY_STRIDE), gl.getVertexAttribOffset(1, gl.VERTEX_ATTRIB_ARRAY_POINTER));
+  gl.uniform4f(colorLoc, 1, 0.5, 0.25, 1);
+  log("uniform", gl.getUniform(prog, colorLoc));
+  gl.clearColor(0, 0, 1, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  log("clear color", gl.getParameter(gl.COLOR_CLEAR_VALUE), gl.getParameter(gl.VIEWPORT));
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const px = new Uint8Array(8);
+  gl.readPixels(0, 0, 2, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  log("pixels", px, gl.getError());
+  tryIt("readPixels wrong type", () => { gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Float32Array(4)); return gl.getError(); });
+  tryIt("readPixels no view", () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE));
+  log("toDataURL", canvas.toDataURL().slice(0, 22));
+
+  // the canvas resized: the drawing buffer follows, the viewport stays
+  canvas.width = 64;
+  canvas.height = 32;
+  log("resized", canvas.width, canvas.height, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.getParameter(gl.VIEWPORT));
+  canvas.setAttribute("width", "bad");
+  log("bad width", canvas.width, gl.drawingBufferWidth);
+
+  // extensions
+  const vao = gl.getExtension("OES_vertex_array_object");
+  log("vao ext", String(vao), vao === gl.getExtension("oes_vertex_array_object"), vao.VERTEX_ARRAY_BINDING_OES, typeof vao.createVertexArrayOES);
+  const va = vao.createVertexArrayOES();
+  vao.bindVertexArrayOES(va);
+  log("vao", String(va), gl.getParameter(vao.VERTEX_ARRAY_BINDING_OES) === va, vao.isVertexArrayOES(va));
+  vao.bindVertexArrayOES(null);
+  const inst = gl.getExtension("ANGLE_instanced_arrays");
+  log("instanced", typeof inst.drawArraysInstancedANGLE, inst.VERTEX_ATTRIB_ARRAY_DIVISOR_ANGLE);
+  log("unknown ext", gl.getExtension("NOPE_ext"));
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  log("renderer", gl.getParameter(gl.VENDOR), gl.getParameter(gl.VERSION), dbg && gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL));
+  log("limits", gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_VERTEX_ATTRIBS), gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE), gl.getParameter(gl.COLOR_WRITEMASK));
+
+  // WebGL 2
+  const c2 = document.createElement("canvas");
+  c2.width = 4;
+  c2.height = 4;
+  const gl2 = c2.getContext("webgl2");
+  log("webgl2", String(gl2), gl2 && gl2.getParameter(gl2.VERSION), gl2 && gl2.getParameter(gl2.SHADING_LANGUAGE_VERSION));
+  if (gl2) {
+    const s2 = gl2.createShader(gl2.VERTEX_SHADER);
+    gl2.shaderSource(s2, "#version 300 es\nin vec4 p; void main() { gl_Position = p; }");
+    gl2.compileShader(s2);
+    log("webgl2 shader", gl2.getShaderParameter(s2, gl2.COMPILE_STATUS));
+    const q = gl2.createQuery();
+    const sync = gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    log("webgl2 objects", String(q), String(sync), gl2.isSync(sync), gl2.getSyncParameter(sync, gl2.OBJECT_TYPE) === gl2.SYNC_FENCE);
+    const b2 = gl2.createBuffer();
+    gl2.bindBuffer(gl2.COPY_READ_BUFFER, b2);
+    gl2.bufferData(gl2.COPY_READ_BUFFER, new Uint16Array([1, 2, 3, 4]), gl2.STATIC_READ);
+    const back = new Uint16Array(3);
+    gl2.getBufferSubData(gl2.COPY_READ_BUFFER, 2, back);
+    log("getBufferSubData", back, gl2.getError());
+    gl2.clearBufferfv(gl2.COLOR, 0, [0.5, 0, 1, 1]);
+    const p2 = new Uint8Array(4);
+    gl2.readPixels(0, 0, 1, 1, gl2.RGBA, gl2.UNSIGNED_BYTE, p2);
+    log("webgl2 clear", p2, gl2.getError());
+  }
+
+  // a texture from an <img>, drawn and read back after the image loaded
+  window.addEventListener("load", () => setTimeout(() => {
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = 2;
+      canvas.height = 2;
+      gl.viewport(0, 0, 2, 2);
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      log("texImage2D", gl.getError(), gl.getParameter(gl.TEXTURE_BINDING_2D) === tex, gl.getTexParameter(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER));
+      gl.uniform1i(gl.getUniformLocation(prog, "useTex"), 1);
+      gl.uniform1i(gl.getUniformLocation(prog, "tex"), 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 0, 1, 3, -1, 2, 1, -1, 3, 0, -1]), gl.STATIC_DRAW);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      const t = new Uint8Array(16);
+      gl.readPixels(0, 0, 2, 2, gl.RGBA, gl.UNSIGNED_BYTE, t);
+      log("texture pixels", t);
+      // a frame's commands go at its paint: drawn in one animation frame, read in the next
+      requestAnimationFrame(() => {
+        gl.uniform1i(gl.getUniformLocation(prog, "useTex"), 0);
+        gl.uniform4fv(colorLoc, [0, 1, 0, 1]);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        requestAnimationFrame(() => {
+          const f = new Uint8Array(4);
+          gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, f);
+          log("frame pixels", f);
+          loseAndRestore();
+        });
+      });
+    };
+    img.src = "images-a.png";
+  }, 100));
+
+  // WEBGL_lose_context: the events, the state while lost, a restore
+  function loseAndRestore() {
+    const lc = gl.getExtension("WEBGL_lose_context");
+    const events = [];
+    canvas.addEventListener("webglcontextlost", e => { events.push("lost " + e.cancelable + " " + e.bubbles + " " + (e instanceof WebGLContextEvent)); e.preventDefault(); });
+    canvas.addEventListener("webglcontextrestored", e => {
+      events.push("restored");
+      log("events", events.join("; "));
+      log("after restore", gl.isContextLost(), gl.getError(), gl.isBuffer(buf), gl.getParameter(gl.CURRENT_PROGRAM));
+      const nb = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, nb);
+      log("new buffer", gl.isBuffer(nb), gl.getError());
+      log("done");
+    });
+    lc.loseContext();
+    log("lost", gl.isContextLost(), gl.getError(), gl.getError(), gl.getParameter(gl.VIEWPORT), gl.getContextAttributes(), gl.getExtension("OES_vertex_array_object"), gl.drawingBufferWidth);
+    lc.loseContext();
+    log("lose twice", gl.getError());
+    setTimeout(() => { lc.restoreContext(); log("restoring", gl.isContextLost()); }, 50);
+  }
+</script>
+</body></html>

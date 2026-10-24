@@ -1,0 +1,34 @@
+[package]
+name = "mrt-layout"
+version = "0.1.0"
+edition = "2024"
+
+# Stage 2b: layout, translated from Firefox's C++ in the same shape (files, functions, names, order,
+# comments). See CONVENTIONS.md. Directories under src/ mirror the Firefox tree.
+[lib]
+# Doc comments are copied from Gecko's C++ comments; indented lines in them would be run as doctests.
+doctest = false
+
+[dependencies]
+mrt-style = { path = "../mrt-style" }
+# Text phase 2a: fonts and shaping (gfxFont, nsFontMetrics numbers, HarfBuzz). See ../mrt-text/README.md.
+mrt-text = { path = "../mrt-text" }
+# Firefox's own crates (third_party/rust), same versions/features as servo/components/style/Cargo.toml for
+# icu_segmenter; the same copies Stylo already pulls in (Cargo.lock), so --offline needs nothing new.
+# They replace the C++ icu4x bindings that intl/lwbrk calls (see src/intl/lwbrk/LineBreaker.rs).
+icu_segmenter = { version = ">= 1.5, <= 2.*", default-features = false, features = ["auto", "compiled_data"] }
+icu_locale_core = "2"
+# Firefox's own bidi engine (intl/bidi/rust/unicode-bidi-ffi calls it); the crate's built-in character table stands in for the icu_properties adapter.
+unicode-bidi = "0.3"
+# The rectangle type Stylo's transform matrices take (ToMatrix::to_3d_matrix's reference box); the
+# copy Stylo already pulls in (Cargo.lock).
+euclid = "0.22"
+icu_properties = { version = "2", default-features = false, features = ["compiled_data"] }
+
+[profile.release]
+debug = false
+
+# Stylo 0.22 with Gecko-only properties also generated for the Servo engine (vendor/stylo/README-mrt.md)
+[patch.crates-io]
+stylo = { path = "../vendor/stylo" }
+stylo_atoms = { path = "../vendor/stylo_atoms" }

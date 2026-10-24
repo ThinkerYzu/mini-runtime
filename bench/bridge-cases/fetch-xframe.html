@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- A cross-site frame's credentialed requests back to the page's site (GAPS B162, the point task 3ced9 left),
+     against release Firefox: bench/compare_bridge.py fetch-xframe (?ws=, ws_echo.py's /h and /log on
+     localhost). The page sets a cookie of its own; a frame from 127.0.0.1 (fetch-xframe-child.html) fetches
+     localhost with credentials, has a cookie set, and fetches again; which cookies each request carried, and
+     which the page then sees and sends. -->
+<html><head><meta charset="utf-8"><title>fetch xframe</title></head><body><p>fetch xframe test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const ws = new URLSearchParams(location.search).get("ws");
+  const E = `http://localhost:${ws}`;
+  const h = o => `${E}/h?` + new URLSearchParams(o);
+  const mine = c => c.split("; ").filter(c => c.startsWith("fp")).sort();
+  const seen = async id => (await (await fetch(`${E}/log`)).json()).filter(e => e.id === id)
+    .map(e => e.method + " " + JSON.stringify(mine(e.h.cookie || "")));
+  const include = { credentials: "include" };
+  await fetch(`${E}/log?clear`);
+  await fetch(h({ acao: "echo", acac: "true", setcookie: "fp2=; max-age=0; path=/" }), include);
+  document.cookie = "fp1=top; path=/";
+  await new Promise(done => {
+    window.addEventListener("message", e => { L("frame", JSON.stringify(e.data)); done(); }, { once: true });
+    const f = document.createElement("iframe");
+    f.src = `http://127.0.0.1:${location.port}/fetch-xframe-child.html?ws=${ws}`;
+    document.body.appendChild(f);
+  });
+  for (const id of ["c1", "c2", "c3"]) L(id, JSON.stringify(await seen(id)));
+  L("page document.cookie", JSON.stringify(mine(document.cookie)));
+  await fetch(h({ acao: "echo", acac: "true", id: "t1" }), include);
+  L("t1", JSON.stringify(await seen("t1")));
+  document.cookie = "fp1=; max-age=0; path=/";
+  await fetch(h({ acao: "echo", acac: "true", setcookie: "fp2=; max-age=0; path=/" }), include);
+  L("done");
+})();
+</script></body></html>

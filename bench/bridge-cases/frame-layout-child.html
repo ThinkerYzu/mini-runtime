@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><title>frame-layout child</title><meta charset="utf-8"><style>p { margin: 4px; width: 50%; height: 10px; }</style></head>
+<body><p id=p>x</p>
+<script>
+  // a cross-origin frame's viewport, seen from inside: the size its frame element gives it
+  const r = document.getElementById("p").getBoundingClientRect();
+  parent.postMessage({ inner: [innerWidth, innerHeight], root: [document.documentElement.clientWidth, document.documentElement.clientHeight],
+                       p: [r.x, r.y, r.width, r.height], mq: matchMedia("(max-width: 350px)").matches }, "*");
+</script></body></html>

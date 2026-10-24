@@ -1,0 +1,153 @@
+<!doctype html>
+<!-- ResizeObserver against release Firefox: bench/compare_bridge.py resize-observer (GAPS B15, task
+     2766). Gecko: dom/base/ResizeObserver.cpp and Document::DetermineProximityToViewportAndNotifyResizeObservers:
+     observations gathered after layout at each refresh tick, the first one always reported, the three
+     boxes, contentRect at the padding's origin, entries in observation order, the depth loop and its
+     error event. Each step waits two animation frames: the observers run after the frame callbacks of
+     the same tick. -->
+<html><head><title>resize-observer</title><meta charset="utf-8">
+<style>
+  body { margin: 8px; font: 16px/20px monospace; width: 900px }
+  #box { width: 100px; height: 50px; padding: 5px 7px 9px 11px; border: 3px solid; margin-left: 0.4px }
+  #frac { width: 33.3px; height: 10.6px; padding: 0.3px; margin-left: 10.5px }
+  #scroll { overflow: auto; width: 120px; height: 60px; padding: 3px; border: 1px solid }
+  #inner { height: 200px }
+  #none { display: none; width: 10px; height: 10px }
+  #ib { display: inline-block; width: 15px; height: 5px; border: 2px solid }
+  #outer { width: 200px }
+  #grow { height: 10px }
+</style>
+</head><body>
+<div id="box">box</div>
+<div id="frac"></div>
+<div id="scroll"><div id="inner"></div></div>
+<div id="none"></div>
+<p>text <span id="span">inline</span> <span id="ib"></span> <img id="img" width="30" height="20" alt=""></p>
+<div id="outer"><div id="grow"></div></div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.map(v => typeof v === "string" ? v : JSON.stringify(v)).join(" "));
+  const err = f => { try { f(); return "no error"; } catch (e) { return e.constructor.name + ": " + e.message; } };
+  const frames = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const size = s => [s.inlineSize, s.blockSize];
+  const rect = r => [r.x, r.y, r.width, r.height, r.top, r.right, r.bottom, r.left];
+  const describe = e => [e.target.id, rect(e.contentRect), e.borderBoxSize.map(size), e.contentBoxSize.map(size), e.devicePixelContentBoxSize.map(size)];
+  // an observer whose calls are logged under `name`
+  const watch = (name, extra) => {
+    const ro = new ResizeObserver(function (entries, observer) {
+      log(name, entries.length, entries.map(describe));
+      if (extra) extra(entries, observer, this);
+    });
+    return ro;
+  };
+  const $ = id => document.getElementById(id);
+
+  (async () => {
+    log("interfaces", typeof ResizeObserver, typeof ResizeObserverEntry, typeof ResizeObserverSize, ResizeObserver.length,
+      Object.getOwnPropertyNames(ResizeObserver.prototype), Object.getOwnPropertyNames(ResizeObserverEntry.prototype),
+      Object.getOwnPropertyNames(ResizeObserverSize.prototype));
+    log("constructor errors", err(() => ResizeObserver(() => {})), err(() => new ResizeObserver()), err(() => new ResizeObserver(5)),
+      err(() => new ResizeObserverEntry()), err(() => new ResizeObserverSize()));
+    const probe = new ResizeObserver(() => {});
+    log("observe errors", err(() => probe.observe()), err(() => probe.observe(document)), err(() => probe.observe($("box"), 5)),
+      err(() => probe.observe($("box"), { box: "padding-box" })), err(() => probe.unobserve({})),
+      err(() => ResizeObserver.prototype.observe.call({}, $("box"))), err(() => ResizeObserver.prototype.disconnect.call(5)));
+    probe.disconnect();
+
+    // the first observation of each target, every box, in observation order
+    const a = watch("first", (entries, observer, self) => {
+      const e = entries[0];
+      log("first details", self === observer, Object.isFrozen(e.borderBoxSize), e.borderBoxSize === e.borderBoxSize,
+        e.contentRect instanceof DOMRectReadOnly, JSON.stringify(e.contentRect), Object.prototype.toString.call(e), Object.prototype.toString.call(e.contentBoxSize[0]));
+    });
+    for (const id of ["box", "frac", "scroll", "none", "span", "ib", "img"]) a.observe($(id));
+    const detached = document.createElement("div");
+    detached.id = "detached";
+    a.observe(detached);
+    await frames();
+    log("after first, nothing new");
+    await frames();
+
+    // a change of the observed box reports; one outside it does not
+    $("box").style.width = "120px";
+    await frames();
+    $("box").style.borderWidth = "6px";
+    await frames();
+    log("border changed (content-box observed)");
+    $("span").textContent = "a longer inline text";
+    await frames();
+    log("span changed (inline: never reported again)");
+    $("none").style.display = "block";
+    await frames();
+    $("box").style.width = "130px";
+    $("box").style.width = "120px";
+    await frames();
+    log("changed and back within a task");
+
+    // the border box: its border counts; the same target observed again with the same box keeps its
+    // size, with another box it starts again
+    const b = watch("border");
+    b.observe($("box"), { box: "border-box" });
+    await frames();
+    $("box").style.borderWidth = "2px";
+    await frames();
+    b.observe($("box"), { box: "border-box" });
+    await frames();
+    log("same box again: nothing");
+    b.observe($("box"), { box: "device-pixel-content-box" });
+    await frames();
+    $("frac").style.marginLeft = "10.2px";
+    b.observe($("frac"), { box: "device-pixel-content-box" });
+    await frames();
+    $("frac").style.marginLeft = "10.7px";
+    await frames();
+    log("frac moved");
+
+    // unobserve and disconnect
+    a.unobserve($("box"));
+    $("box").style.height = "60px";
+    await frames();
+    log("after unobserve");
+    a.observe($("box"));
+    await frames();
+    a.disconnect();
+    b.disconnect();
+    $("box").style.height = "70px";
+    await frames();
+    log("after disconnect");
+
+    // two observers: called in the order they first observed; the DOM changed by a callback is seen in
+    // the same tick for deeper targets
+    const outer = watch("outer", () => { $("grow").style.height = "30px"; });
+    const grow = watch("grow");
+    outer.observe($("outer"));
+    grow.observe($("grow"));
+    await frames();
+    grow.disconnect();
+    outer.disconnect();
+
+    // the depth loop: a callback that resizes a shallower target leaves it for the next tick, and the
+    // window gets the loop-limit error
+    window.addEventListener("error", e => log("window error", e.message, e.filename, e.lineno, e.colno, e.error === undefined ? "undefined" : String(e.error), e.cancelable, e.bubbles));
+    window.onerror = (...args) => { log("onerror", args.map(String)); };
+    let shrink = 0;
+    const deep = watch("deep", () => { if (shrink++ < 1) $("outer").style.width = "150px"; });
+    const shallow = watch("shallow");
+    shallow.observe($("outer"));
+    deep.observe($("grow"));
+    await frames();
+    await frames();
+    log("loop done");
+    deep.disconnect();
+    shallow.disconnect();
+
+    // removed from the document: its sizes become zeros
+    const c = watch("removed");
+    c.observe($("ib"));
+    await frames();
+    $("ib").remove();
+    await frames();
+    c.disconnect();
+    log("done");
+  })();
+</script></body></html>

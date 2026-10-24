@@ -1,0 +1,24 @@
+<!doctype html>
+<html><head><title>schild</title><meta charset="utf-8"></head><body><p>same-site child</p>
+<script>
+  window.addEventListener("error", e => parent.postMessage({ childError: String(e.message) }, "*"));
+  // its own origin's storage
+  localStorage.clear();
+  localStorage.setItem("who", "child");
+  let parentDoc;
+  try { parentDoc = typeof parent.document; } catch (e) { parentDoc = e.name; }
+  window.addEventListener("message", e => {
+    if (e.data === "port") {
+      e.ports[0].postMessage({ ports: e.ports.length, from: "child" });
+      return;
+    }
+    if (e.data === "ping 2") {
+      // a frame of the page's origin inside this one: it reaches the page directly
+      const g = document.createElement("iframe");
+      g.src = `http://localhost:${new URLSearchParams(location.search).get("page")}/sframes-inner-child.html`;
+      document.body.appendChild(g);
+    }
+    parent.postMessage({ pong: e.data, sourceIsParent: e.source === parent, storage: localStorage.getItem("who") }, "*");
+  });
+  parent.postMessage({ hello: true, parentDoc, top: top === parent, frameElement: window.frameElement, frames: window.frames === window }, "*");
+</script></body></html>

@@ -1,0 +1,2 @@
+[["move", "#go"], ["pause", 300],
+ ["click", "#go"], ["pause", 2500]]

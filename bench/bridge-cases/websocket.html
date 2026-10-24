@@ -1,0 +1,91 @@
+<!doctype html>
+<!-- WebSocket, forwarded to Firefox (GAPS B70) against release Firefox: bench/compare_bridge.py
+     websocket, with bench/ws_echo.py on the port in the query (?ws=PORT). The interface's shape,
+     the constructor's checks, a connection's states and events in order (open, text and binary
+     messages, a close the server starts, a close the page starts), send's and close's checks, and
+     the two failures a replay gives: a refused handshake (404) and a close while connecting. -->
+<html><head><meta charset="utf-8"><title>websocket</title></head><body><p>websocket test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const E = e => e ? e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", JSON.stringify(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const port = new URLSearchParams(location.search).get("ws");
+  const base = `ws://localhost:${port}`;
+  // every event of a connection, logged as it comes, through a listener and the handler attribute
+  // (set after the listener: the runtime runs handler attributes last, GAPS B71; isTrusted is not
+  // logged, GAPS B72)
+  const watch = (ws, name) => {
+    for (const type of ["open", "message", "error", "close"]) {
+      ws.addEventListener(type, e => {
+        const parts = [name, type, ws.readyState, e.constructor.name, e.bubbles, e.cancelable];
+        if (type === "message") parts.push(typeof e.data, e.data instanceof ArrayBuffer ? "ArrayBuffer " + JSON.stringify(Array.from(new Uint8Array(e.data)))
+                                           : JSON.stringify(e.data), e.origin, e.lastEventId, e.source);
+        if (type === "close") parts.push(e.code, JSON.stringify(e.reason), e.wasClean);
+        L(...parts);
+      });
+      ws["on" + type] = e => L(name, "on" + type, ws.readyState);
+    }
+  };
+  const until = (ws, type) => new Promise(r => ws.addEventListener(type, r, { once: true }));
+
+  T("shape", () => [typeof WebSocket, WebSocket.length, Object.getPrototypeOf(WebSocket.prototype) === EventTarget.prototype,
+                    Object.prototype.toString.call(WebSocket.prototype), WebSocket.CONNECTING, WebSocket.OPEN, WebSocket.CLOSING,
+                    WebSocket.CLOSED, WebSocket.prototype.CLOSED, Object.keys(WebSocket.prototype).sort()]);
+  T("no new", () => WebSocket(base + "/echo"));
+  T("no argument", () => new WebSocket());
+  T("bad scheme", () => new WebSocket("ftp://localhost/"));
+  T("not a URL", () => new WebSocket("ws://"));
+  T("fragment", () => new WebSocket(base + "/echo#x").url);
+  T("repeated protocol", () => new WebSocket(base + "/echo", ["a", "a"]));
+  T("bad protocol", () => new WebSocket(base + "/echo", "a b"));
+  T("empty protocol", () => new WebSocket(base + "/echo", ""));
+  T("brand", () => WebSocket.prototype.readyState);
+
+  // a connection: the server echoes, then closes on "bye"
+  const ws = new WebSocket(base + "/echo?a=1", ["chat", "superchat"]);
+  watch(ws, "ws");
+  T("connecting", () => [ws.readyState, ws.url, ws.protocol, ws.extensions, ws.binaryType, ws.bufferedAmount]);
+  T("send while connecting", () => ws.send("x"));
+  T("close 999", () => ws.close(999));
+  T("close long reason", () => ws.close(1000, "x".repeat(124)));
+  T("binaryType bad", () => { ws.binaryType = "text"; return ws.binaryType; });
+  await until(ws, "open");
+  T("open", () => [ws.readyState, ws.protocol, ws.extensions]);
+  ws.send("hello");
+  await until(ws, "message");
+  ws.binaryType = "arraybuffer";
+  ws.send(new Uint8Array([1, 2, 255]));
+  await until(ws, "message");
+  ws.send(new Uint8Array([7, 8, 9, 10]).subarray(1, 3));
+  await until(ws, "message");
+  ws.send("bye");
+  await until(ws, "close");
+  T("closed", () => [ws.readyState, ws.bufferedAmount]);
+  T("send after close", () => { ws.send("abcd"); return ws.bufferedAmount; });
+  T("close after close", () => [ws.close(), ws.readyState]);
+
+  // the page closes it
+  const ws2 = new WebSocket(base + "/echo");
+  watch(ws2, "ws2");
+  await until(ws2, "open");
+  T("close 4000", () => [ws2.close(4000, "done"), ws2.readyState]);
+  T("send while closing", () => { ws2.send("ab"); return ws2.bufferedAmount; });
+  await until(ws2, "close");
+
+  // a handshake refused: a replay's 404
+  const ws3 = new WebSocket(base + "/missing");
+  watch(ws3, "ws3");
+  await until(ws3, "close");
+  T("refused", () => [ws3.readyState, ws3.protocol]);
+
+  // closed while connecting
+  const ws4 = new WebSocket(base + "/echo");
+  watch(ws4, "ws4");
+  T("close while connecting", () => [ws4.close(), ws4.readyState]);
+  await until(ws4, "close");
+  L("done");
+})();
+</script>
+</body></html>

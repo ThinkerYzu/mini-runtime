@@ -1,0 +1,44 @@
+<!doctype html>
+<!-- Where a classic script's errors and stacks say it is (ScriptLoader::FillCompileOptionsForRequest)
+     against release Firefox: bench/compare_bridge.py script-errors. An inline script names the
+     document from the line (and, on its first line, the column) the parser found it at; an external
+     one its own URL from line 1; an inline one a script made the document from line 1, after its
+     caller's place ("line N > injectedScript"); a string timer its caller's file and line. Errors'
+     fileName, lineNumber and columnNumber, stacks across scripts, and the top-level declarations
+     shared between scripts. The script is also script-errors.js. Until session 100 the runtime named
+     'bridge.js line N > eval' (GAPS B103). -->
+<html><head><meta charset="utf-8"><title>script-errors</title></head><body><p>script-errors test</p>
+<script>
+  const log = window.__log = [];
+  const O = location.origin;
+  const L = (...a) => log.push(a.join(" ").split(O).join("ORIGIN"));
+  const J = v => JSON.stringify(v);
+  const place = e => [e.fileName, e.lineNumber, e.columnNumber];
+  // a stack's frames without the harness's own (the bridge's, Marionette's)
+  const frames = e => String(e.stack).split("\n").filter(f => f && /script-errors/.test(f));
+  function made() { return new Error("made"); }
+  L("inline place", J(place(new Error("x"))));
+  L("inline stack", J(frames(made())));
+  try { null.x; } catch (e) { L("inline TypeError", e.constructor.name, J(place(e))); }
+  let shared = "let";
+  var topVar = 1;
+  function topFunction() {}
+</script>
+<p>text</p><script>L("same line", J(place(new Error("y"))));
+  L("shared let", typeof shared, shared);
+  L("var and function", J([Object.getOwnPropertyDescriptor(window, "topVar").configurable, Object.getOwnPropertyDescriptor(window, "topFunction").configurable]));
+  function nested() { return made(); }
+  L("cross-script stack", J(frames(nested())));
+  try { eval("new Error('in eval')").stack; L("eval place", J(place(eval("new Error('e')")))); } catch (e) { L("eval", e.message); }
+</script>
+<script src="script-errors.js"></script>
+<script>
+  const made1 = document.createElement("script");
+  made1.textContent = "\n\nL('injected inline', J(place(new Error('z'))));";
+  document.body.appendChild(made1);
+  const made2 = document.createElement("script");
+  made2.src = "script-errors.js?injected";
+  document.body.appendChild(made2);
+  setTimeout("L('string timer', J(place(new Error('t'))))", 0);
+</script>
+</body></html>

@@ -1,0 +1,169 @@
+<!doctype html>
+<!-- The CSSOM of style sheets against release Firefox: bench/compare_bridge.py insert-rule (GAPS B15,
+     task 3f23). X inserts its styled rules one by one into a <style> sheet (1,208 calls, one a
+     SyntaxError), CNN 159 (16 SyntaxErrors, @container and @supports rules), YouTube 10 at index 0;
+     X then reads cssRules' cssText and selectorText. Gecko parses each rule at the call
+     (Servo_CssRules_InsertRule) and the rule reaches the style. -->
+<html><head><title>insert-rule</title><meta charset="utf-8">
+<style id="initial">
+  @import url("insert-rule-none.css");
+  @namespace svg url(http://www.w3.org/2000/svg);
+  #t1 { width: 11px; color: rgb(1, 2, 3) }
+  @media (min-width: 100px) { #t2 { width: 12px } }
+  @supports (display: grid) { #t3 { width: 13px } }
+  @keyframes spin { from { opacity: 0 } 50% { opacity: .5 } to { opacity: 1 } }
+  @font-face { font-family: "X"; src: url(x.woff2) }
+  @layer base, top;
+  @layer base { #t4 { width: 14px } }
+  @container card (min-width: 10px) { #t5 { width: 15px } }
+  #t6 { & > b { color: red } width: 16px }
+  #t7 , #t8:hover::before { opacity: .55 }
+</style>
+<link id="lnk" rel="stylesheet" href="link-sheets-a.css">
+</head><body>
+<div id="t1"></div><div id="t2"></div><div id="t3"></div><div id="t4"></div><div id="t5"></div><div id="t6"><b></b></div>
+<div id="w1">w1</div><div id="w2">w2</div><div id="w3">w3</div><div id="w4">w4</div><div id="w5">w5</div><div id="w6">w6</div>
+<div id="a">a</div><div id="order">order</div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const width = id => getComputedStyle(document.getElementById(id)).width;
+  const tryLog = (what, f) => { try { log(what, "->", String(f())); } catch (e) { log(what, "threw", e.name, e.message); } };
+  const rulesOf = sheet => Array.from(sheet.cssRules, r => r.constructor.name + " " + r.type + " " + JSON.stringify(r.cssText));
+  const kids = r => r.cssRules ? " [" + Array.from(r.cssRules, k => k.constructor.name + ":" + JSON.stringify(k.cssText)).join(" | ") + "]" : "";
+
+  // interfaces
+  for (const n of ["CSSRule", "CSSRuleList", "CSSStyleSheet", "CSSStyleRule", "CSSGroupingRule", "CSSConditionRule", "CSSMediaRule",
+    "CSSSupportsRule", "CSSContainerRule", "CSSImportRule", "CSSNamespaceRule", "CSSKeyframesRule", "CSSKeyframeRule",
+    "CSSFontFaceRule", "CSSLayerBlockRule", "CSSLayerStatementRule", "CSSPageRule", "CSSNestedDeclarations", "CSSScopeRule",
+    "CSSStartingStyleRule", "CSSPropertyRule", "CSSCounterStyleRule"]) {
+    const C = window[n];
+    log("interface", n, typeof C, C ? Object.getPrototypeOf(C.prototype).constructor.name : "");
+  }
+  log("constants", CSSRule.STYLE_RULE, CSSRule.MEDIA_RULE, CSSRule.prototype.KEYFRAMES_RULE, CSSRule.SUPPORTS_RULE);
+  tryLog("new CSSRule", () => new CSSRule());
+
+  // a sheet's initial rules, parsed
+  const initial = document.getElementById("initial").sheet;
+  log("initial length", initial.cssRules.length, initial.cssRules === initial.cssRules, initial.cssRules instanceof CSSRuleList);
+  for (const r of initial.cssRules) log("initial", r.constructor.name, r.type, JSON.stringify(r.cssText), kids(r));
+  const st = initial.cssRules[2];
+  log("style rule", st.selectorText, st.parentStyleSheet === initial, st.parentRule, initial.cssRules[2] === st, initial.cssRules.item(2) === st);
+  log("selectorText list", initial.cssRules[11].selectorText);
+  const media = initial.cssRules[3];
+  log("media", media.conditionText, media.media.mediaText, media.cssRules[0].parentRule === media, media.cssRules[0].selectorText);
+  log("supports", initial.cssRules[4].conditionText);
+  log("keyframes", initial.cssRules[5].name, initial.cssRules[5].cssRules.length, Array.from(initial.cssRules[5].cssRules, k => k.keyText).join(","));
+  log("import", initial.cssRules[0].href);
+  log("namespace", initial.cssRules[1].prefix, initial.cssRules[1].namespaceURI);
+  log("layer", initial.cssRules[8].name);
+  log("container", initial.cssRules[9].conditionText);
+  log("nested", initial.cssRules[10].cssRules.length, initial.cssRules[10].cssRules[0] && initial.cssRules[10].cssRules[0].cssText);
+  log("item out of range", initial.cssRules.item(99), initial.cssRules[99], 99 in initial.cssRules, 2 in initial.cssRules);
+  log("widths initial", width("t1"), width("t2"), width("t3"), width("t4"), width("t5"), width("t6"));
+
+  // insertRule into a <style> sheet: the rule applies
+  const s = document.createElement("style");
+  document.head.appendChild(s);
+  const sheet = s.sheet;
+  log("empty", sheet.cssRules.length, sheet.ownerNode === s, sheet.href, sheet.disabled, sheet.media.mediaText);
+  tryLog("insert w1", () => sheet.insertRule("#w1 { width: 101px }", 0));
+  log("w1", width("w1"), sheet.cssRules.length, JSON.stringify(sheet.cssRules[0].cssText));
+  tryLog("insert w2 at end", () => sheet.insertRule("#w2{width:102px;color:RED}", sheet.cssRules.length));
+  tryLog("insert w3 at 1", () => sheet.insertRule("  #w3 { width: 103px }  ", 1));
+  log("order", rulesOf(sheet).join(" ; "));
+  log("w2 w3", width("w2"), width("w3"));
+  const keep = sheet.cssRules[0];
+  tryLog("insert at 0 again", () => sheet.insertRule("#w4 { width: 104px }"));
+  log("identity kept", sheet.cssRules[1] === keep, sheet.cssRules.length);
+  // what X's and CNN's calls do
+  tryLog("bad rule", () => sheet.insertRule("#w5 { width: 105px", 0));
+  tryLog("garbage", () => sheet.insertRule("}{", 0));
+  tryLog("two rules", () => sheet.insertRule("#w5 { width: 105px } #w6 { width: 106px }", 0));
+  tryLog("empty text", () => sheet.insertRule("", 0));
+  tryLog("unknown at-rule", () => sheet.insertRule("@foo bar { }", 0));
+  tryLog("bad selector", () => sheet.insertRule("#w5:unknown-pseudo { width: 1px }", 0));
+  tryLog("bad declaration kept", () => sheet.insertRule("#w5 { widht: 1px; width: 105px }", 0));
+  tryLog("index too big", () => sheet.insertRule("#w6 { width: 106px }", 99));
+  tryLog("index -1", () => sheet.insertRule("#w6 { width: 106px }", -1));
+  tryLog("index string", () => sheet.insertRule("#w6 { width: 106px }", "1"));
+  tryLog("@import late", () => sheet.insertRule('@import url("x.css");', 1));
+  tryLog("@import first", () => sheet.insertRule('@import url("x.css");', 0));
+  tryLog("@namespace late", () => sheet.insertRule("@namespace url(http://www.w3.org/2000/svg);", 3));
+  tryLog("@media", () => sheet.insertRule("@media (min-width: 1px) { #w5 { height: 7px } }", sheet.cssRules.length));
+  tryLog("@container", () => sheet.insertRule("@container (min-width: 1px) { #w5 { height: 8px } }", sheet.cssRules.length));
+  tryLog("@supports", () => sheet.insertRule("@supports (display: flex) { #w5 { color: rgb(9, 9, 9) } }", sheet.cssRules.length));
+  tryLog("@keyframes", () => sheet.insertRule("@keyframes k { 0% { top: 0 } 100% { top: 10px } }", sheet.cssRules.length));
+  tryLog("-webkit-keyframes", () => sheet.insertRule("@-webkit-keyframes k2 { from { top: 0 } }", sheet.cssRules.length));
+  log("after inserts", rulesOf(sheet).join(" ; "));
+  log("w4 w5 w6", width("w4"), width("w5"), getComputedStyle(document.getElementById("w5")).height, width("w6"));
+  // deleteRule
+  tryLog("delete 0", () => sheet.deleteRule(0));
+  tryLog("delete 99", () => sheet.deleteRule(99));
+  tryLog("delete no index", () => sheet.deleteRule());
+  log("after delete", sheet.cssRules.length, width("w4"), width("w5"));
+  // addRule and removeRule
+  tryLog("addRule", () => sheet.addRule("#w6", "width: 116px"));
+  log("addRule last", JSON.stringify(sheet.cssRules[sheet.cssRules.length - 1].cssText), width("w6"));
+  tryLog("addRule at 0", () => sheet.addRule("#w6", "height: 3px", 0));
+  tryLog("removeRule", () => sheet.removeRule());
+  log("rules alias", sheet.rules === sheet.cssRules, sheet.cssRules.length);
+  // disabled
+  sheet.disabled = true;
+  log("disabled", sheet.disabled, width("w1"), width("w6"));
+  sheet.disabled = false;
+  log("enabled", sheet.disabled, width("w1"), width("w6"));
+  // the element's text changes: a new sheet, the inserted rules gone
+  s.textContent = "#w1 { width: 121px }";
+  const sheet2 = s.sheet;
+  log("text changed", sheet2 === sheet, sheet2.cssRules.length, width("w1"), width("w2"), sheet.ownerNode);
+  log("old sheet keeps its rules", sheet.cssRules.length > 1);
+  tryLog("insert into old sheet", () => sheet.insertRule("#w2 { width: 199px }", 0));
+  log("old sheet styles nothing", width("w2"));
+  sheet2.insertRule("#w2 { width: 122px }", 1);
+  // moved in the document: a new sheet again
+  document.body.appendChild(s);
+  const sheet3 = s.sheet;
+  log("moved", sheet3 === sheet2, sheet3.cssRules.length, width("w1"), width("w2"));
+  sheet3.insertRule("#w3 { width: 133px }", 0);
+  s.remove();
+  log("removed", s.sheet, width("w3"));
+  document.head.appendChild(s);
+  log("back", s.sheet.cssRules.length, width("w1"), width("w3"));
+  // media attribute change
+  s.sheet.insertRule("#w4 { width: 144px }", 0);
+  s.setAttribute("media", "screen");
+  log("media changed", s.sheet.cssRules.length, s.sheet.media.mediaText, width("w4"));
+
+  // a link's sheet
+  const lnk = document.getElementById("lnk");
+  const ls = lnk.sheet;
+  log("link", ls && ls.cssRules.length, ls && ls.href.endsWith("link-sheets-a.css"), ls && JSON.stringify(ls.cssRules[1].cssText));
+  if (ls) {
+    ls.insertRule("#order { width: 222px }", ls.cssRules.length);
+    log("link insert", ls.cssRules.length, width("order"));
+    ls.deleteRule(0);
+    log("link delete", ls.cssRules.length, width("a"));
+  }
+
+  // a constructed sheet
+  const c = new CSSStyleSheet({ media: "screen" });
+  tryLog("constructed insert", () => c.insertRule("#w5 { width: 155px }"));
+  tryLog("constructed @import", () => c.insertRule('@import url("x.css");'));
+  document.adoptedStyleSheets = [c];
+  log("constructed", c.cssRules.length, c.media.mediaText, width("w5"), c.ownerNode);
+  c.replaceSync('@import url("x.css"); #w5 { width: 156px } #w6 { width: 166px }');
+  log("replaceSync", rulesOf(c).join(" ; "), width("w5"), width("w6"));
+  c.disabled = true;
+  log("constructed disabled", width("w5"));
+  c.disabled = false;
+  const cd = new CSSStyleSheet({ disabled: true });
+  cd.insertRule("#w6 { width: 177px }");
+  document.adoptedStyleSheets = [c, cd];
+  log("constructed made disabled", cd.disabled, width("w6"));
+  tryLog("replaceSync on owned", () => sheet2.replaceSync(""));
+
+  // styleSheets
+  log("styleSheets", document.styleSheets.length, document.styleSheets[0] === initial);
+  log("done");
+</script></body></html>

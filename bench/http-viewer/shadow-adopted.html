@@ -1,0 +1,33 @@
+<!doctype html><meta charset="utf-8"><title>Shadow adopted stylesheet regression</title>
+<style>.probe{color:rgb(9,9,9)}</style>
+<button id="advance">Advance styles</button><output id="stage">0</output>
+<p class="probe" id="outside">Outside</p><div id="one"></div><div id="two"></div>
+<script>
+window.__shadowFixtureStarts=1;
+const shared = new CSSStyleSheet();
+shared.replaceSync('.probe{color:rgb(20,30,40)}');
+const override = new CSSStyleSheet();
+override.replaceSync('.probe{color:rgb(50,60,70)}');
+const print = new CSSStyleSheet({media:'print'});
+print.replaceSync('.probe{color:rgb(200,0,0)}');
+const disabled = new CSSStyleSheet({disabled:true});
+disabled.replaceSync('.probe{color:rgb(80,90,100)}');
+const roots = ['one','two'].map(id => document.getElementById(id).attachShadow({mode:'open'}));
+function children(root) { root.innerHTML='<style>.probe{color:rgb(1,2,3)}</style><p class="probe">Inside</p>'; }
+roots.forEach(children);
+roots[0].adoptedStyleSheets=[shared,override,print,disabled];
+roots[1].adoptedStyleSheets=[shared];
+let stage=0;
+document.getElementById('advance').onclick=() => {
+  stage++;
+  if(stage===1) shared.replaceSync('.probe{color:rgb(100,110,120)}');
+  if(stage===2) shared.insertRule('.probe{color:rgb(130,140,150)}',1);
+  if(stage===3) shared.deleteRule(1);
+  if(stage===4) disabled.disabled=false;
+  if(stage===5) roots[0].adoptedStyleSheets=[override,shared,print];
+  if(stage===6) roots[0].adoptedStyleSheets=[];
+  if(stage===7) { roots[0].adoptedStyleSheets=[shared]; roots.forEach(children); }
+  if(stage===8) shared.replace('.probe{color:rgb(160,170,180)}');
+  document.getElementById('stage').textContent=String(stage);
+};
+</script>

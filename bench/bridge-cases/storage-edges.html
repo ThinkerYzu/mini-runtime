@@ -1,0 +1,77 @@
+<!doctype html>
+<!-- localStorage and document.cookie edges against release Firefox: bench/compare_bridge.py
+     storage-edges (GAPS B161; with API_PROCESS=all, the API process's). Strings with lone surrogates
+     (kept by localStorage and counted as one code unit by its quota; U+FFFD in a cookie), and the
+     storage event: a same-origin frame gets one for each change the page makes and the page one for
+     the frame's, each with its key, old and new values, the changing document's URL when it first
+     used localStorage, and the receiver's own storageArea; no event for a write that changes nothing,
+     none to the window that made the change, none to a frame of another origin of the site (?other=). -->
+<html><head><meta charset="utf-8"><title>storage-edges</title></head><body><p>storage edges</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const E = e => e ? e.name : "null";
+  const tick = () => new Promise(r => setTimeout(r, 50));
+  // (the bridge's first visit runs this page in Firefox's tab before the runtime does)
+  localStorage.clear();
+  document.cookie = "s=; max-age=0; path=/";
+
+  const lone = "a\ud800b", lone2 = "\udfffz";
+  localStorage.setItem(lone, lone2);
+  L("lone value", JSON.stringify(localStorage.getItem(lone)), localStorage.getItem(lone) === lone2);
+  L("lone key", JSON.stringify(localStorage.key(0)), localStorage.key(0) === lone, localStorage.length, JSON.stringify(Object.keys(localStorage)));
+  L("lone named", localStorage[lone] === lone2, lone in localStorage);
+  // 5 MB an origin: the item above costs 5 code units, "q" one more
+  const fill = n => { try { localStorage.setItem("q", "x".repeat(n)); return "stored"; } catch (e) { return E(e); } };
+  L("quota", fill(5 * 1024 * 1024 - 6), fill(5 * 1024 * 1024 - 5));
+  localStorage.clear();
+  document.cookie = "s=\ud800x\udc00; path=/";
+  L("cookie", JSON.stringify(document.cookie.split("; ").filter(c => c.startsWith("s="))));
+  document.cookie = "s=; max-age=0; path=/";
+
+  const d = new StorageEvent("storage");
+  L("constructor", JSON.stringify([d.key, d.oldValue, d.newValue, d.url, d.storageArea]),
+    JSON.stringify(new StorageEvent("x", { key: "k", storageArea: localStorage }).storageArea === localStorage));
+  const own = [];
+  window.addEventListener("storage", e => own.push(e.key));
+  const frame = (src, id) => new Promise(resolve => {
+    const f = document.createElement("iframe");
+    f.id = id;
+    f.onload = () => resolve(f);
+    f.src = src;
+    document.body.appendChild(f);
+  });
+  const child = await frame("storage-edges-child.html", "same");
+  const other = new URLSearchParams(location.search).get("other");
+  const otherFrame = await frame(`http://localhost:${other}/storage-edges-child.html?other`, "other");
+  const step = async (what, f) => {
+    f();
+    await tick();
+    L(what, JSON.stringify(child.contentWindow.events.splice(0)), JSON.stringify(own.splice(0)));
+  };
+  await step("set", () => localStorage.setItem("e1", "v1"));
+  await step("same value", () => localStorage.setItem("e1", "v1"));
+  await step("overwrite", () => { localStorage.e1 = "v2"; });
+  await step("remove", () => localStorage.removeItem("e1"));
+  await step("remove absent", () => localStorage.removeItem("nope"));
+  await step("set lone", () => localStorage.setItem(lone, lone2));
+  await step("clear", () => localStorage.clear());
+  await step("clear empty", () => localStorage.clear());
+  await step("quota exceeded", () => { try { localStorage.setItem("big", "x".repeat(5 * 1024 * 1024 + 1)); } catch (e) {} });
+  // the frame's change: the page gets it, with the frame's URL from before its replaceState
+  const got = [];
+  window.addEventListener("storage", e => got.push([e.key, e.oldValue, e.newValue, e.url.replace(location.origin, ""), e.storageArea === localStorage]));
+  child.contentWindow.change();
+  await tick();
+  L("frame's change", JSON.stringify(got), JSON.stringify(child.contentWindow.events.splice(0)));
+  own.length = 0;
+  const counted = await new Promise(resolve => {
+    window.addEventListener("message", e => resolve(e.data), { once: true });
+    otherFrame.contentWindow.postMessage("count", "*");
+  });
+  L("other origin", JSON.stringify(counted));
+  localStorage.clear();
+  L("done");
+})();
+</script></body></html>

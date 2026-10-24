@@ -1,0 +1,224 @@
+<!doctype html>
+<!-- IndexedDB through the bridge, against release Firefox: bench/compare_bridge.py idb runs this page on both
+     sides and diffs the two logs (SPEC decision 12, DESIGN "IndexedDB, forwarded to Firefox"). -->
+<html><head><title>idb</title></head><body><p>idb test</p>
+<script>
+(function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const d = v => {
+    if (v === undefined) return "undefined";
+    if (typeof v === "number") return Object.is(v, -0) ? "-0" : String(v);
+    if (typeof v !== "object" || v === null) return JSON.stringify(v);
+    const t = Object.prototype.toString.call(v).slice(8, -1);
+    if (t === "Date") return "Date(" + v.getTime() + ")";
+    if (t === "Uint8Array") return "U8[" + Array.from(v).join(",") + "]";
+    if (t === "ArrayBuffer") return "AB[" + Array.from(new Uint8Array(v)).join(",") + "]";
+    if (t === "Map") return "Map{" + Array.from(v, ([k, x]) => d(k) + "=>" + d(x)).join(",") + "}";
+    if (t === "Set") return "Set{" + Array.from(v, d).join(",") + "}";
+    if (Array.isArray(v)) return "[" + v.map(d).join(",") + "]";
+    return "{" + Object.keys(v).map(k => k + ":" + d(v[k])).join(",") + "}";
+  };
+  const E = e => e ? e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { const r = f(); L(what, "ok", d(r)); } catch (e) { L(what, "throws", E(e)); } };
+  const P = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = ev => { ev.preventDefault(); rej(r.error); }; });
+  const tick = () => new Promise(r => setTimeout(r, 0));
+
+  async function main() {
+    await new Promise(r => { const q = indexedDB.deleteDatabase("mrt-t"); q.onsuccess = ev => { L("delete success", ev.oldVersion, ev.newVersion, d(q.result)); r(); }; q.onerror = () => { L("delete error"); r(); }; });
+    // open with an upgrade
+    const db = await new Promise(resolve => {
+      const r = indexedDB.open("mrt-t", 2);
+      L("open readyState", r.readyState);
+      T("open result before", () => r.result);
+      r.onupgradeneeded = ev => {
+        const db = r.result;
+        L("upgradeneeded", ev.oldVersion, ev.newVersion, ev.constructor.name, r.transaction.mode, d(Array.from(db.objectStoreNames)));
+        const s = db.createObjectStore("s", { keyPath: "id" });
+        s.createIndex("byName", "name", { unique: false });
+        s.createIndex("byTag", "tags", { multiEntry: true });
+        const kv = db.createObjectStore("kv", { autoIncrement: true });
+        L("stores", d(Array.from(db.objectStoreNames)), d(s.keyPath), s.autoIncrement, d(Array.from(s.indexNames)), kv.keyPath, kv.autoIncrement);
+        T("createObjectStore dup", () => db.createObjectStore("s"));
+        const p = kv.put("in-upgrade");
+        p.onsuccess = () => L("put in upgrade", d(p.result), r.transaction && r.transaction.mode);
+        r.transaction.oncomplete = () => L("upgrade complete");
+      };
+      r.onsuccess = () => { L("open success", r.result.version, d(Array.from(r.result.objectStoreNames)), r.transaction); resolve(r.result); };
+      r.onerror = () => L("open error", E(r.error));
+      r.onblocked = () => L("blocked");
+    });
+    T("createObjectStore outside upgrade", () => db.createObjectStore("x"));
+    T("transaction no store", () => db.transaction("nope"));
+    T("transaction empty", () => db.transaction([]));
+    T("transaction bad mode", () => db.transaction("s", "bogus"));
+
+    // writes: values of each kind; the order of events
+    {
+      const tx = db.transaction(["s", "kv"], "readwrite");
+      L("tx", tx.mode, tx.durability, d(Array.from(tx.objectStoreNames)));
+      const s = tx.objectStore("s");
+      L("same store object", s === tx.objectStore("s"));
+      const vals = [
+        { id: 1, name: "b", tags: ["x", "y"], when: new Date(1700000000000), bytes: new Uint8Array([1, 2, 255]), m: new Map([["k", 1]]), set: new Set([1, "a"]), neg: -0, nan: NaN, inf: -Infinity, u: undefined, nested: [[1, [2]], { a: null }] },
+        { id: 2, name: "a", tags: ["y"] },
+        { id: 3, name: "c", tags: [] },
+        { id: [1, "x"], name: "d" },
+        { id: "str", name: "a", buf: new Uint8Array([9]).buffer },
+      ];
+      for (const v of vals) { const p = s.put(v); p.onsuccess = () => L("put", d(p.result), p.readyState, p.source === s, p.transaction === tx); }
+      const dup = s.add({ id: 2, name: "dup" });
+      dup.onerror = ev => { L("add dup error", E(dup.error), ev.bubbles, ev.cancelable); ev.preventDefault(); };
+      tx.onerror = ev => L("tx saw error (bubbled)", ev.target === dup);
+      const k1 = tx.objectStore("kv").add({ v: 1 }), k2 = tx.objectStore("kv").add({ v: 2 });
+      k1.onsuccess = () => {
+        L("kv key", d(k1.result));
+        // a request made from a success callback
+        const g = s.get(1);
+        g.onsuccess = () => L("get from callback", d(g.result));
+      };
+      k2.onsuccess = () => L("kv key", d(k2.result));
+      T("put uncloneable", () => s.put({ id: 9, f: () => 1 }));
+      T("put bad key", () => s.put({ id: {} }));
+      T("put no key", () => s.put({ name: "nokey" }));
+      await new Promise(r => { tx.oncomplete = () => { L("complete", E(tx.error)); r(); }; tx.onabort = () => { L("abort?", E(tx.error)); r(); }; });
+      T("store after complete", () => tx.objectStore("s"));
+      T("put after complete", () => s.put({ id: 7 }));
+    }
+
+    // reads: promise chains keep the transaction active (microtasks run before it goes inactive)
+    {
+      const tx = db.transaction("s");
+      const s = tx.objectStore("s");
+      const a = await P(s.get(1));
+      L("await get", d(a));
+      const all = await P(s.getAll());
+      L("getAll", d(all.map(v => v.id)));
+      L("getAllKeys", d(await P(s.getAllKeys(IDBKeyRange.lowerBound(2)))));
+      L("count", await P(s.count()), await P(s.index("byName").count("a")));
+      L("index get", d(await P(s.index("byName").get("a"))));
+      L("index getKey", d(await P(s.index("byName").getKey("a"))));
+      L("multiEntry", d(await P(s.index("byTag").getAllKeys("y"))));
+      T("put in readonly", () => s.put({ id: 8 }));
+      await tick();
+      T("get after a task", () => s.get(1));
+    }
+
+    // cursors
+    {
+      const tx = db.transaction("s");
+      const idx = tx.objectStore("s").index("byName");
+      await new Promise(res => {
+        const c = idx.openCursor(IDBKeyRange.bound("a", "c", false, true));
+        c.onsuccess = () => {
+          const cur = c.result;
+          if (!cur) { L("cursor end", c.readyState); return res(); }
+          L("cursor", cur.constructor.name, d(cur.key), d(cur.primaryKey), d(cur.value && cur.value.id), cur.direction, cur.source === idx, cur.request === c);
+          cur.continue();
+          T("continue twice", () => cur.continue());
+        };
+      });
+      await new Promise(res => {
+        const c = tx.objectStore("s").openKeyCursor(null, "prev");
+        let n = 0;
+        c.onsuccess = () => {
+          const cur = c.result;
+          if (!cur) { L("keycursor end"); return res(); }
+          L("keycursor", cur.constructor.name, d(cur.key), "value" in cur);
+          if (n++ === 0) cur.advance(2); else cur.continue();
+        };
+      });
+    }
+    // update and delete through a cursor
+    {
+      const tx = db.transaction("s", "readwrite");
+      await new Promise(res => {
+        const c = tx.objectStore("s").openCursor(2);
+        c.onsuccess = () => {
+          const cur = c.result;
+          if (!cur) return res();
+          const u = cur.update(Object.assign(cur.value, { name: "z" }));
+          u.onsuccess = () => { L("cursor update", d(u.result), u.source === cur); const del = cur.delete(); del.onsuccess = () => { L("cursor delete", d(del.result)); res(); }; };
+        };
+      });
+      await new Promise(r => tx.oncomplete = r);
+    }
+
+    // abort, an error nobody prevents, an exception in a handler
+    {
+      const tx = db.transaction("s", "readwrite");
+      const p = tx.objectStore("s").put({ id: 50 });
+      p.onsuccess = () => L("put before abort (should not)");
+      p.onerror = ev => L("put error after abort", E(p.error), ev.type);
+      tx.abort();
+      T("abort twice", () => tx.abort());
+      await new Promise(r => { tx.onabort = ev => { L("aborted", E(tx.error), ev.bubbles); r(); }; });
+      L("50 exists", await P(db.transaction("s").objectStore("s").count(50)));
+    }
+    {
+      const tx = db.transaction("s", "readwrite");
+      const ok = tx.objectStore("s").put({ id: 60 });
+      const bad = tx.objectStore("s").add({ id: 1 });
+      bad.onerror = () => L("unprevented error", E(bad.error));
+      await new Promise(r => { tx.onabort = () => { L("aborted by error", E(tx.error)); r(); }; tx.oncomplete = () => { L("complete?!"); r(); }; });
+      L("60 exists", await P(db.transaction("s").objectStore("s").count(60)));
+    }
+    {
+      const tx = db.transaction("s", "readwrite");
+      const g = tx.objectStore("s").put({ id: 70 });
+      g.onsuccess = () => { throw new Error("handler threw"); };
+      await new Promise(r => { tx.onabort = () => { L("aborted by exception", E(tx.error)); r(); }; tx.oncomplete = () => { L("complete?!"); r(); }; });
+    }
+    // explicit commit
+    {
+      const tx = db.transaction("s", "readwrite");
+      tx.objectStore("s").put({ id: 80 });
+      tx.commit();
+      T("commit twice", () => tx.commit());
+      T("put after commit", () => tx.objectStore("s").put({ id: 81 }));
+      await new Promise(r => { tx.oncomplete = () => { L("explicit commit complete"); r(); }; });
+    }
+    // binary keys (Messenger's encrypted_backups store has an ArrayBuffer key path)
+    {
+      const A = async (what, f) => { try { L(what, d(await f())); } catch (e) { L(what, "error", E(e)); } };
+      const tx = db.transaction("s", "readwrite"), s = tx.objectStore("s");
+      const done = new Promise(r => { tx.oncomplete = () => r("complete"); tx.onabort = () => r("abort " + E(tx.error)); });
+      await A("put binary", () => P(s.put({ id: new Uint8Array([1, 2, 3]).buffer, name: "bin" })));
+      await A("put view key", () => P(s.put({ id: new Uint8Array([1, 2, 4]), name: "view" })));
+      await A("get binary", () => P(s.get(new Uint8Array([1, 2, 3]).buffer)));
+      await A("get view", () => P(s.get(new Uint8Array([9, 1, 2, 4]).subarray(1))));
+      await A("count range", () => P(s.count(IDBKeyRange.bound(new ArrayBuffer(0), new Uint8Array([2]).buffer))));
+      await A("delete binary", () => P(s.delete(new Uint8Array([1, 2, 3]).buffer)));
+      await A("getAllKeys binary", () => P(s.getAllKeys(IDBKeyRange.lowerBound(new ArrayBuffer(0)))));
+      await A("index of binary", () => P(s.index("byName").getKey("view")));
+      T("cmp binary", () => [indexedDB.cmp(new Uint8Array([1]).buffer, "z"), indexedDB.cmp(new Uint8Array([1]), new Uint8Array([1]).buffer)]);
+      L("binary keys", await done);
+    }
+    // keys and ranges
+    T("cmp",() => [indexedDB.cmp(1, "a"), indexedDB.cmp([1], [1]), indexedDB.cmp(new Date(5), 3)]);
+    T("cmp bad", () => indexedDB.cmp({}, 1));
+    T("only bad", () => IDBKeyRange.only({}));
+    T("bound reversed", () => IDBKeyRange.bound(5, 1));
+    T("range", () => { const r = IDBKeyRange.lowerBound(3, true); return [r.lower, r.upper, r.lowerOpen, r.upperOpen, r.includes(3), r.includes(4)]; });
+    T("objectStore missing", () => db.transaction("s").objectStore("nope"));
+    T("index missing", () => db.transaction("s").objectStore("s").index("nope"));
+    const dbs = await indexedDB.databases();
+    L("databases", d(dbs.filter(x => x.name === "mrt-t")));
+    // versionchange at an open connection
+    await new Promise(res => {
+      db.onversionchange = ev => { L("versionchange", ev.oldVersion, ev.newVersion); db.close(); };
+      const r = indexedDB.open("mrt-t", 3);
+      r.onblocked = () => L("blocked (should not)");
+      r.onupgradeneeded = ev => { L("upgrade 3", ev.oldVersion, ev.newVersion, d(Array.from(r.result.objectStoreNames))); r.result.deleteObjectStore("kv"); };
+      r.onsuccess = () => { L("open 3", r.result.version, d(Array.from(r.result.objectStoreNames))); r.result.close(); res(); };
+      r.onerror = () => { L("open 3 error", E(r.error)); res(); };
+    });
+    T("transaction on closed", () => db.transaction("s"));
+    T("toString", () => [String(indexedDB), Object.prototype.toString.call(IDBKeyRange.only(1)), "objectStoreNames" in IDBTransaction.prototype]);
+    // leave nothing behind: the bridge's first visit runs this page in Firefox before the runtime does
+    await new Promise(r => { const q = indexedDB.deleteDatabase("mrt-t"); q.onsuccess = ev => { L("cleanup", ev.oldVersion); r(); }; q.onerror = () => { L("cleanup error"); r(); }; });
+    L("done");
+  }
+  main().catch(e => L("main threw", E(e), e && e.stack));
+})();
+</script></body></html>

@@ -1,0 +1,53 @@
+[package]
+name = "mrt-api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+base64 = "0.22"
+rand = "0.8"
+sha1 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.10", features = ["oid"] }
+hmac = "0.12"
+hkdf = "0.12"
+pbkdf2 = "0.12"
+aes = "0.8"
+cbc = { version = "0.1", features = ["std"] }
+ghash = "0.5"
+aes-kw = { version = "0.2", features = ["std"] }
+p256 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+p384 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+p521 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+rsa = { version = "0.9", features = ["sha2", "hazmat"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+spki = "0.7"
+pkcs8 = "0.10"
+der = "0.7"
+ecdsa = "0.16"
+elliptic-curve = { version = "0.13", features = ["sec1"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+url = "2"
+snap = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+psl = "2"
+# (zlib-rs: the zlib release Firefox uses, and window bits for permessage-deflate, ws.rs)
+flate2 = { version = "1", features = ["zlib-rs"] }
+brotli = "8"
+zstd = "0.13"
+encoding_rs = "0.8"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+webpki-roots = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
+svgtypes = "0.16"
+# SVG images (GAPS B165): the XML, the root's font-size from its sheets, and the default font's ex and ch
+roxmltree = "0.21"
+simplecss = "0.2"
+ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
+# AVIF's container: the parser Gecko's nsAVIFDecoder uses, at the revision of Firefox's Cargo.lock
+mp4parse = { git = "https://github.com/mozilla/mp4parse-rust", rev = "f0c80783227a1fb46f34cb04e10607045eac4297" }
+
+[profile.release]
+debug = false

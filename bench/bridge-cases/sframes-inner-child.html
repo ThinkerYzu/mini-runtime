@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><title>sgrandchild</title><meta charset="utf-8"></head><body>
+<script>
+  // the page's origin, inside a frame of another origin: the page is reachable directly
+  let title, parentDoc;
+  try { title = top.document.title; } catch (e) { title = e.name; }
+  try { parentDoc = typeof parent.document; } catch (e) { parentDoc = e.name; }
+  top.postMessage({ grandchild: true, title, parentDoc, storage: localStorage.getItem("who"), sameTop: top === parent.parent }, "*");
+</script></body></html>

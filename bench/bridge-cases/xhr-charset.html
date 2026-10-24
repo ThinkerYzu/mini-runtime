@@ -1,0 +1,76 @@
+<!doctype html>
+<!-- XMLHttpRequest's text in the response's charset against release Firefox: bench/compare_bridge.py
+     xhr-charset (GAPS B127, task 09c9). Gecko's XMLHttpRequestMainThread::DetectCharset: the final MIME
+     type's charset (overrideMimeType's when it has one), else UTF-8; a BOM wins; "json" is UTF-8.
+     Google Maps reads its tile streams (charset=x-user-defined) through responseText. Each line is the
+     text's length and its code points' first code units in hex. Not here: a UTF-16 BOM in an answer
+     labelled UTF-8, whose bytes the bridge does not send (GAPS B127). -->
+<html><head><title>xhr-charset</title><meta charset="utf-8"></head><body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.map(String).join(" "));
+const units = s => s.length + " " + Array.from(s, c => c.charCodeAt(0).toString(16)).join(",");
+// every byte 0x00 to 0xff, then UTF-8's é and a lone 0xc3
+const all = Array.from({ length: 256 }, (_, i) => i);
+const pct = bytes => bytes.map(b => "%" + b.toString(16).padStart(2, "0")).join("");
+const cases = [
+  ["x-user-defined", "text/plain;charset=x-user-defined", all],
+  ["windows-1252", "text/plain;charset=windows-1252", all],
+  ["latin1 label", "text/plain; charset=\"ISO-8859-1\"", [0x41, 0x80, 0x9f, 0xe9]],
+  ["us-ascii label", "text/plain;charset=us-ascii", [0x41, 0x80, 0xff]],
+  ["utf-8", "text/plain;charset=utf-8", [0x41, 0xc3, 0xa9, 0xc3]],
+  ["no charset", "text/plain", [0x41, 0xc3, 0xa9, 0xff]],
+  ["unknown label", "text/plain;charset=nope", [0x41, 0xc3, 0xa9, 0xe9]],
+  ["octet-stream x-user-defined", "application/vnd.google.octet-stream-compressible;charset=x-user-defined", [0x00, 0x7f, 0x80, 0xfe, 0xff]],
+  ["utf-16le", "text/plain;charset=utf-16le", [0x41, 0x00, 0xe9, 0x00, 0x3d, 0xd8, 0x00, 0xde, 0x00, 0xd8, 0x42]],
+  ["utf-16be", "text/plain;charset=utf-16be", [0x00, 0x41, 0x00, 0xe9]],
+  ["utf-8 BOM over latin1", "text/plain;charset=windows-1252", [0xef, 0xbb, 0xbf, 0xc3, 0xa9]],
+  ["utf-8 BOM in utf-8", "text/plain;charset=utf-8", [0xef, 0xbb, 0xbf, 0x41]],
+];
+function get(url, setup) {
+  const x = new XMLHttpRequest();
+  x.open("GET", url, false);
+  if (setup) setup(x);
+  x.send();
+  return x;
+}
+for (const [name, type, bytes] of cases) {
+  const x = get("data:" + type + "," + pct(bytes));
+  log(name, x.responseText === x.response, units(x.responseText));
+}
+// overrideMimeType: its charset wins; one without a charset keeps the response's (Gecko's
+// HttpBaseChannel::SetContentType); after DONE it throws
+{
+  const x = get("data:text/plain;charset=utf-8," + pct([0x41, 0xc3, 0xa9]), x => x.overrideMimeType("text/plain; charset=x-user-defined"));
+  log("override x-user-defined", units(x.responseText));
+  const y = get("data:text/plain;charset=windows-1252," + pct([0x41, 0xe9]), x => x.overrideMimeType("text/html"));
+  log("override without charset", units(y.responseText));
+  try { y.overrideMimeType("text/plain"); log("override after DONE: no throw"); } catch (e) { log("override after DONE", e.name); }
+  try { new XMLHttpRequest().overrideMimeType(); } catch (e) { log("override no argument", e.name); }
+}
+// a blob: URL's type carries the charset too
+{
+  const url = URL.createObjectURL(new Blob([new Uint8Array([0x41, 0x80, 0xff])], { type: "text/plain;charset=x-user-defined" }));
+  log("blob x-user-defined", units(get(url).responseText));
+}
+// async (responseType cannot be set on a sync request in a window), one after another: "json" is
+// UTF-8 whatever the charset, "text" decodes as "", and Maps reads its streams at load
+function getAsync(url, type) {
+  return new Promise(resolve => {
+    const x = new XMLHttpRequest();
+    x.open("GET", url);
+    if (type) x.responseType = type;
+    x.onload = () => resolve(x);
+    x.send();
+  });
+}
+(async () => {
+  const j = await getAsync("data:application/json;charset=windows-1252," + pct([0x5b, 0x22, 0xc3, 0xa9, 0x22, 0x5d]), "json");
+  log("json windows-1252", units(j.response[0]));
+  const t = await getAsync("data:text/plain;charset=windows-1252," + pct([0xe9]), "text");
+  log("text windows-1252", units(t.response), units(t.responseText));
+  const a = await getAsync("data:text/plain;charset=x-user-defined," + pct([0x41, 0x90, 0xf0]));
+  log("async x-user-defined", units(a.responseText));
+  log("done");
+})();
+</script>

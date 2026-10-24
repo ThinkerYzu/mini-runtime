@@ -1,0 +1,143 @@
+<!doctype html>
+<!-- A page's bridge tab dropped and made again (SPEC decision 14; DESIGN "Bridge recovery, as tested")
+     against release Firefox: bench/compare_bridge.py bridge-recovery, with bench/ws_echo.py on the port
+     in the query (?ws=PORT). Before the drop the page sets a cookie, localStorage and sessionStorage,
+     opens an IndexedDB database and writes a record, imports a Web Crypto key and encrypts, and opens a
+     WebSocket. Then, in the runtime, the bridge tab is dropped (__mrt.dropBridge: the driver closes it,
+     and makes a new one at the next request); in Firefox the echo server ends the socket's TCP
+     connection ("cut"), which is what the page's socket goes through when its tab goes. After: fetch
+     and XHR with the profile's cookies (ws_echo's /echo-cookie), document.cookie, both storages, the
+     database used again with its record and a new write, the key used again, the socket's events, and a
+     WebGL context lost and restored (in Firefox through WEBGL_lose_context). -->
+<html><head><meta charset="utf-8"><title>bridge-recovery</title></head><body><p>bridge recovery test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const E = e => e ? e.name + ": " + e.message : "null";
+  const port = new URLSearchParams(location.search).get("ws");
+  const hex = b => Array.from(new Uint8Array(b), x => x.toString(16).padStart(2, "0")).join("");
+  const req = r => new Promise((ok, bad) => { r.onsuccess = () => ok(r.result); r.onerror = () => bad(r.error); });
+  const done = tx => new Promise((ok, bad) => { tx.oncomplete = () => ok("complete"); tx.onabort = () => bad(tx.error); });
+  const cookies = () => document.cookie.split("; ").filter(c => c.startsWith("mrtrec")).sort().join("; ");
+  const echoFetch = async what => {
+    try {
+      const r = await fetch(`http://localhost:${port}/echo-cookie`, { credentials: "include" });
+      L(what, "fetch", r.status, (await r.text()).split("; ").filter(c => c.startsWith("mrtrec")).sort().join("; "));
+    } catch (e) { L(what, "fetch", E(e)); }
+  };
+  const echoXhr = what => new Promise(ok => {
+    const x = new XMLHttpRequest();
+    x.open("GET", `http://localhost:${port}/echo-cookie`);
+    x.withCredentials = true;
+    x.onload = () => { L(what, "xhr", x.status, x.responseText.split("; ").filter(c => c.startsWith("mrtrec")).sort().join("; ")); ok(); };
+    x.onerror = () => { L(what, "xhr error"); ok(); };
+    x.send();
+  });
+  try {
+    // before
+    document.cookie = "mrtrec=before; path=/";
+    localStorage.setItem("mrtrec", "before");
+    sessionStorage.setItem("mrtrec", "session-before");
+    await req(indexedDB.deleteDatabase("mrt-recovery"));
+    const open = indexedDB.open("mrt-recovery", 3);
+    open.onupgradeneeded = () => open.result.createObjectStore("s", { keyPath: "k" });
+    const db = await req(open);
+    db.onversionchange = () => L("versionchange");
+    db.onclose = () => L("close event");
+    let tx = db.transaction("s", "readwrite");
+    tx.objectStore("s").put({ k: 1, v: "before" });
+    L("before idb write", await done(tx));
+    const key = await crypto.subtle.importKey("raw", new Uint8Array(16).fill(7), "AES-GCM", false, ["encrypt", "decrypt"]);
+    const iv = new Uint8Array(12).fill(1);
+    const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode("recovery"));
+    L("before encrypt", hex(sealed));
+    const ws = new WebSocket(`ws://localhost:${port}/echo`);
+    const events = [];
+    const closed = new Promise(ok => {
+      ws.onopen = () => events.push("open");
+      ws.onmessage = e => events.push("message " + e.data);
+      ws.onerror = () => events.push("error readyState " + ws.readyState);
+      ws.onclose = e => { events.push(`close ${e.code} ${e.wasClean} '${e.reason}' readyState ${ws.readyState}`); ok(); };
+    });
+    await new Promise(ok => { ws.addEventListener("open", ok); });
+    ws.send("hello");
+    await new Promise(ok => { ws.addEventListener("message", ok); });
+    await echoFetch("before");
+    L("before readyState", ws.readyState);
+    // a WebGL context (task 23bb): it lives in the bridge tab, so the drop loses it; the page prevents
+    // the default and gets it back in the new tab, empty. In Firefox WEBGL_lose_context gives the same
+    // events (a manual loss, restored by restoreContext)
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 4;
+    const gl = canvas.getContext("webgl");
+    const lc = gl.getExtension("WEBGL_lose_context");
+    const glBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, glBuf);
+    const pixel = () => { const p = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p); return Array.from(p).join(","); };
+    gl.clearColor(1, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    L("before webgl", pixel(), gl.isBuffer(glBuf), gl.isContextLost());
+    const glEvents = [];
+    const restored = new Promise(ok => {
+      canvas.addEventListener("webglcontextlost", e => {
+        glEvents.push("lost " + gl.isContextLost() + " " + gl.getError());
+        e.preventDefault();
+        if (!window.__mrt) setTimeout(() => lc.restoreContext(), 0);
+      });
+      canvas.addEventListener("webglcontextrestored", () => { glEvents.push("restored"); ok(); });
+    });
+
+    // the drop: the runtime's bridge tab goes; in Firefox the socket's connection goes the same way
+    if (window.__mrt && window.__mrt.dropBridge) window.__mrt.dropBridge();
+    else { ws.send("cut"); lc.loseContext(); }
+    await closed;
+    L("socket", events.join(" | "));
+    L("after send on closed", (() => { try { ws.send("x"); return "ok " + ws.bufferedAmount; } catch (e) { return E(e); } })());
+
+    // after: a new bridge tab is made by the first request that needs it
+    await echoFetch("after");
+    await echoXhr("after");
+    L("after cookie", cookies());
+    document.cookie = "mrtrec2=after; path=/";
+    L("after cookie set", cookies());
+    L("after localStorage", localStorage.getItem("mrtrec"), localStorage.length >= 1);
+    localStorage.setItem("mrtrec", "after");
+    L("after localStorage set", localStorage.getItem("mrtrec"));
+    L("after sessionStorage", sessionStorage.getItem("mrtrec"), sessionStorage.length);
+    L("after db", db.name, db.version, Array.from(db.objectStoreNames).join());
+    tx = db.transaction("s", "readwrite");
+    const store = tx.objectStore("s");
+    const got = req(store.get(1));
+    store.put({ k: 2, v: "after" });
+    const count = req(store.count());
+    L("after idb read", JSON.stringify(await got), await count, await done(tx));
+    tx = db.transaction("s");
+    L("after idb all", JSON.stringify(await req(tx.objectStore("s").getAll())));
+    const again = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode("recovery"));
+    L("after encrypt", hex(again) === hex(sealed));
+    L("after decrypt", new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, again)));
+    const ws2 = new WebSocket(`ws://localhost:${port}/echo`);
+    await new Promise(ok => { ws2.onopen = ok; ws2.onerror = ok; });
+    ws2.send("again");
+    L("after new socket", await new Promise(ok => { ws2.onmessage = e => ok(e.data); }));
+    ws2.close();
+    await restored;
+    L("after webgl events", glEvents.join(" | "));
+    L("after webgl", gl.isContextLost(), gl.getError(), gl.isBuffer(glBuf), pixel());
+    gl.clearColor(0, 1, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    const newBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, newBuf);
+    L("after webgl drawn", pixel(), gl.isBuffer(newBuf), gl.getError());
+    db.close();
+    localStorage.removeItem("mrtrec");
+    document.cookie = "mrtrec=; max-age=0; path=/";
+    document.cookie = "mrtrec2=; max-age=0; path=/";
+  } catch (e) {
+    L("failed", E(e), e.stack);
+  }
+  L("end");
+})();
+</script>
+</body></html>

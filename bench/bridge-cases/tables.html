@@ -1,0 +1,59 @@
+<!doctype html>
+<!-- The table API against release Firefox: bench/compare_bridge.py tables (dom/html/HTMLTable*Element.cpp):
+     the rows collection's order (thead, the table's and tbody rows, tfoot), tBodies, caption, tHead and
+     tFoot, the create and delete methods, insertRow and deleteRow on tables and sections, cells,
+     insertCell and deleteCell, rowIndex, sectionRowIndex, cellIndex, and the errors. Google Docs reads
+     table.rows and row.cells. -->
+<html><head><title>tables</title><meta charset="utf-8"></head>
+<body>
+<table id="t">
+  <tfoot><tr id="f1"><td>f</td></tr></tfoot>
+  <tbody><tr id="b1"><td>1</td><th>h</th></tr><tr id="b2"><td>2</td></tr></tbody>
+  <thead><tr id="h1"><td>head</td></tr></thead>
+  <tbody><tr id="b3"><td>3</td></tr></tbody>
+</table>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const ids = list => Array.from(list, e => e.id || e.localName).join(",");
+  const t = document.getElementById("t");
+  log("rows", t.rows.length, ids(t.rows), t.rows instanceof HTMLCollection);
+  log("tBodies", t.tBodies.length, "tHead", t.tHead.localName, "tFoot", t.tFoot.localName, "caption", t.caption);
+  log("cells", ids(document.getElementById("b1").cells), document.getElementById("b1").cells.length);
+  log("indexes", ["h1", "b1", "b2", "b3", "f1"].map(id => { const r = document.getElementById(id); return id + ":" + r.rowIndex + "/" + r.sectionRowIndex; }).join(" "));
+  log("cellIndex", document.querySelector("#b1 th").cellIndex, document.createElement("td").cellIndex, document.createElement("tr").rowIndex);
+  const c = t.createCaption();
+  c.textContent = "cap";
+  log("caption", t.caption === c, t.firstElementChild === c, t.createCaption() === c);
+  const r = t.insertRow(1);
+  r.id = "new1";
+  log("insertRow 1", ids(t.rows), r.parentNode.localName);
+  const e = t.insertRow();
+  e.id = "end";
+  log("insertRow end", ids(t.rows), e.parentNode === t.tFoot);
+  t.deleteRow(0);
+  t.deleteRow(-1);
+  log("deleteRow", ids(t.rows));
+  try { t.insertRow(99); log("no throw"); } catch (x) { log("insertRow 99", x.name); }
+  try { t.deleteRow(99); log("no throw"); } catch (x) { log("deleteRow 99", x.name); }
+  const sec = t.tBodies[1];
+  const s1 = sec.insertRow(0); s1.id = "s1";
+  log("section", ids(sec.rows), sec.rows.length);
+  sec.deleteRow(-1);
+  log("section after delete", ids(sec.rows));
+  const row = document.getElementById("b2");
+  const c1 = row.insertCell(0); c1.textContent = "c1";
+  const c2 = row.insertCell(); c2.textContent = "c2";
+  log("insertCell", Array.from(row.cells, x => x.textContent).join(","), c1.localName);
+  row.deleteCell(0);
+  log("deleteCell", Array.from(row.cells, x => x.textContent).join(","));
+  t.deleteTHead(); t.deleteTFoot(); t.deleteCaption();
+  log("deleted", t.tHead, t.tFoot, t.caption, ids(t.rows));
+  const th = t.createTHead(), tf = t.createTFoot(), tb = t.createTBody();
+  log("created", ids(t.children), th.localName, tf.localName, tb.localName);
+  const empty = document.createElement("table");
+  const er = empty.insertRow();
+  log("empty table", empty.innerHTML, er.rowIndex);
+  try { t.tHead = document.createElement("div"); log("no throw"); } catch (x) { log("tHead=div", x.name); }
+  log("done");
+</script></body></html>

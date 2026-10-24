@@ -1,0 +1,85 @@
+<!doctype html>
+<!-- document.createEvent (Gecko's Document::CreateEvent over EventDispatcher::CreateEvent's table),
+     the legacy initializers initEvent, initCustomEvent, initUIEvent and initMouseEvent, and the
+     image's reflected attributes (HTMLImageElement.h) against release Firefox:
+     bench/compare_bridge.py create-event. YouTube's BotGuard reads createEvent("MouseEvents") and
+     img.longDesc; without them its first token had no post-mint function (GAPS B38, task 135a). -->
+<html><head><meta charset="utf-8"><title>create-event</title></head><body><p>create-event test</p>
+<script>
+(function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const tag = o => Object.prototype.toString.call(o);
+
+  // the table: each name, in any case, gives its interface; others throw
+  for (const name of ["Event", "Events", "HTMLEvents", "SVGEvents", "UIEvent", "UIEvents", "MouseEvent", "MouseEvents", "mouseevents",
+    "MOUSEEVENTS", "KeyboardEvent", "CustomEvent", "MessageEvent", "HashChangeEvent", "StorageEvent", "FocusEvent", "Nope", "", "MouseEvents "]) {
+    T("createEvent " + J(name), () => { const e = document.createEvent(name); return [tag(e), e.type, e.bubbles, e.cancelable, e.defaultPrevented, e.eventPhase, e.target]; });
+  }
+  T("createEvent no argument", () => document.createEvent());
+  // what the uninitialized event holds
+  T("mouse event fields", () => { const e = document.createEvent("MouseEvents"); return [e.screenX, e.screenY, e.clientX, e.clientY, e.button, e.buttons, e.ctrlKey, e.relatedTarget, e.detail, e.view === window]; });
+  T("view of createEvent's events", () => ["UIEvents", "MouseEvents", "KeyboardEvent", "FocusEvent", "Events"].map(n => [n, document.createEvent(n).view === window]));
+  T("view of a parsed document's events", () => { const d = new DOMParser().parseFromString("<p>", "text/html"); return [d.defaultView, d.createEvent("MouseEvents").view, document.implementation.createHTMLDocument("").defaultView]; });
+  T("defaultView of the frame's document", () => { const f = document.createElement("iframe"); document.body.appendChild(f); const r = [f.contentDocument.defaultView === f.contentWindow, document.defaultView === window, f.contentDocument.createEvent("UIEvents").view === f.contentWindow]; f.remove(); return r; });
+  T("hierarchy", () => [["MouseEvent", "UIEvent"], ["PointerEvent", "MouseEvent"], ["WheelEvent", "MouseEvent"], ["KeyboardEvent", "UIEvent"], ["FocusEvent", "UIEvent"], ["InputEvent", "UIEvent"], ["UIEvent", "Event"]].map(([c, p]) => [c, Object.getPrototypeOf(window[c].prototype) === window[p].prototype]));
+  T("constructed defaults", () => { const m = new MouseEvent("x"); const u = new UIEvent("y"); return [m.view, m.relatedTarget, m.detail, u.view, u.detail, new FocusEvent("f").relatedTarget, m instanceof UIEvent]; });
+  // initEvent
+  T("initEvent", () => { const e = document.createEvent("Events"); e.initEvent("go", true, true); return [e.type, e.bubbles, e.cancelable]; });
+  T("initEvent defaults", () => { const e = document.createEvent("Events"); e.initEvent("go"); return [e.type, e.bubbles, e.cancelable]; });
+  T("initEvent no argument", () => document.createEvent("Events").initEvent());
+  T("initEvent on the prototype", () => [typeof Event.prototype.initEvent, Event.prototype.initEvent.length, Object.prototype.hasOwnProperty.call(document.createEvent("Events"), "initEvent")]);
+  T("initEvent clears canceled", () => { const e = document.createEvent("Events"); e.initEvent("go", true, true); e.preventDefault(); const was = e.defaultPrevented; e.initEvent("go", true, true); return [was, e.defaultPrevented]; });
+  T("initEvent then dispatch", () => {
+    const e = document.createEvent("Events"); e.initEvent("ping", true, false);
+    const r = []; document.body.addEventListener("ping", ev => r.push([ev === e, ev.type, ev.target === document.body, ev.eventPhase]));
+    document.body.dispatchEvent(e); return r;
+  });
+  T("initEvent during dispatch is ignored", () => {
+    const e = document.createEvent("Events"); e.initEvent("pong", true, true);
+    let inside; document.body.addEventListener("pong", ev => { ev.initEvent("other", false, false); inside = [ev.type, ev.bubbles, ev.cancelable]; });
+    document.body.dispatchEvent(e); return [inside, e.type];
+  });
+  T("constructed event initEvent", () => { const e = new Event("a", { bubbles: true }); e.initEvent("b"); return [e.type, e.bubbles]; });
+  // initCustomEvent
+  T("initCustomEvent", () => { const e = document.createEvent("CustomEvent"); e.initCustomEvent("c", true, false, { a: 1 }); return [e.type, e.bubbles, e.cancelable, e.detail]; });
+  T("initCustomEvent defaults", () => { const e = document.createEvent("CustomEvent"); e.initCustomEvent("c"); return [e.type, e.detail]; });
+  T("initCustomEvent on the prototype", () => [typeof CustomEvent.prototype.initCustomEvent, CustomEvent.prototype.initCustomEvent.length, "initCustomEvent" in document.createEvent("Events")]);
+  // initUIEvent and initMouseEvent
+  T("initUIEvent", () => { const e = document.createEvent("UIEvents"); e.initUIEvent("u", true, true, window, 3.7); return [e.type, e.bubbles, e.view === window, e.detail]; });
+  T("initUIEvent length", () => [UIEvent.prototype.initUIEvent.length, typeof MouseEvent.prototype.initUIEvent]);
+  T("initMouseEvent", () => {
+    const e = document.createEvent("MouseEvents");
+    e.initMouseEvent("click", true, true, window, 2, 10, 20, 30.9, -4, true, false, true, false, 2, document.body);
+    return [e.type, e.bubbles, e.cancelable, e.view === window, e.detail, e.screenX, e.screenY, e.clientX, e.clientY, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey, e.button, e.relatedTarget === document.body];
+  });
+  T("initMouseEvent defaults", () => { const e = document.createEvent("MouseEvents"); e.initMouseEvent("m"); return [e.type, e.bubbles, e.detail, e.screenX, e.button, e.relatedTarget]; });
+  T("initMouseEvent length", () => MouseEvent.prototype.initMouseEvent.length);
+  T("initMouseEvent dispatched", () => {
+    const e = document.createEvent("MouseEvents"); e.initMouseEvent("mclick", true, true, window, 1, 0, 0, 5, 6, false, false, false, false, 0, null);
+    const r = []; document.body.addEventListener("mclick", ev => r.push([ev.clientX, ev.clientY, ev.type])); document.body.dispatchEvent(e); return r;
+  });
+
+  // the image's attributes
+  const img = document.createElement("img");
+  const props = ["longDesc", "lowsrc", "srcset", "sizes", "useMap", "align", "border", "decoding", "fetchPriority", "hspace", "vspace"];
+  T("image defaults", () => props.map(p => [p, img[p]]));
+  T("image on the prototype", () => props.map(p => { const d = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, p); return [p, !!d && typeof d.get, !!d && typeof d.set, !!d && d.enumerable]; }));
+  T("image set", () => {
+    img.longDesc = "desc.html"; img.lowsrc = "/low.png"; img.srcset = "a.png 1x, b.png 2x"; img.sizes = "100vw"; img.useMap = "#m"; img.align = "left"; img.border = "2";
+    return [img.getAttribute("longdesc"), img.longDesc, img.lowsrc, img.srcset, img.sizes, img.useMap, img.align, img.border];
+  });
+  T("decoding", () => ["sync", "ASYNC", "auto", "bogus", ""].map(v => { img.setAttribute("decoding", v); return img.decoding; }));
+  T("fetchPriority", () => ["high", "Low", "auto", "x"].map(v => { img.setAttribute("fetchpriority", v); return img.fetchPriority; }));
+  T("hspace", () => ["10", " 12", "+7", "15px", "50%", "3.9", "-5", "x", "", "2147483648"].map(v => { img.setAttribute("hspace", v); return img.hspace; }));
+  T("vspace set", () => [5, -1, 2147483648, 3.7].map(v => { img.vspace = v; return [img.getAttribute("vspace"), img.vspace]; }));
+  T("longDesc on frames", () => [typeof HTMLIFrameElement.prototype, "longDesc" in document.createElement("iframe"), document.createElement("iframe").longDesc]);
+  T("align elsewhere", () => ["div", "p", "table", "input", "h1"].map(t => [t, document.createElement(t).align]));
+  T("border and useMap elsewhere", () => [document.createElement("table").border, document.createElement("object").border, document.createElement("input").useMap, document.createElement("object").useMap]);
+  T("sizes on source", () => document.createElement("source").sizes);
+  T("srcset on source", () => document.createElement("source").srcset);
+})();
+</script></body></html>

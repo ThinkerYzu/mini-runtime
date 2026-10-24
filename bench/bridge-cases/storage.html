@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- sessionStorage (kept in the runtime, SPEC decision 14) and localStorage (forwarded to Firefox)
+     against release Firefox: bench/compare_bridge.py storage. The Storage methods, the named
+     getter, setter and deleter, which names are visible, and the quota. Lists of several keys are
+     sorted: Gecko gives them in its hash table's order, the runtime in insertion order (GAPS B49). -->
+<html><head><meta charset="utf-8"><title>storage</title></head><body><p>storage test</p>
+<script>
+(function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const E = e => e ? e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", JSON.stringify(f())); } catch (e) { L(what, "throws", E(e)); } };
+  for (const name of ["sessionStorage", "localStorage"]) {
+    const s = window[name];
+    // the bridge's first visit runs this page in Firefox's tab before the runtime does
+    s.clear();
+    T(name + " empty", () => [s.length, s.key(0), s.getItem("a"), s.a, "a" in s, Object.keys(s)]);
+    T(name + " setItem", () => { s.setItem("a", 1); return [s.length, s.getItem("a"), s.a, "a" in s, s.key(0), s.key(1), s.key(-1), s.key(4294967296)]; });
+    T(name + " named set", () => { s.b = { toString: () => "B" }; s["c d"] = null; return [s.length, s.getItem("b"), s.getItem("c d"), Object.keys(s).sort()]; });
+    T(name + " overwrite", () => { s.setItem("a", "x"); s.a = "y"; return [s.length, s.a]; });
+    T(name + " prototype names", () => { s.setItem("getItem", "g"); s.setItem("length", "7"); return [typeof s.getItem, s.length, s.getItem("getItem"), s.getItem("length"), "getItem" in s, Object.keys(s).sort()]; });
+    T(name + " own property shadows", () => { Object.defineProperty(s, "e", { get() { return 1; }, configurable: true }); return [s.getItem("e"), Object.getOwnPropertyDescriptor(s, "a")]; });
+    T(name + " define data", () => { Object.defineProperty(s, "f", { value: 3 }); return [s.getItem("f"), Object.getOwnPropertyDescriptor(s, "f")]; });
+    T(name + " delete", () => { delete s.a; s.removeItem("b"); s.removeItem("zz"); delete s.getItem; return [s.length, s.getItem("a"), s.getItem("b"), typeof s.getItem, Object.keys(s).sort()]; });
+    T(name + " empty key and unicode", () => { s.setItem("", "empty"); s.setItem("é😀", "ü\0z"); return [s.getItem(""), s.getItem("é😀"), s.getItem("é😀").length]; });
+    T(name + " clear", () => { s.clear(); return [s.length, Object.keys(s), s.getItem("")]; });
+    // the quota: 5 MB per origin, counted in UTF-16 code units (keys once, values)
+    T(name + " quota", () => {
+      const big = "x".repeat(5 * 1024 * 1024 - 1);
+      s.setItem("k", big);
+      let r1, r2, r3;
+      try { s.setItem("k2", "yy"); r1 = "stored"; } catch (e) { r1 = E(e); }
+      try { s.setItem("k", big.slice(1) + "z"); r2 = "stored"; } catch (e) { r2 = E(e); }
+      try { s.setItem("q", ""); r3 = "stored"; } catch (e) { r3 = E(e); }
+      const n = s.length;
+      s.clear();
+      return [r1, r2, r3, n];
+    });
+    T(name + " interface", () => [Object.prototype.toString.call(s), s instanceof Storage, Object.getPrototypeOf(s) === Storage.prototype, typeof Storage, Object.keys(Storage.prototype).sort()]);
+    T(name + " this check", () => Storage.prototype.getItem.call({}, "a"));
+  }
+  T("constructor", () => new Storage());
+  T("distinct", () => { sessionStorage.setItem("only", "s"); return [localStorage.getItem("only"), sessionStorage.getItem("only")]; });
+  sessionStorage.clear();
+  localStorage.clear();
+  L("done");
+})();
+</script></body></html>

@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- navigator.geolocation against release Firefox: bench/compare_bridge.py geolocation (task 09c9).
+     Gecko's dom/geolocation: the interfaces and their constants, the argument errors, watch ids,
+     clearWatch, requests while the permission is "prompt". Their callbacks are not compared: the runtime
+     gets the bridge tab's answer, which waits (a prompt), while this page in firefox_probe.py's Firefox
+     is denied at once (PERMISSION_DENIED; why its prompt is cancelled was not found, task 09c9).
+     Google Maps shows its "Show Your Location" button when navigator.geolocation exists. -->
+<html><head><title>geolocation</title><meta charset="utf-8"></head><body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.map(String).join(" "));
+const g = navigator.geolocation;
+log("geolocation" in navigator, String(g), g === navigator.geolocation, Object.getPrototypeOf(g) === Geolocation.prototype);
+log(Object.getOwnPropertyNames(Geolocation.prototype).sort().join(","));
+log(typeof GeolocationPositionError, GeolocationPositionError.PERMISSION_DENIED, GeolocationPositionError.POSITION_UNAVAILABLE,
+    GeolocationPositionError.TIMEOUT, GeolocationPositionError.prototype.TIMEOUT, typeof GeolocationPosition, typeof GeolocationCoordinates);
+for (const C of [Geolocation, GeolocationPositionError, GeolocationPosition, GeolocationCoordinates]) {
+  try { new C(); log(C.name, "constructed"); } catch (e) { log(C.name, e.name, e.message); }
+}
+const tryIt = (what, f) => { try { log(what, f()); } catch (e) { log(what, e.name, e.message); } };
+tryIt("no argument", () => g.getCurrentPosition());
+tryIt("not callable", () => g.getCurrentPosition({}));
+tryIt("error not callable", () => g.getCurrentPosition(() => {}, 5));
+tryIt("watch no argument", () => g.watchPosition());
+tryIt("clearWatch no argument", () => g.clearWatch());
+tryIt("brand", () => Geolocation.prototype.getCurrentPosition.call({}, () => {}));
+const calls = [];
+window.addEventListener("load", () => setTimeout(() => {
+  g.getCurrentPosition(p => calls.push("position"), e => calls.push("error " + e.code));
+  const w1 = g.watchPosition(p => calls.push("watch position"), e => calls.push("watch error " + e.code), { timeout: 10 });
+  const w2 = g.watchPosition(() => {});
+  tryIt("watch ids", () => [w1, w2].join(","));
+  g.clearWatch(w2);
+  g.clearWatch(-1);
+  setTimeout(() => {
+    navigator.permissions.query({ name: "geolocation" }).then(s => {
+      log("permission", s.state);
+      log("done");
+    });
+  }, 500);
+}, 300));
+</script>
+</body></html>

@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- CSS.supports against release Firefox: bench/compare_bridge.py css-supports. Gecko's CSS::Supports
+     through Stylo: a property and a value (Servo_CSSSupports2), or a condition text (Servo_CSSSupports).
+     Instagram reveals its app only when CSS.supports("content-visibility", "hidden"). -->
+<html><head><title>css-supports</title><meta charset="utf-8"></head>
+<body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const two = [["content-visibility", "hidden"], ["display", "grid"], ["display", "nonsense"], ["color", "red"], ["color", "rgb(0 0 0 / 50%)"],
+    ["Color", "red"], ["--custom", "anything"], ["not-a-property", "1"], ["width", "calc(100% - 3px)"], ["width", "10"], ["aspect-ratio", "16 / 9"],
+    ["display", "grid !important"], ["position", "sticky"], ["-webkit-line-clamp", "2"], ["container-type", "inline-size"], ["text-wrap", "balance"],
+    ["backdrop-filter", "blur(2px)"], ["transform", "translate3d(0, 0, 0)"], ["gap", "1px"], ["margin", ""]];
+  for (const [p, v] of two) log("2", JSON.stringify(p), JSON.stringify(v), CSS.supports(p, v));
+  const one = ["(display: grid)", "display: grid", "(display: grid) and (gap: 1px)", "(display: nonsense) or (color: red)", "not (display: nonsense)",
+    "selector(:has(a))", "selector(:focus-visible)", "selector(::nonsense)", "(--x: 1)", "font-tech(color-COLRv1)", "font-format(woff2)",
+    "(display: grid", "", "display", "(content-visibility: hidden)", "(display:flex)and (color:red)", "(display: flex) and (color: red)"];
+  for (const c of one) log("1", JSON.stringify(c), CSS.supports(c));
+  let threw;
+  try { CSS.supports(); threw = "no"; } catch (e) { threw = e.name; }
+  log("no arguments", threw, CSS.supports(undefined), CSS.supports("display", undefined), CSS.supports.length);
+  // every property name of release Firefox's CSSStyleProperties takes "inherit": the ones the runtime
+  // refuses are those Stylo's Servo build does not have (logged in the runtime only, as a count and list)
+  const names = Object.getOwnPropertyNames(CSSStyleProperties.prototype).filter(n => n.includes("-") && !n.startsWith("-moz"));
+  const refused = names.filter(n => !CSS.supports(n, "inherit"));
+  log("refused", refused.length, "of", names.length, refused.join(" "));
+  log("done");
+</script></body></html>

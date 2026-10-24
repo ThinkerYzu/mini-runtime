@@ -1,0 +1,163 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>media</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  #go { position: fixed; top: 10px; left: 10px; width: 120px; height: 40px; }
+  video { display: block; margin-top: 60px; }
+</style>
+<!-- Media in the bridge tab (Phase 5.7, task 753cc, SPEC decision 26): in the runtime the copy's
+     <video> elements play in the bridge tab, which sends their events and state back. Two videos,
+     made with ffmpeg: a plain src (media-plain.mp4, 3 s, 160 x 90, H.264 and AAC) and a
+     MediaSource with a video and an audio SourceBuffer, each fed one fragmented MP4 (media-v.mp4 and
+     media-a.mp4, 4 s, 320 x 180). After load: each one's metadata, the buffers' updates, ranges and
+     the source's duration. A click on #go (media.actions.json; a user gesture, so play() is allowed
+     with Firefox's autoplay blocked) then plays the MediaSource video, pauses it, seeks, mutes, removes
+     a range, ends the stream, plays to the end, plays again from the start (as X's player does for a track that loops), and loops with the loop attribute; then plays it moved into a new container (as X's player moves its video), and takes it out of the document, which pauses it. Logged: events (each kind once a step: timeupdate
+     and progress come at times that differ from run to run) and states, times rounded to 0.1 s. -->
+<button id="go">go</button>
+<video id="plain" src="media-plain.mp4" preload="auto"></video>
+<video id="v"></video>
+<script>
+window.__log = [];
+const log = s => window.__log.push(s);
+const r1 = t => Math.round(t * 10) / 10;
+const ranges = tr => Array.from({ length: tr.length }, (_, i) => `${r1(tr.start(i))}-${r1(tr.end(i))}`).join(",") || "none";
+const once = (target, type) => new Promise(resolve => target.addEventListener(type, resolve, { once: true }));
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const plain = document.getElementById("plain"), v = document.getElementById("v");
+const TYPES = ["loadstart", "durationchange", "loadedmetadata", "loadeddata", "canplay", "play", "playing", "pause",
+  "seeking", "seeked", "ended", "volumechange", "ratechange", "emptied", "error", "resize"];
+// each element's events, kept by element and logged at the end of each step: the two elements load
+// at the same time, so their events interleave by network timing
+let step = "load";
+const seen = new Set(), events = { plain: [], v: [] };
+for (const el of [plain, v]) for (const t of TYPES) el.addEventListener(t, e => {
+  const key = step + " " + t;
+  if (seen.has(el.id + key)) return;
+  seen.add(el.id + key);
+  events[el.id].push(`${t}${e.isTrusted ? "" : " (untrusted)"}`);
+});
+const logEvents = () => { for (const id of ["plain", "v"]) { log(`${step} ${id} events: ${events[id].join(" ") || "none"}`); events[id] = []; } };
+
+log("interfaces " + [typeof MediaSource, typeof SourceBuffer, typeof TimeRanges, typeof MediaError].join(" "));
+log("initial " + [v.readyState, v.networkState, v.paused, v.duration, v.currentTime, v.videoWidth, v.error, ranges(v.buffered)].join(" "));
+
+async function plainSteps() {
+  if (plain.readyState < 1) await once(plain, "loadedmetadata");
+  log(`plain metadata: duration ${r1(plain.duration)} size ${plain.videoWidth}x${plain.videoHeight} readyState>=1 ${plain.readyState >= 1}`);
+  if (plain.readyState < 3) await once(plain, "canplay");
+  log(`plain can play: readyState>=3 ${plain.readyState >= 3} buffered ${ranges(plain.buffered)}`);
+}
+
+async function mseSteps() {
+  const ms = new MediaSource();
+  const url = URL.createObjectURL(ms);
+  v.src = url;
+  await once(ms, "sourceopen");
+  log(`sourceopen ${ms.readyState} duration ${ms.duration}`);
+  const vt = 'video/mp4; codecs="avc1.42c01e"', at = 'audio/mp4; codecs="mp4a.40.2"';
+  log(`supported ${MediaSource.isTypeSupported(vt)} ${MediaSource.isTypeSupported(at)}`);
+  const sv = ms.addSourceBuffer(vt), sa = ms.addSourceBuffer(at);
+  const [vb, ab] = await Promise.all(["media-v.mp4", "media-a.mp4"].map(f => fetch(f).then(r => r.arrayBuffer())));
+  for (const [name, sb, bytes] of [["video", sv, vb], ["audio", sa, ab]]) {
+    const events = [];
+    for (const t of ["updatestart", "update", "updateend", "error", "abort"]) sb.addEventListener(t, () => events.push(t));
+    sb.appendBuffer(bytes);
+    log(`${name} append: updating ${sb.updating}`);
+    await once(sb, "updateend");
+    log(`${name} appended: ${events.join(" ")} updating ${sb.updating} buffered ${ranges(sb.buffered)}`);
+  }
+  log(`after appends: ms duration ${r1(ms.duration)} element duration ${r1(v.duration)} buffered ${ranges(v.buffered)}`);
+  if (v.readyState < 3) await once(v, "canplay");
+  log(`can play: readyState>=3 ${v.readyState >= 3} size ${v.videoWidth}x${v.videoHeight} seekable ${ranges(v.seekable)}`);
+  return { ms, sv, sa };
+}
+
+const ready = plainSteps().then(mseSteps).then(s => { log("ready"); logEvents(); return s; }).catch(e => log("threw " + e));
+
+document.getElementById("go").addEventListener("click", async () => {
+  const { ms, sv } = await ready;
+  step = "play";
+  const p = v.play();
+  log(`play(): paused ${v.paused} promise ${p instanceof Promise}`);
+  await p.then(() => log("play resolved"), e => log("play rejected " + e.name));
+  await sleep(1200);
+  log(`playing: paused ${v.paused} moved ${v.currentTime > 0.5} ended ${v.ended} readyState ${v.readyState}`);
+  logEvents();
+  step = "pause";
+  v.pause();
+  log(`pause(): paused ${v.paused}`);
+  await once(v, "pause");
+  const at = v.currentTime;
+  await sleep(500);
+  log(`paused: still ${v.currentTime === at}`);
+  logEvents();
+  step = "seek";
+  v.currentTime = 2.5;
+  log(`seek: seeking ${v.seeking} currentTime ${r1(v.currentTime)}`);
+  await once(v, "seeked");
+  log(`seeked: seeking ${v.seeking} currentTime ${r1(v.currentTime)}`);
+  logEvents();
+  step = "mute";
+  v.muted = true;
+  log(`muted ${v.muted}`);
+  await once(v, "volumechange");
+  log(`volumechange: muted ${v.muted} volume ${v.volume}`);
+  logEvents();
+  step = "remove";
+  // (a middle second: the start stays for playing again from it)
+  sv.remove(1, 2);
+  log(`remove: updating ${sv.updating}`);
+  await once(sv, "updateend");
+  log(`removed: updating ${sv.updating} video buffered ${ranges(sv.buffered)}`);
+  logEvents();
+  step = "end";
+  ms.endOfStream();
+  log(`endOfStream: ${ms.readyState}`);
+  v.play();
+  await once(v, "ended");
+  log(`ended: ended ${v.ended} paused ${v.paused} currentTime ${r1(v.currentTime)}`);
+  logEvents();
+  // X's player at the end of a track that loops: play() again, which seeks to the start
+  step = "replay";
+  const again = v.play();
+  log(`play() after ended: paused ${v.paused} ended ${v.ended}`);
+  await again.then(() => log("replay resolved"), e => log("replay rejected " + e.name));
+  await sleep(1200);
+  log(`replaying: paused ${v.paused} ended ${v.ended} moved from the start ${v.currentTime > 0.5 && v.currentTime < 3}`);
+  logEvents();
+  // loop: the reflected attribute; at the end the element seeks to the start by itself
+  step = "loop";
+  v.loop = true;
+  log(`loop ${v.loop} attribute ${v.hasAttribute("loop")}`);
+  v.currentTime = 3.5;
+  await once(v, "seeked");
+  await sleep(1500);
+  log(`looped: ended ${v.ended} paused ${v.paused} back near the start ${v.currentTime < 1.5}`);
+  v.pause();
+  logEvents();
+  // X's player moves its playing <video> into a new container: it plays on
+  step = "move";
+  v.loop = false;
+  v.currentTime = 0;
+  await once(v, "seeked");
+  await v.play();
+  await sleep(300);
+  const box = document.createElement("div"), inner = document.createElement("div");
+  box.append(inner);
+  v.replaceWith(box);
+  inner.append(v);
+  const movedAt = v.currentTime;
+  await sleep(1200);
+  log(`moved into a new div: paused ${v.paused} moved on ${v.currentTime > movedAt + 0.5}`);
+  logEvents();
+  // and out of the document: it pauses (HTMLMediaElement::UnbindFromTree)
+  step = "detach";
+  box.remove();
+  const paused = await Promise.race([once(v, "pause").then(() => true), sleep(3000).then(() => false)]);
+  log(`out of the document: pause event ${paused} paused ${v.paused}`);
+  logEvents();
+  log("done");
+});
+</script>

@@ -1,0 +1,31 @@
+<!doctype html><html><head><meta charset="utf-8"><title>layout-js</title>
+<style>body{font:14px sans-serif;margin:8px}.row{display:flex;gap:8px;margin-bottom:8px}.card{width:220px;border:1px solid #999;padding:6px}</style></head>
+<body><div id="grid"></div><script>
+// An equal-height card grid: 60 rows of 6 cards with text of different lengths. The script reads each
+// card's offsetHeight, gives every card in a row the row's tallest height, then reads the grid's
+// height back: two layout flushes, as a script that measures and then fixes up a layout does.
+var words = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau".split(" ");
+var grid = document.getElementById("grid");
+var cards = [];
+for (var r = 0; r < 60; r++) {
+  var row = document.createElement("div");
+  row.className = "row";
+  for (var c = 0; c < 6; c++) {
+    var card = document.createElement("div");
+    card.className = "card";
+    var n = 5 + ((r * 6 + c) * 17) % 40, text = [];
+    for (var w = 0; w < n; w++) text.push(words[(r + c + w) % words.length]);
+    card.textContent = text.join(" ");
+    row.appendChild(card);
+    cards.push(card);
+  }
+  grid.appendChild(row);
+}
+var heights = cards.map(function (card) { return card.offsetHeight; });
+for (var i = 0; i < cards.length; i += 6) {
+  var max = Math.max.apply(null, heights.slice(i, i + 6));
+  for (var j = i; j < i + 6; j++) cards[j].style.height = (max - 14) + "px";
+}
+window.gridHeight = grid.getBoundingClientRect().height;
+console.log("cards", cards.length, "first height", heights[0], "grid height", window.gridHeight);
+</script></body></html>

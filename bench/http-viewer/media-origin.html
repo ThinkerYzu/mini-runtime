@@ -1,0 +1,21 @@
+<!doctype html><meta charset="utf-8"><title>HTTP media origin</title>
+<video id="cookie" muted width="160" height="90"></video>
+<video id="blob" muted width="160" height="90"></video>
+<audio id="cors" crossorigin="anonymous"></audio>
+<audio id="allowed" crossorigin="anonymous"></audio>
+<pre id="log"></pre>
+<script>
+// GAPS B172: a resource that needs the page's cookie, a runtime Blob revoked once set, and
+// cross-origin CORS loads that their server refuses and allows
+function log(s){document.getElementById('log').textContent+=s+'\n';console.log(s);}
+document.cookie='mediaauth=page-secret; path=/';
+document.getElementById('cookie').src='media-auth.mp4';
+document.getElementById('cors').src=location.protocol+'//127.0.0.1:'+location.port+'/media-a.mp4';
+document.getElementById('allowed').src=location.protocol+'//127.0.0.1:'+location.port+'/media-cors.mp4';
+fetch('media-plain.mp4').then(r=>r.blob()).then(b=>{
+ const url=URL.createObjectURL(b), blob=document.getElementById('blob');
+ blob.src=url; URL.revokeObjectURL(url); log('BLOB_SET '+b.size);
+}).catch(e=>log('BLOB_ERROR '+e));
+for(const id of ['cookie','blob','cors','allowed'])for(const t of ['loadedmetadata','error'])
+ document.getElementById(id).addEventListener(t,()=>log('EVENT '+id+' '+t));
+</script>

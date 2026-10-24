@@ -1,0 +1,148 @@
+<!doctype html>
+<!-- Blob and File (GAPS B69) against release Firefox: bench/compare_bridge.py blob. The interfaces'
+     shape, the constructors' conversions (parts of each type, the type, line endings), size and
+     slice, the reads, File's members, and the Blobs other APIs make or take: Response, Request,
+     XHR, FormData, structuredClone, postMessage and IndexedDB (a Blob stored, read back, deleted,
+     as Facebook's storage quota check does). -->
+<html><head><meta charset="utf-8"><title>blob</title></head><body><p>blob test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const E = e => e ? e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", JSON.stringify(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const bytes = async b => Array.from(new Uint8Array(await b.arrayBuffer()));
+  const desc = async b => [Object.prototype.toString.call(b), b.constructor.name, b.size, b.type, await bytes(b)];
+  const A = async (what, f) => { try { L(what, "ok", JSON.stringify(await f())); } catch (e) { L(what, "throws", E(e)); } };
+
+  T("shape", () => [typeof Blob, Blob.length, File.length, Object.getPrototypeOf(File) === Blob,
+                    Object.getPrototypeOf(File.prototype) === Blob.prototype, Object.prototype.toString.call(Blob.prototype),
+                    Object.getOwnPropertyNames(Blob.prototype).sort(), Object.getOwnPropertyNames(File.prototype).sort()]);
+  T("no new", () => Blob());
+  T("file no new", () => File([], "a"));
+  T("brand", () => Blob.prototype.size);
+  T("brand slice", () => Blob.prototype.slice.call({}));
+
+  await A("empty", () => desc(new Blob()));
+  await A("undefined parts", () => desc(new Blob(undefined)));
+  T("null parts", () => new Blob(null));
+  T("number parts", () => new Blob(5));
+  T("object parts", () => new Blob({}));
+  T("string parts", () => new Blob("ab").size);
+  await A("strings", () => desc(new Blob(["ab", "é€", "😀"])));
+  await A("lone surrogate", () => desc(new Blob(["a\ud800b"])));
+  await A("other values", () => desc(new Blob([1, null, undefined, true, { toString: () => "x" }, [1, 2]])));
+  T("symbol part", () => new Blob([Symbol("s")]));
+  await A("typed arrays", () => desc(new Blob([new Uint8Array([1, 2, 255]), new Int16Array([-1, 256]), new DataView(new ArrayBuffer(2)),
+                                               new Uint8Array([9, 8, 7, 6]).subarray(1, 3), new Uint8Array([5, 6]).buffer])));
+  await A("1024 zeros", async () => { const b = new Blob([new Uint8Array(1024)]); return [b.size, (await bytes(b)).every(x => x === 0)]; });
+  const inner = new Blob(["abc", new Uint8Array([100, 101])], { type: "text/plain" });
+  await A("blob parts", () => desc(new Blob([inner, "-", inner])));
+  await A("type", () => Promise.all(["Text/HTML", "text/plain;charset=UTF-8", "é", "a\tb", " x ", "~"].map(t => new Blob([], { type: t }).type)));
+  await A("endings transparent", () => desc(new Blob(["a\r\nb\rc\nd"])));
+  await A("endings native", () => desc(new Blob(["a\r\nb\rc\nd", new Uint8Array([13, 10])], { endings: "native" })));
+  T("endings bad", () => new Blob([], { endings: "other" }));
+  T("options number", () => new Blob([], 5));
+  T("options null", () => new Blob([], null).type);
+  T("options getters", () => { const seen = []; new Blob([], { get type() { seen.push("type"); return "a"; }, get endings() { seen.push("endings"); return "native"; } }); return seen; });
+
+  const b = new Blob(["0123456789"], { type: "text/plain" });
+  const slices = [[], [2], [-3], [1, -1], [5, 2], [NaN], [1.5, 3.5], [2.5, 4.5], [-1e20, 1e20], [3, 3], [0, 4, "Foo/Bar"], [0, 4, "é"],
+                  ["2", "4"], [undefined, 3], [null, 3], [Infinity]];
+  for (const s of slices) await A("slice " + JSON.stringify(s.map(x => (typeof x === "number" && !Number.isFinite(x) ? String(x) : x))), () => desc(b.slice(...s)));
+  const multi = new Blob(["abc", new Uint8Array([1, 2, 3]), "xyz"]);
+  await A("multi slices", () => Promise.all([[1, 2], [2, 5], [3, 6], [4, 8], [0, 9], [8]].map(s => bytes(multi.slice(...s)))));
+  await A("slice of slice", () => desc(multi.slice(2, 8).slice(1, 4, "a/b")));
+
+  await A("text", () => new Blob(["héllo", new Uint8Array([0xff, 0xfe, 0x41])]).text());
+  await A("text bom", () => new Blob([new Uint8Array([0xef, 0xbb, 0xbf, 0x41])]).text());
+  await A("bytes", async () => { const u = await new Blob(["ab"]).bytes(); return [u.constructor.name, Array.from(u)]; });
+  await A("arrayBuffer fresh", async () => { const x = new Blob(["ab"]); const a = await x.arrayBuffer(); new Uint8Array(a)[0] = 0; return [await x.text(), a === await x.arrayBuffer()]; });
+  await A("stream", async () => {
+    const s = new Blob(["abc", new Uint8Array([1])]).stream(), r = s.getReader(), out = [];
+    for (;;) { const { done, value } = await r.read(); if (done) break; out.push(value.constructor.name, ...value); }
+    return [s.constructor.name, out];
+  });
+  await A("read order", () => new Promise(resolve => {
+    const order = [];
+    new Blob(["x"]).text().then(() => order.push("text"));
+    Promise.resolve().then(() => order.push("microtask"));
+    setTimeout(() => order.push("timeout"), 0);
+    setTimeout(() => resolve(order), 50);
+  }));
+
+  const f = new File(["ab", new Uint8Array([1])], "name/é\ud800.txt", { type: "Text/Plain", lastModified: 1234.7 });
+  await A("file", async () => [...await desc(f), f.name, f.lastModified, f.webkitRelativePath, f instanceof Blob]);
+  T("file default date", () => { const now = Date.now(), d = new File([], "x").lastModified; return [typeof d, Math.abs(d - now) < 1000]; });
+  T("file dates", () => [new File([], "x", { lastModified: -5 }).lastModified, new File([], "x", { lastModified: "77" }).lastModified,
+                         new File([], "x", { lastModified: 2 ** 53 + 2 }).lastModified]);
+  T("file nan date", () => new File([], "x", { lastModified: NaN }).lastModified);
+  T("file one argument", () => new File([]));
+  await A("file slice", () => desc(f.slice(1)));
+  await A("file in blob", () => desc(new Blob([f])));
+
+  const r = new Response("héllo", { headers: { "content-type": "Text/X-Foo" } });
+  await A("response blob", async () => { const x = await r.blob(); return [x instanceof Blob, ...await desc(x)]; });
+  await A("response of blob", async () => { const x = new Response(new Blob(["ab"], { type: "a/B" })); return [x.headers.get("content-type"), await x.text()]; });
+  await A("response of file", async () => { const x = new Response(f); return [x.headers.get("content-type"), await bytes(await x.blob())]; });
+  await A("request of blob", async () => { const x = new Request(location.href, { method: "POST", body: new Blob([new Uint8Array([200, 1])], { type: "x/y" }) }); return [x.headers.get("content-type"), await bytes(await x.blob())]; });
+  await A("response empty type", async () => { const x = new Response(new Blob(["a"])); return [x.headers.get("content-type"), (await x.blob()).type]; });
+  await A("fetch blob", async () => { const x = await (await fetch(location.href)).blob(); return [x instanceof Blob, x.type, x.size > 1000]; });
+  await A("xhr blob", () => new Promise(resolve => {
+    const x = new XMLHttpRequest();
+    x.open("GET", location.href);
+    x.responseType = "blob";
+    x.onload = async () => resolve([x.response instanceof Blob, x.response.type, x.response.size > 1000, (await x.response.text()).slice(0, 15)]);
+    x.send();
+  }));
+
+  await A("formdata", async () => {
+    const fd = new FormData();
+    fd.append("a", new Blob(["x"], { type: "t/u" }));
+    fd.append("b", new Blob(["y"]), "given.txt");
+    fd.append("c", f);
+    fd.append("d", f, "renamed");
+    fd.set("e", "text");
+    return Promise.all(["a", "b", "c", "d", "e"].map(async k => {
+      const v = fd.get(k);
+      return typeof v === "string" ? v : [v.constructor.name, v.name, v.type, v.size, v === f, typeof v.lastModified];
+    }));
+  });
+
+  await A("structuredClone", async () => {
+    const c = structuredClone({ b, f, list: [b, b] });
+    return [c.b === b, c.list[0] === c.list[1], ...await desc(c.b), ...await desc(c.f), c.f.name, c.f.lastModified];
+  });
+  await A("postMessage", () => new Promise(resolve => {
+    addEventListener("message", async e => resolve([...await desc(e.data.b), e.data.f.name, e.data.f.lastModified]), { once: true });
+    postMessage({ b, f }, "*");
+  }));
+
+  await A("indexedDB", () => new Promise((resolve, reject) => {
+    const out = [];
+    indexedDB.deleteDatabase("blob-case");
+    const open = indexedDB.open("blob-case", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("s");
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction("s", "readwrite"), s = tx.objectStore("s");
+      s.put(new Blob([new Uint8Array(1024)]), "quota");
+      s.put({ f, b, n: 1 }, "rec");
+      tx.oncomplete = () => {
+        const g = db.transaction("s").objectStore("s");
+        const q = g.get("quota"), rec = g.get("rec");
+        rec.onsuccess = async () => {
+          out.push(...await desc(q.result).then(d => [d[0], d[1], d[2], d[3], d[4].length]));
+          const v = rec.result;
+          out.push(...await desc(v.b), ...await desc(v.f), v.f.name, v.f.lastModified, v.n);
+          const d = db.transaction("s", "readwrite").objectStore("s").delete("quota");
+          d.onsuccess = () => { db.close(); indexedDB.deleteDatabase("blob-case"); resolve(out); };
+        };
+      };
+    };
+  }));
+  L("done");
+})();
+</script>
+</body></html>

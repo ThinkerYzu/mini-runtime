@@ -1,0 +1,95 @@
+<!doctype html>
+<!-- Trusted Types without a CSP against release Firefox: bench/compare_bridge.py trusted-types (GAPS B91).
+     Gecko's dom/security/trusted-types: the factory, policies and the three types; with no
+     require-trusted-types-for every sink takes strings and Trusted objects alike. The enforced side is
+     trusted-types-enforced.html. -->
+<html><head><title>trusted-types</title><meta charset="utf-8"></head><body>
+<div id="out"></div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const tryIt = (what, f) => { try { log(what, "=", String(f())); } catch (e) { log(what, "threw", e.name, e.message); } };
+  const where = (name) => Object.getOwnPropertyDescriptor(window, name) ? "window" : Object.getOwnPropertyDescriptor(Window.prototype, name) ? "Window.prototype" : "none";
+
+  log("names", ["TrustedHTML", "TrustedScript", "TrustedScriptURL", "TrustedTypePolicy", "TrustedTypePolicyFactory"].map(n => n + ":" + typeof window[n]).join(" "));
+  log("trustedTypes", where("trustedTypes"), typeof trustedTypes, trustedTypes === window.trustedTypes, trustedTypes instanceof TrustedTypePolicyFactory,
+      Object.prototype.toString.call(trustedTypes));
+  const d = Object.getOwnPropertyDescriptor(window, "trustedTypes") || Object.getOwnPropertyDescriptor(Window.prototype, "trustedTypes");
+  log("descriptor", d && typeof d.get, d && typeof d.set, d && d.enumerable, d && d.configurable);
+  tryIt("new TrustedHTML", () => new TrustedHTML());
+  tryIt("new TrustedTypePolicyFactory", () => new TrustedTypePolicyFactory());
+  log("factory members", Object.getOwnPropertyNames(TrustedTypePolicyFactory.prototype).sort().join(","));
+  log("policy members", Object.getOwnPropertyNames(TrustedTypePolicy.prototype).sort().join(","));
+  log("html members", Object.getOwnPropertyNames(TrustedHTML.prototype).sort().join(","));
+
+  // a policy and what it makes
+  const seen = [];
+  const p = trustedTypes.createPolicy("a", {
+    createHTML: (s, ...rest) => { seen.push("html " + typeof s + " " + rest.length + " " + rest.join("/")); return s + "!"; },
+    createScript: s => (s === "null" ? null : s === "undef" ? undefined : s === "num" ? 42 : s),
+    createScriptURL: s => { if (s === "boom") throw new RangeError("from the callback"); return s; },
+  });
+  log("policy", p.name, p instanceof TrustedTypePolicy, Object.prototype.toString.call(p), typeof p.createHTML);
+  const h = p.createHTML("<b>x</b>", 1, "two");
+  log("html", String(h), h.toString(), h.toJSON(), JSON.stringify({ h }), h instanceof TrustedHTML, Object.prototype.toString.call(h), `${h}`, h + "");
+  log("callback saw", seen.join(";"));
+  log("is", trustedTypes.isHTML(h), trustedTypes.isScript(h), trustedTypes.isScriptURL(h), trustedTypes.isHTML("<b>x</b>"), trustedTypes.isHTML({}),
+      trustedTypes.isHTML(Object.create(TrustedHTML.prototype)));
+  log("script values", String(p.createScript("null")) === "", String(p.createScript("undef")) === "", String(p.createScript("num")), String(p.createScript(7)));
+  tryIt("createHTML(no argument)", () => p.createHTML());
+  tryIt("createScriptURL throws", () => p.createScriptURL("boom"));
+  const q = trustedTypes.createPolicy("b", {});
+  tryIt("missing createHTML", () => q.createHTML("x"));
+  tryIt("missing createScriptURL", () => q.createScriptURL("x"));
+  tryIt("createPolicy no name", () => trustedTypes.createPolicy().name);
+  tryIt("createPolicy options not an object", () => trustedTypes.createPolicy("c", 5).name);
+  tryIt("createPolicy option not callable", () => trustedTypes.createPolicy("c2", { createHTML: 5 }).name);
+  tryIt("duplicate name", () => trustedTypes.createPolicy("a", {}).name);
+  log("defaultPolicy before", trustedTypes.defaultPolicy);
+  const def = trustedTypes.createPolicy("default", { createHTML: s => s.toUpperCase() });
+  log("defaultPolicy after", trustedTypes.defaultPolicy === def, def.name);
+  tryIt("second default", () => trustedTypes.createPolicy("default", {}).name);
+  log("empty", String(trustedTypes.emptyHTML) === "", trustedTypes.emptyHTML === trustedTypes.emptyHTML, trustedTypes.emptyHTML instanceof TrustedHTML,
+      trustedTypes.emptyScript === trustedTypes.emptyScript, trustedTypes.emptyScript instanceof TrustedScript);
+  tryIt("brand check", () => TrustedHTML.prototype.toString.call({}));
+  tryIt("policy brand check", () => TrustedTypePolicy.prototype.createHTML.call({}, "x"));
+
+  // the type tables
+  const at = (...a) => String(trustedTypes.getAttributeType(...a));
+  log("attribute types", at("script", "src"), at("SCRIPT", "SRC"), at("div", "onclick"), at("iframe", "srcdoc"), at("div", "title"), at("embed", "src"),
+      at("script", "href", "http://www.w3.org/2000/svg"), at("script", "href", "http://www.w3.org/2000/svg", "http://www.w3.org/1999/xlink"),
+      at("div", "onclick", "", "http://example.com"), at("foo", "onfoo"), at("svg", "onload", "http://www.w3.org/2000/svg"));
+  const pt = (...a) => String(trustedTypes.getPropertyType(...a));
+  log("property types", pt("div", "innerHTML"), pt("div", "outerHTML"), pt("script", "text"), pt("script", "src"), pt("script", "textContent"),
+      pt("script", "innerText"), pt("iframe", "srcdoc"), pt("div", "textContent"), pt("DIV", "innerHTML"), pt("svg", "innerHTML", "http://www.w3.org/2000/svg"));
+
+  // without a CSP the sinks take strings, Trusted objects, and the default policy is not called
+  const out = document.getElementById("out");
+  out.innerHTML = "<i>plain</i>";
+  log("innerHTML string", out.innerHTML);
+  out.innerHTML = p.createHTML("<i>trusted</i>");
+  log("innerHTML trusted", out.innerHTML);
+  out.insertAdjacentHTML("beforeend", p.createHTML("<u>adj</u>"));
+  log("insertAdjacentHTML", out.innerHTML);
+  const s = document.createElement("script");
+  s.text = p.createScript("window.__ran = (window.__ran || 0) + 1;");
+  log("script text", s.text, s.textContent);
+  s.src = p.createScriptURL("nothing.js");
+  log("script src", s.getAttribute("src"));
+  out.setAttribute("title", p.createHTML("t"));
+  log("setAttribute with a Trusted object", out.getAttribute("title"));
+  const doc = new DOMParser().parseFromString(p.createHTML("<p id=x>dp</p>"), "text/html");
+  log("DOMParser", doc.getElementById("x").textContent);
+  tryIt("eval TrustedScript", () => eval(p.createScript("6 * 7")));
+  tryIt("eval string", () => eval("6 * 8"));
+  tryIt("Function TrustedScript", () => new Function(p.createScript("return 9"))());
+  setTimeout(p.createScript("window.__timer = 'ran'"), 0);
+  const worker = new Worker(p.createScriptURL("trusted-types-worker.js"));
+  const fromWorker = [];
+  worker.onmessage = e => fromWorker.push(e.data);
+  setTimeout(() => {
+    log("setTimeout TrustedScript", window.__timer);
+    log("worker", fromWorker.join(" | "));
+    log("done");
+  }, 300);
+</script></body></html>

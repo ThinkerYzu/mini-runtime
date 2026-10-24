@@ -1,0 +1,107 @@
+<!doctype html>
+<!-- The document's policies over its requests (GAPS B162), against release Firefox: bench/compare_bridge.py
+     fetch-policy (the bridge tab's fetch, or the API process's with API_PROCESS=all). Served by ws_echo.py's
+     /doc/ with fetch-policy.html.headers: a CSP whose connect-src allows this origin and 127.0.0.1's /h
+     only, a report-only CSP that would refuse everything, and Referrer-Policy "no-referrer, bogus, origin".
+     The Referer each request sent under the header's policy, a request's own, and <meta name=referrer>
+     elements added, changed and removed; what connect-src refuses (another path, port, data:, a redirect,
+     XHR); the cache modes' request headers and only-if-cached; a script and a sheet as the server saw them. -->
+<html><head><meta charset="utf-8"><title>fetch policy</title></head><body><p>fetch policy test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const SELF = location.origin, X = `http://127.0.0.1:${location.port}`;
+  const h = (base, o) => `${base}/h?` + new URLSearchParams(o);
+  const short = u => u.replaceAll(location.href, "PAGE").replaceAll(SELF, "SELF").replaceAll(X, "X");
+  // the server's view of the requests tagged `id`; of the cookies only this case's (fp*)
+  const seen = async id => (await (await fetch(`${SELF}/log`)).json()).filter(e => e.id === id).map(e => {
+    const hh = Object.assign({}, e.h);
+    if (hh.cookie !== undefined) hh.cookie = hh.cookie.split("; ").filter(c => c.startsWith("fp")).sort().join("; ");
+    return e.method + " " + short(JSON.stringify(hh));
+  });
+  const F = async (what, url, init) => {
+    try { const r = await fetch(url, init); L(what, r.type, r.status, JSON.stringify(short(r.url))); }
+    catch (e) { L(what, "throws", e.name); }
+  };
+  const S = async (what, id) => L(what, JSON.stringify(await seen(id)));
+  const meta = (where, name, content) => {
+    const m = document.createElement("meta");
+    m.setAttribute("name", name);
+    m.setAttribute("content", content);
+    where.appendChild(m);
+    return m;
+  };
+  await fetch(`${SELF}/log?clear`);
+
+  // the Referrer-Policy header: its last valid token, origin
+  await F("header policy, cross-site", h(X, { acao: "*", id: "r1" }));
+  await F("header policy, same-origin", h(SELF, { id: "r2" }));
+  await F("the request's policy wins", h(X, { acao: "*", id: "r3" }), { referrerPolicy: "unsafe-url" });
+  for (const id of ["r1", "r2", "r3"]) await S(id, id);
+  // a <meta name=referrer> replaces it, each one added or changed; a removal leaves it
+  const m = meta(document.head, "referrer", "no-referrer");
+  await F("meta no-referrer", h(SELF, { id: "r4" }));
+  m.setAttribute("content", " Same-Origin ");
+  await F("meta changed, same-origin", h(SELF, { id: "r5" }));
+  await F("meta changed, cross-site", h(X, { acao: "*", id: "r6" }));
+  m.remove();
+  await F("meta removed", h(SELF, { id: "r7" }));
+  meta(document.body, "REFERRER", "bogus");
+  await F("meta not a policy", h(SELF, { id: "r8" }));
+  const legacy = meta(document.body, "Referrer", "always");
+  await F("legacy token in the body", h(X, { acao: "*", id: "r9" }));
+  for (const id of ["r4", "r5", "r6", "r7", "r8", "r9"]) await S(id, id);
+  legacy.setAttribute("content", "same-origin");
+
+  // connect-src: this origin and 127.0.0.1's /h; the report-only policy refuses nothing
+  await F("csp allowed", h(X, { acao: "*" }));
+  await F("csp another path", `${X}/log`);
+  await F("csp another port", `http://127.0.0.1:8766/fetch.html`);
+  await F("csp data:", "data:text/plain,hi");
+  await F("csp no-cors", `${X}/log`, { mode: "no-cors" });
+  await F("csp redirect, path not checked", h(SELF, { status: "302", loc: `${X}/log` }));
+  await F("csp redirect to another port", h(SELF, { status: "302", loc: "http://127.0.0.1:8766/fetch.html" }));
+  await new Promise(done => {
+    const x = new XMLHttpRequest();
+    x.open("GET", `${X}/log`);
+    x.onload = () => { L("xhr csp", "load", x.status); done(); };
+    x.onerror = () => { L("xhr csp", "error", x.status, x.readyState); done(); };
+    x.send();
+  });
+
+  // cache modes: the headers they send, a page's own Cache-Control kept, a revalidation header
+  for (const c of ["no-store", "reload", "no-cache", "force-cache", "default"])
+    await F("cache " + c, h(SELF, { rc: 1, id: "c-" + c }), { cache: c });
+  await F("no-store with the page's Cache-Control", h(SELF, { rc: 1, id: "c-own" }), { cache: "no-store", headers: { "cache-control": "max-age=5" } });
+  await F("If-None-Match", h(SELF, { rc: 1, id: "c-rev" }), { headers: { "if-none-match": '"x"' } });
+  await F("cors no-store preflight", h(X, { rc: 1, acao: "*", acah: "x-custom", id: "c-pre" }), { cache: "no-store", headers: { "x-custom": "1" } });
+  for (const id of ["c-no-store", "c-reload", "c-no-cache", "c-force-cache", "c-default", "c-own", "c-rev", "c-pre"]) await S(id, id);
+  await F("only-if-cached, same-origin", h(SELF, { id: "c-oic" }), { cache: "only-if-cached", mode: "same-origin" });
+  try { new Request("x", { cache: "only-if-cached" }); L("only-if-cached, cors", "made"); }
+  catch (e) { L("only-if-cached, cors", e.name, e.message); }
+
+  // a script and a sheet: no-cors, the element's referrerpolicy or the document's (now same-origin)
+  document.cookie = "fp1=1; path=/";
+  const script = (what, src, policy) => new Promise(done => {
+    const s = document.createElement("script");
+    if (policy) s.setAttribute("referrerpolicy", policy);
+    s.src = src;
+    s.onload = s.onerror = e => { L(what, e.type); done(); };
+    document.head.appendChild(s);
+  });
+  await script("same-origin script", h(SELF, { type: "text/javascript", body: "window.__s1 = 1;", id: "s1" }));
+  await script("cross-site script, unsafe-url", h(X, { type: "text/javascript", body: "window.__s2 = 1;", id: "s2" }), "unsafe-url");
+  await script("cross-site script", h(X, { type: "text/javascript", body: "window.__s3 = 1;", id: "s3" }));
+  await new Promise(done => {
+    const l = document.createElement("link");
+    l.rel = "stylesheet";
+    l.href = h(X, { type: "text/css", body: "p { color: green }", id: "s4" });
+    l.onload = l.onerror = e => { L("cross-site sheet", e.type); done(); };
+    document.head.appendChild(l);
+  });
+  for (const id of ["s1", "s2", "s3", "s4"]) await S(id, id);
+  document.cookie = "fp1=; max-age=0; path=/";
+  L("done");
+})();
+</script></body></html>

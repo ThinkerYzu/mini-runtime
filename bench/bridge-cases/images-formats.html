@@ -1,0 +1,93 @@
+<!doctype html><meta charset="utf-8"><title>Image formats and SVG sizing</title>
+<!-- GAPS B165: what images-api leaves out. The binary fixtures come from
+     bench/make_images_formats.py: AVIF whole, cut inside its payload and with
+     the payload inverted; PNGs past 16384 a side and past 256 MiB decoded, one
+     with no pixel data, one with bad pixel data, one cut short. The SVG lines
+     cover the root's CSS, the units, SVGZ and XML encodings. -->
+<script>
+window.__log = [];
+const log = (...a) => __log.push(a.join(" "));
+async function load(name, url) {
+  const img = new Image();
+  const result = new Promise(resolve => { img.onload = () => resolve("load"); img.onerror = () => resolve("error"); });
+  img.src = url;
+  const status = await result;
+  log(name, status, img.naturalWidth, img.naturalHeight);
+}
+(async () => {
+  for (const name of [".avif", "-cut.avif", "-bad.avif", "-wide.png", "-axis.png", "-budget.png",
+    "-header.png", "-idat.png", "-cut.png", "-irot.avif", "-header.jpg", "-scan.jpg", "-header.gif"])
+    await load(name.slice(1), "images-formats" + name);
+  const svg = (attrs, body="") => "data:image/svg+xml," +
+    encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" ' + attrs + '>' + body + '</svg>');
+  for (const [name, attrs, body] of [
+    ["style-attr", 'width="17" height="9" style="width:40px;height:20px"'],
+    ["style-sheet", 'width="17" height="9"', "<style>svg{width:50px;height:25px}</style>"],
+    ["style-width", 'viewBox="0 0 200 100" style="width:44px"'],
+    ["style-auto", 'width="17" height="9" style="width:auto"'],
+    ["style-important", 'width="17" height="9" style="width:30px !important"', "<style>svg{width:60px}</style>"],
+    ["style-calc", 'width="17" height="9" style="width:calc(10px + 2em)"'],
+    ["style-percent", 'width="17" height="9" style="width:50%"'],
+    ["em", 'width="2em" height="3em"'],
+    ["em-font-size", 'width="2em" height="1em" style="font-size:20px"'],
+    ["em-font-sheet", 'width="2em" height="1em"', "<style>svg{font-size:10px}</style>"],
+    ["ex", 'width="10ex" height="2ex"'],
+    ["ex-font-size", 'width="10ex" height="1ch" style="font-size:32px"'],
+    ["font-attr", 'width="2em" height="1em" font-size="20"'],
+    ["font-keyword", 'width="2em" height="1em" style="font-size:large"'],
+    ["font-percent", 'width="2em" height="1em" style="font-size:150%"'],
+    ["font-class", 'width="2em" height="1em" class="big"', "<style>.big{font-size:25px}</style>"],
+    ["font-id", 'width="2em" height="1em" id="r"', "<style>#r{font-size:12px} svg{font-size:30px}</style>"],
+    ["font-important", 'width="2em" height="1em" style="font-size:10px"', "<style>svg{font-size:30px !important}</style>"],
+    ["font-nested-style", 'width="2em" height="1em"', "<defs><style>svg{font-size:11px}</style></defs>"],
+    ["font-shorthand", 'width="2em" height="1em" style="font:20px serif"'],
+    ["font-calc", 'width="2em" height="1em" style="font-size:calc(10px + 5px)"'],
+    ["q", 'width="40q" height="4mm"'],
+    ["lh-cap", 'width="2lh" height="1cap"'],
+    ["ic-rlh", 'width="2ic" height="2rlh"'],
+    ["exponent", 'width="1e2" height="1E1"'],
+    ["contain", 'width="17" height="9" style="contain:size"'],
+    ["rem", 'width="2rem" height="1rem" style="font-size:20px"'],
+    ["ch", 'width="5ch" height="2ch"'],
+    ["vw", 'width="10vw" height="10vh"'],
+    ["percent", 'width="50%" height="50%"'],
+    ["percent-viewbox", 'width="50%" viewBox="0 0 200 100"'],
+    ["negative", 'width="-5" height="7"'],
+    ["fraction", 'width="10.5" height="3.4"'],
+    ["spaces", 'width=" 12 " height="8px "'],
+    ["mixed-case", 'width="12PX" height="1IN"'],
+  ]) await load(name, svg(attrs, body));
+  await load("no-namespace", "data:image/svg+xml," + encodeURIComponent('<svg width="12" height="8"/>'));
+  const port = new URL(location.href).searchParams.get("ws");
+  const base = "http://localhost:" + port;
+  const h = (id, bytes, type, options={}) => {
+    const url = new URL(base + "/h");
+    let binary = "";
+    for (const b of bytes) binary += String.fromCharCode(b);
+    for (const [k,v] of Object.entries({id, body64: btoa(binary), type, ...options})) url.searchParams.set(k,v);
+    return url.href;
+  };
+  // one byte a character (Latin-1), and UTF-16 with its byte order mark
+  const latin1 = text => [...text].map(c => c.charCodeAt(0));
+  const utf16 = (text, le) => [le ? 0xFF : 0xFE, le ? 0xFE : 0xFF, ...[...text].flatMap(c =>
+    le ? [c.charCodeAt(0) & 255, c.charCodeAt(0) >> 8] : [c.charCodeAt(0) >> 8, c.charCodeAt(0) & 255])];
+  const doc = (decl, size='width="17" height="9"') => decl +
+    '<svg xmlns="http://www.w3.org/2000/svg" ' + size + '><title>café</title></svg>';
+  const type = "image/svg+xml";
+  const svgz = new Uint8Array(await (await fetch("images-formats-svgz.svgz")).arrayBuffer());
+  await load("svgz-raw", h("svgz-raw", svgz, type));
+  const plain = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="17" height="9"/>');
+  await load("svgz-encoded", h("svgz-encoded", plain, type, {enc: "gzip"}));
+  await load("utf8", h("utf8", new TextEncoder().encode(doc("")), type));
+  await load("latin1-declared", h("latin1-declared", latin1(doc('<?xml version="1.0" encoding="ISO-8859-1"?>')), type));
+  await load("cp1252-declared", h("cp1252-declared", latin1(doc('<?xml version="1.0" encoding="windows-1252"?>')), type));
+  await load("latin1-undeclared", h("latin1-undeclared", latin1(doc("")), type));
+  await load("latin1-charset", h("latin1-charset", latin1(doc("")), type + "; charset=iso-8859-1"));
+  await load("charset-over-decl", h("charset-over-decl", latin1(doc('<?xml version="1.0" encoding="UTF-8"?>')), type + "; charset=iso-8859-1"));
+  await load("utf16le-bom", h("utf16le-bom", utf16(doc(""), true), type));
+  await load("utf16be-bom", h("utf16be-bom", utf16(doc(""), false), type));
+  await load("utf8-bom", h("utf8-bom", [0xEF, 0xBB, 0xBF, ...new TextEncoder().encode(doc(""))], type));
+  await load("xml-type", h("xml-type", new TextEncoder().encode(doc("")), "text/xml"));
+  log("done");
+})();
+</script>

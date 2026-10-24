@@ -1,0 +1,10 @@
+[package]
+name = "mrt-dom"
+version = "0.1.0"
+edition = "2024"
+
+# Stage 2a: the arena DOM. Firefox's HTML parser (../parser, C++) fills it through the MrtSink callbacks.
+[dependencies]
+
+[profile.release]
+debug = false

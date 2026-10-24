@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- The interfaces Facebook's Hyperion wraps (its hyperionDOM module) against release Firefox:
+     bench/compare_bridge.py interface-chains. For each, whether the global exists, its prototype
+     chain up to Object.prototype, and on which prototype each member it wraps is found (Hyperion looks
+     a member up along the chain, and asserts each wrapper's prototype has its parent's on its chain). -->
+<html><head><title>interface-chains</title><meta charset="utf-8"></head>
+<body><div id="d" title="t"></div><input id="i">
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const d = document.getElementById("d");
+  const nameOf = p => p === window ? "window" : p === Object.prototype ? "Object" :
+    (Object.getOwnPropertyDescriptor(p, Symbol.toStringTag) || {}).value || (p.constructor && p.constructor.name) || "?";
+  const chain = o => { const out = []; for (let p = o; p; p = Object.getPrototypeOf(p)) out.push(nameOf(p)); return out.join(">"); };
+  const holder = (o, name) => { for (let p = o; p; p = Object.getPrototypeOf(p)) if (Object.getOwnPropertyDescriptor(p, name)) return nameOf(p); return "-"; };
+  const wrapped = [
+    ["EventTarget", () => d, ["addEventListener", "dispatchEvent", "removeEventListener"]],
+    ["Node", () => d, ["appendChild", "cloneNode", "insertBefore", "removeChild", "replaceChild"]],
+    ["Attr", () => d.attributes[0], ["value"]],
+    ["Element", () => d, ["getAttribute", "getAttributeNS", "setAttribute", "setAttributeNS", "setAttributeNode", "setAttributeNodeNS",
+      "after", "append", "before", "getAttributeNames", "getAttributeNode", "getAttributeNodeNS", "getBoundingClientRect", "getClientRects",
+      "getElementsByClassName", "getElementsByTagName", "getElementsByTagNameNS", "hasAttribute", "hasAttributeNS", "hasAttributes", "id", "innerHTML",
+      "insertAdjacentElement", "insertAdjacentHTML", "insertAdjacentText", "prepend", "remove", "removeAttribute", "removeAttributeNS",
+      "removeAttributeNode", "replaceChildren", "replaceWith", "toggleAttribute"]],
+    ["HTMLElement", () => d, ["style"]],
+    ["HTMLInputElement", () => document.getElementById("i"), ["checked"]],
+    ["CSSStyleDeclaration", () => d.style, ["getPropertyValue", "removeProperty", "setProperty"]],
+    ["Event", () => new Event("tmp"), ["stopPropagation"]],
+    ["History", () => history, ["back", "forward", "go", "pushState", "replaceState"]],
+    ["XMLHttpRequest", () => new XMLHttpRequest(), ["onabort", "onerror", "onload", "onloadend", "onloadstart", "onprogress", "ontimeout", "open", "onreadystatechange", "send"]],
+    ["Window", () => window, ["fetch", "requestAnimationFrame", "requestIdleCallback", "IntersectionObserver", "MutationObserver", "onerror", "ondevicemotion", "ondeviceorientation", "onorientationchange"]],
+  ];
+  for (const [iface, sample, members] of wrapped) {
+    let o;
+    try { o = sample(); } catch (e) { log(iface, "sample threw", e.name); continue; }
+    log(iface, typeof window[iface], chain(o));
+    log(" ", members.map(m => m + ":" + holder(o, m)).join(" "));
+  }
+  log("attr", typeof Attr, d.attributes[0] instanceof Attr, d.attributes[0] instanceof Node, d.attributes[0].nodeType, d.attributes[0].name, d.attributes[0].value);
+  log("done");
+</script></body></html>

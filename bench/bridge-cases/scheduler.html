@@ -1,0 +1,233 @@
+<!doctype html>
+<!-- window.scheduler (Gecko's dom/webscheduling: WebTaskScheduler, WebTaskController, TaskSignal)
+     against release Firefox: bench/compare_bridge.py scheduler. The four interfaces' shapes;
+     postTask's conversions, errors, results and aborts; yield and the state it inherits; the order of
+     tasks by priority against each other, a 0 ms timer, a port message and a microtask; delays;
+     TaskController.setPriority moving queued tasks and its prioritychange event; TaskSignal.any; a
+     same-origin frame; a dedicated worker (scheduler-worker.js). Facebook yields with
+     scheduler.yield(), X's Castle with scheduler.postTask(fn) (session 96). -->
+<html><head><meta charset="utf-8"><title>scheduler</title></head><body><p>scheduler test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" ").split(location.origin).join("ORIGIN"));
+  const J = v => JSON.stringify(v);
+  const E = e => e && typeof e === "object" ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : typeof e + " " + String(e);
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const tick = ms => new Promise(r => setTimeout(r, ms));
+  const settle = (p, ms = 1000) => Promise.race([p.then(v => "resolved " + J(v), e => "rejected " + E(e)), tick(ms).then(() => `pending after ${ms} ms`)]);
+  const names = o => Object.getOwnPropertyNames(o).sort();
+  const desc = (o, k) => { const d = Object.getOwnPropertyDescriptor(o, k); return d && [k, typeof d.get, typeof d.set, "value" in d, d.writable, d.enumerable, d.configurable, d.get && d.get.name, d.set && d.set.name]; };
+  const proto = c => names(c.prototype).map(k => desc(c.prototype, k));
+
+  // the attribute and the four interfaces
+  T("global", () => [typeof scheduler, "scheduler" in window, desc(window, "scheduler"), desc(Window.prototype, "scheduler"), scheduler === window.scheduler]);
+  T("interfaces", () => ["Scheduler", "TaskController", "TaskSignal", "TaskPriorityChangeEvent"].map(n => [n, typeof window[n], window[n] && window[n].length, desc(window, n) && desc(window, n).slice(3)]));
+  T("chains", () => [Object.getPrototypeOf(Scheduler) === Function.prototype, Object.getPrototypeOf(Scheduler.prototype) === Object.prototype,
+    Object.getPrototypeOf(TaskController) === AbortController, Object.getPrototypeOf(TaskController.prototype) === AbortController.prototype,
+    Object.getPrototypeOf(TaskSignal) === AbortSignal, Object.getPrototypeOf(TaskSignal.prototype) === AbortSignal.prototype,
+    Object.getPrototypeOf(TaskPriorityChangeEvent) === Event, Object.prototype.toString.call(scheduler), Object.prototype.toString.call(Scheduler.prototype),
+    Object.getPrototypeOf(scheduler) === Scheduler.prototype]);
+  T("Scheduler members", () => proto(Scheduler));
+  T("method shapes", () => [scheduler.postTask.length, scheduler.postTask.name, scheduler.yield.length, scheduler.yield.name]);
+  T("TaskController members", () => proto(TaskController));
+  T("TaskSignal members", () => [proto(TaskSignal), names(TaskSignal), TaskSignal.any.length]);
+  T("TaskPriorityChangeEvent members", () => proto(TaskPriorityChangeEvent));
+  T("new Scheduler", () => new Scheduler());
+  T("Scheduler()", () => Scheduler());
+  T("new TaskSignal", () => new TaskSignal());
+  T("own keys", () => Object.keys(scheduler));
+
+  // postTask's arguments
+  for (const [what, f] of [["no callback", () => scheduler.postTask()], ["not callable", () => scheduler.postTask(5)],
+                           ["bad priority", () => scheduler.postTask(() => 1, { priority: "high" })],
+                           ["delay -1", () => scheduler.postTask(() => 1, { delay: -1 })], ["delay NaN", () => scheduler.postTask(() => 1, { delay: NaN })],
+                           ["delay string", () => scheduler.postTask(() => "s", { delay: "3" })], ["delay 2**53", () => scheduler.postTask(() => 1, { delay: 2 ** 53 })],
+                           ["signal object", () => scheduler.postTask(() => 1, { signal: {} })], ["options 5", () => scheduler.postTask(() => 1, 5)],
+                           ["options null", () => scheduler.postTask(() => "n", null)], ["wrong this", () => Scheduler.prototype.postTask.call({}, () => 1)],
+                           ["yield wrong this", () => Scheduler.prototype.yield.call({})]]) {
+    let p;
+    try { p = f(); } catch (e) { L("postTask " + what, "throws", E(e)); continue; }
+    L("postTask " + what, p instanceof Promise, await settle(p));
+  }
+  // what the options' getters see, in order
+  const read = [];
+  const opts = new Proxy({}, { get(t, k) { read.push(String(k)); return undefined; } });
+  await scheduler.postTask(() => 1, opts);
+  L("options read", J(read));
+
+  // the callback: its arguments, this, the result, a throw, a promise it returns
+  T("callback", () => "queued");
+  L("callback args", await scheduler.postTask(function (...a) { return [a.length, this === undefined ? "undefined" : this === window ? "window" : typeof this]; }).then(J));
+  L("callback throws", await settle(scheduler.postTask(() => { throw new RangeError("inside"); })));
+  L("callback promise", await settle(scheduler.postTask(() => Promise.resolve(7))));
+  L("yield value", await settle(scheduler.yield()));
+
+  // aborts: already aborted, aborted while queued, aborted while delayed, a TaskController's
+  {
+    const c = new AbortController(); c.abort();
+    let ran = false;
+    L("aborted before", await settle(scheduler.postTask(() => { ran = true; }, { signal: c.signal })), ran);
+    const c2 = new AbortController();
+    const p2 = scheduler.postTask(() => { ran = true; }, { signal: c2.signal });
+    c2.abort("why");
+    L("aborted queued", await settle(p2), ran);
+    const c3 = new TaskController();
+    const p3 = scheduler.postTask(() => { ran = true; }, { signal: c3.signal, delay: 20 });
+    setTimeout(() => c3.abort(new TypeError("late")), 5);
+    L("aborted delayed", await settle(p3), ran);
+    // abort inside the callback: the promise already settles with the result
+    const c4 = new AbortController();
+    L("abort inside", await settle(scheduler.postTask(() => { c4.abort(); return "r"; }, { signal: c4.signal })));
+  }
+
+  // the order of one batch: microtask, timer, port message, each priority, a yield, in one script
+  {
+    const order = [];
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => order.push("port");
+    setTimeout(() => order.push("timer"), 0);
+    scheduler.postTask(() => order.push("background"), { priority: "background" });
+    scheduler.postTask(() => order.push("visible"));
+    scheduler.postTask(() => order.push("blocking"), { priority: "user-blocking" });
+    ch.port2.postMessage(1);
+    scheduler.yield().then(() => order.push("yield"));
+    scheduler.postTask(() => order.push("visible 2"), { priority: "user-visible" });
+    scheduler.postTask(() => order.push("blocking 2"), { priority: "user-blocking" });
+    queueMicrotask(() => order.push("micro"));
+    await tick(50);
+    L("order batch", J(order));
+  }
+  // timers wait for user-visible tasks; background tasks wait for timers
+  {
+    const order = [];
+    setTimeout(() => order.push("timer 1"), 0);
+    setTimeout(() => order.push("timer 2"), 0);
+    for (let i = 0; i < 3; i++) scheduler.postTask(() => order.push("visible " + i));
+    for (let i = 0; i < 2; i++) scheduler.postTask(() => order.push("background " + i), { priority: "background" });
+    await tick(50);
+    L("order timers", J(order));
+  }
+  // a task posted from a task, by priority
+  {
+    const order = [];
+    scheduler.postTask(() => {
+      order.push("outer");
+      scheduler.postTask(() => order.push("inner background"), { priority: "background" });
+      scheduler.postTask(() => order.push("inner visible"));
+      scheduler.postTask(() => order.push("inner blocking"), { priority: "user-blocking" });
+    }, { priority: "background" });
+    scheduler.postTask(() => order.push("sibling visible"));
+    await tick(50);
+    L("order nested", J(order));
+  }
+  // yield inherits the task's priority and signal
+  {
+    const order = [];
+    scheduler.postTask(async () => { order.push("bg start"); await scheduler.yield(); order.push("bg after yield"); }, { priority: "background" });
+    scheduler.postTask(async () => { order.push("vis start"); await scheduler.yield(); order.push("vis after yield"); });
+    scheduler.postTask(() => order.push("vis 2"));
+    await tick(50);
+    L("order yield", J(order));
+    const c = new TaskController();
+    const r = await settle(scheduler.postTask(async () => { c.abort("stop"); await scheduler.yield(); return "after"; }, { signal: c.signal }));
+    L("yield aborted", r);
+    const c2 = new TaskController();
+    let y;
+    L("abort in task", await settle(scheduler.postTask(() => { y = scheduler.yield(); c2.abort("later"); }, { signal: c2.signal })));
+    L("yield aborted while queued", await settle(y));
+  }
+  // delays
+  {
+    const order = [];
+    setTimeout(() => order.push("timer 10"), 10);
+    scheduler.postTask(() => order.push("delay 5"), { delay: 5 });
+    scheduler.postTask(() => order.push("delay 10"), { delay: 10 });
+    scheduler.postTask(() => order.push("delay 10 blocking"), { delay: 10, priority: "user-blocking" });
+    scheduler.postTask(() => order.push("delay 0"), { delay: 0 });
+    await tick(80);
+    L("order delays", J(order));
+  }
+
+  // TaskController and TaskSignal
+  T("TaskController", () => { const c = new TaskController(); return [c.signal instanceof TaskSignal, c.signal.priority, c.signal.aborted, c.signal.onprioritychange, c.signal === c.signal]; });
+  T("TaskController init", () => ["user-blocking", "background", "user-visible"].map(p => new TaskController({ priority: p }).signal.priority));
+  T("TaskController bad", () => new TaskController({ priority: "low" }));
+  T("TaskController null", () => new TaskController(null).signal.priority);
+  T("TaskController()", () => TaskController());
+  T("setPriority bad", () => new TaskController().setPriority("x"));
+  T("setPriority none", () => new TaskController().setPriority());
+  T("setPriority wrong this", () => TaskController.prototype.setPriority.call(new AbortController(), "background"));
+  T("priority wrong this", () => Object.getOwnPropertyDescriptor(TaskSignal.prototype, "priority").get.call(new AbortController().signal));
+  {
+    const c = new TaskController();
+    const seen = [];
+    // the handler after the listener: the runtime runs handlers last (GAPS B71)
+    c.signal.addEventListener("prioritychange", e => {
+      seen.push(["listener", e.previousPriority]);
+      try { c.setPriority("user-visible"); } catch (err) { seen.push(["nested", E(err)]); }
+    });
+    c.signal.onprioritychange = e => seen.push(["handler", e.constructor.name, e.type, e.previousPriority, c.signal.priority, e.isTrusted, e.bubbles, e.cancelable, e.target === c.signal]);
+    T("setPriority", () => [c.setPriority("background"), c.signal.priority, seen.splice(0)]);
+    T("setPriority same", () => [c.setPriority("background"), seen.splice(0)]);
+    T("onprioritychange", () => [typeof c.signal.onprioritychange, (c.signal.onprioritychange = 5, c.signal.onprioritychange)]);
+    c.abort();
+    T("setPriority aborted", () => [c.setPriority("user-blocking"), c.signal.priority, seen.splice(0)]);
+  }
+  T("TaskPriorityChangeEvent", () => { const e = new TaskPriorityChangeEvent("x", { previousPriority: "background", bubbles: true }); return [e.type, e.previousPriority, e.bubbles]; });
+  T("TaskPriorityChangeEvent no init", () => new TaskPriorityChangeEvent("x"));
+  T("TaskPriorityChangeEvent bad", () => new TaskPriorityChangeEvent("x", { previousPriority: "y" }));
+  // moving queued tasks
+  {
+    const order = [];
+    const c = new TaskController({ priority: "background" });
+    scheduler.postTask(() => order.push("signal 1"), { signal: c.signal });
+    scheduler.postTask(() => order.push("visible"));
+    scheduler.postTask(() => order.push("signal 2"), { signal: c.signal });
+    scheduler.postTask(() => order.push("signal, own priority"), { signal: c.signal, priority: "background" });
+    c.setPriority("user-blocking");
+    await tick(50);
+    L("order setPriority", J(order));
+    const c2 = new TaskController({ priority: "user-blocking" });
+    scheduler.postTask(() => order.push("demoted"), { signal: c2.signal });
+    scheduler.postTask(() => order.push("visible 2"));
+    c2.setPriority("background");
+    order.length = 0;
+    await tick(50);
+    L("order demoted", J(order));
+  }
+  // TaskSignal.any
+  {
+    const a = new AbortController(), src = new TaskController({ priority: "background" });
+    T("any", () => { const s = TaskSignal.any([a.signal]); return [s instanceof TaskSignal, s.priority, s.aborted]; });
+    T("any priority", () => TaskSignal.any([], { priority: "user-blocking" }).priority);
+    T("any bad", () => TaskSignal.any([], { priority: "x" }));
+    T("any not a sequence", () => TaskSignal.any(5));
+    T("any not signals", () => TaskSignal.any([{}]));
+    const s = TaskSignal.any([a.signal], { priority: src.signal });
+    const changes = [];
+    s.onprioritychange = e => changes.push(e.previousPriority + ">" + s.priority);
+    src.setPriority("user-blocking");
+    const fixed = TaskSignal.any([], { priority: TaskSignal.any([], { priority: "background" }) });
+    a.abort("gone");
+    T("any follows", () => [s.priority, changes, s.aborted, s.reason, fixed.priority]);
+    const pre = new AbortController(); pre.abort("early");
+    T("any aborted", () => { const t = TaskSignal.any([pre.signal]); return [t.aborted, t.reason]; });
+  }
+
+  // a same-origin frame and [Replaceable]
+  const frame = document.createElement("iframe");
+  document.body.appendChild(frame);
+  const fw = frame.contentWindow;
+  T("frame", () => [typeof fw.scheduler, fw.scheduler !== scheduler, fw.scheduler instanceof fw.Scheduler, fw.scheduler instanceof Scheduler]);
+  L("frame postTask", await settle(fw.scheduler.postTask(() => "framed")));
+  L("frame postTask on top", await settle(fw.Scheduler.prototype.postTask.call(scheduler, () => "cross")));
+  T("assign", () => { const old = window.scheduler; window.scheduler = 5; const v = window.scheduler; const d = desc(window, "scheduler"); return [v, d]; });
+
+  // a worker
+  const w = new Worker("scheduler-worker.js");
+  const lines = await new Promise(r => { w.onmessage = e => r(e.data); setTimeout(() => r(["timeout"]), 3000); });
+  for (const l of lines) L("worker", l);
+  L("done");
+})();
+</script></body></html>

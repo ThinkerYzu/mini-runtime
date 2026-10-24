@@ -1,0 +1,44 @@
+<!doctype html>
+<!-- navigator.permissions as Firefox's permission manager answers it from a profile (GAPS B166):
+     bench/compare_bridge.py permissions-profile loads this page from http://b.a.localhost:8766 with
+     the fixture profile it makes (PERMISSIONS_PROFILE there): entries on this origin and on its
+     parent a.localhost (the non-exact match), on the parent with another port or scheme, expired
+     ones, camera and microphone saved as "Always Ask", and permissions.default.* preferences, of
+     types that read one and of one that does not. -->
+<html><head><meta charset="utf-8"><title>permissions-profile</title></head><body><p>permissions from the profile</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? e.name + ": " + e.message : String(e);
+  const tick = ms => new Promise(r => setTimeout(r, ms));
+  // persist() waits on a doorhanger when the permission is not saved
+  const settle = (p, ms = 1000) => Promise.race([p.then(v => "resolved " + J(v), e => "rejected " + E(e)), tick(ms).then(() => `pending after ${ms} ms`)]);
+
+  L("origin", location.origin, window.isSecureContext);
+  for (const name of ["geolocation", "notifications", "push", "persistent-storage", "midi", "storage-access", "screen-wake-lock",
+                      "camera", "microphone", "loopback-network", "local-network"]) {
+    try { const s = await navigator.permissions.query({ name }); L("query", name, s.state); } catch (e) { L("query", name, E(e)); }
+  }
+  try { const s = await navigator.permissions.query({ name: "midi", sysex: true }); L("query midi sysex", s.state); } catch (e) { L("query midi sysex", E(e)); }
+  L("Notification.permission", Notification.permission);
+  L("requestPermission", await settle(Notification.requestPermission()));
+  L("geolocation", await new Promise(resolve => {
+    navigator.geolocation.getCurrentPosition(() => resolve("position"), e => resolve("error " + e.code));
+    setTimeout(() => resolve("no answer after 2000 ms"), 2000);
+  }));
+  L("persisted before", await settle(navigator.storage.persisted()));
+  L("persist", await settle(navigator.storage.persist()));
+  L("persisted after", await settle(navigator.storage.persisted()));
+  // a worker's query tests its own principal, with no delegation
+  const w = new Worker(URL.createObjectURL(new Blob([`(async () => {
+    const out = [];
+    for (const name of ["geolocation", "notifications", "camera", "microphone", "screen-wake-lock", "persistent-storage"])
+      out.push(name + " " + (await navigator.permissions.query({ name })).state);
+    postMessage(out);
+  })();`], { type: "text/javascript" })));
+  L("worker", J(await new Promise(r => { w.onmessage = e => r(e.data); setTimeout(() => r("no answer"), 3000); })));
+  L("done");
+})();
+</script></body></html>

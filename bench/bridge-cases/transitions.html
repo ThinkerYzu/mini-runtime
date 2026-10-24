@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- CSS transitions and animations against release Firefox: bench/compare_bridge.py transitions.
+     The runtime has no animation timeline, so its styles are the after-change styles at once
+     (vendor/stylo/README-mrt.md); Firefox's are too once a transition has run. A box read after
+     the transition's duration must agree; read during it, and an animation's fill, and the events,
+     differ (GAPS B81). -->
+<html><head><title>transitions</title><meta charset="utf-8">
+<style>
+  #cap { display: inline-block; width: 120px; height: 10px; transition: width 100ms; }
+  #pad { width: 50px; height: 10px; transition: padding-left 100ms; }
+  @keyframes grow { from { width: 10px } to { width: 50px } }
+  #anim { width: 30px; height: 10px; animation: grow 100ms forwards; }
+</style>
+</head><body>
+<div><div id="cap"></div></div>
+<div id="pad"></div>
+<div id="anim"></div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const cap = document.getElementById("cap");
+  const pad = document.getElementById("pad");
+  let ends = 0;
+  cap.addEventListener("transitionend", () => ends++);
+  log("before", cap.offsetWidth, pad.offsetWidth);
+  // Google Docs' mode switcher: an inline width over a sheet's width with a transition, then back
+  cap.style.width = "24px";
+  pad.style.paddingLeft = "20px";
+  setTimeout(() => {
+    log("after first change", cap.offsetWidth, getComputedStyle(cap).width, pad.offsetWidth);
+    cap.style.width = "200px";
+    setTimeout(() => {
+      log("after second change", cap.offsetWidth, getComputedStyle(cap).width);
+      cap.removeAttribute("style");
+      setTimeout(() => {
+        log("style removed", cap.offsetWidth);
+        log("animation fill forwards", document.getElementById("anim").offsetWidth);
+        log("transitionend events", ends);
+        log("done");
+      }, 400);
+    }, 400);
+  }, 400);
+</script></body></html>

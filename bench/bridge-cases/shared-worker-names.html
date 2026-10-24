@@ -1,0 +1,15 @@
+<!doctype html>
+<!-- Every name of a shared worker's global, by where it lives (shared-worker-main.js's "names"): run in
+     release Firefox its log gives mrt-js/tools/shared_worker_names.json (less the script's own
+     function `handle`); in the mini runtime it shows what a shared worker lacks. Not a comparison. -->
+<html><head><meta charset="utf-8"><title>shared-worker-names</title></head><body>
+<script>
+window.__log = [];
+const w = new SharedWorker("shared-worker-main.js", "names");
+w.port.onmessage = e => {
+  if (!e.data.names) return;
+  for (const [k, v] of Object.entries(e.data.names)) window.__log.push(k + " " + JSON.stringify(v));
+};
+w.port.postMessage({ cmd: "names" });
+</script>
+</body></html>

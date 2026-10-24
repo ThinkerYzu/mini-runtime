@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- Two frames of one other site against release Firefox: bench/compare_bridge.py xsite (SPEC decision
+     19: one runtime for the site, as Firefox runs both in one process). The page is on localhost, the
+     frames on 127.0.0.1 at two ports (two origins of the site http://127.0.0.1): each frame's view of
+     its embedder, postMessage both ways, each origin's own localStorage. The two frames' answers are
+     logged sorted at the end, as their order is not fixed. -->
+<html><head><title>xsite</title><meta charset="utf-8"></head>
+<body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const port = location.port;
+  const other = new URLSearchParams(location.search).get("other");
+  const frames = [port, other].map(p => {
+    const f = document.createElement("iframe");
+    f.src = `http://127.0.0.1:${p}/xsite-child.html`;
+    f.onload = () => {
+      log("load", p === port ? "first" : "second", f.contentDocument === null, f.contentWindow.parent === window);
+      f.contentWindow.postMessage("ping", "*");
+    };
+    document.body.appendChild(f);
+    return f;
+  });
+  const answers = [];
+  window.addEventListener("message", e => {
+    const which = e.source === frames[0].contentWindow ? "first" : e.source === frames[1].contentWindow ? "second" : "unknown";
+    answers.push([which, e.origin.split(":")[2] === port ? "port" : "other", JSON.stringify(e.data)].join(" "));
+    if (answers.length === 4) {
+      for (const a of answers.sort()) log("message", a);
+      log("done");
+    }
+  });
+</script></body></html>

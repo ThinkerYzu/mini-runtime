@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- DOMParser's XML types against release Firefox: bench/compare_bridge.py dom-parser-xml (GAPS B27,
+     task 5278). A DASH manifest as Facebook's video player parses it (VideoPlayerNextgendashHostXMLDOMParser:
+     the names' case, attributes, text, comments), entities, CDATA, SVG's namespace, and the error
+     document of XML that is not well-formed: its message, line, column and source line. -->
+<html><head><title>dom-parser-xml</title><meta charset="utf-8"></head><body>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.map(String).join(" "));
+const p = new DOMParser();
+function walk(n) {
+  if (n.nodeType === 3 || n.nodeType === 4) return JSON.stringify(n.nodeValue);
+  if (n.nodeType === 8) return "<!--" + n.nodeValue + "-->";
+  const attrs = Array.from(n.attributes || [], a => a.name + "=" + JSON.stringify(a.value)).join(" ");
+  return n.nodeName + (attrs ? "[" + attrs + "]" : "") + "(" + Array.from(n.childNodes, walk).join(",") + ")";
+}
+const mpd = p.parseFromString('<?xml version="1.0"?>\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" minBufferTime="PT1.5S" type="static"><Period id="0" duration="PT10S">\n  <AdaptationSet segmentAlignment="true"><Representation id="v1" bandwidth="100" codecs=\'avc1.64001F\'><BaseURL>https://x.test/a.mp4?a=1&amp;b=2</BaseURL><SegmentBase indexRange="1-2"/></Representation></AdaptationSet><!-- c --></Period></MPD>', "application/xml");
+log(mpd instanceof Document, mpd.documentElement.nodeName, mpd.documentElement.localName, mpd.childNodes.length, mpd.querySelector("parsererror"));
+log(walk(mpd.documentElement));
+log(mpd.getElementsByTagName("Representation").length, mpd.querySelector("BaseURL").textContent, mpd.documentElement.getAttribute("minBufferTime"));
+const x = p.parseFromString("<r a='1 &#65;&#x42;&lt;'><![CDATA[<b>&amp;</b>]]><e/>t&quot;</r>", "text/xml");
+log(walk(x.documentElement));
+const svg = p.parseFromString('<svg xmlns="http://www.w3.org/2000/svg"><rect width="5"/></svg>', "image/svg+xml");
+log(svg.documentElement.namespaceURI, svg.documentElement.firstChild.localName, svg.documentElement.firstChild.namespaceURI);
+for (const bad of ["<a><b></a>", "", "<a>", "<a></a><b/>", "<a x=1/>", "<a>&nope;</a>", "<a b='1' b='2'/>", "<p:a/>", "text<a/>", "<a>\n<b>\n</c></a>"]) {
+  const d = p.parseFromString(bad, "application/xml");
+  const e = d.documentElement;
+  log(JSON.stringify(bad), e.localName, e.firstChild.nodeValue.split("\n")[0], e.firstChild.nodeValue.split("\n")[2], JSON.stringify(e.lastChild.textContent), d.querySelector("parsererror") === e);
+}
+</script>
+</body></html>

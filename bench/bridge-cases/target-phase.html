@@ -1,0 +1,116 @@
+<!doctype html>
+<!-- The order of listeners at the event's target against release Firefox: bench/compare_bridge.py
+     target-phase (GAPS B102). Gecko calls the target twice (EventTargetChainItem::
+     HandleEventTargetChain): its capture listeners first, then the others, each group in the order
+     added, eventPhase 2 for both; a capture listener there that stops propagation keeps the others
+     from running. The handler property is set after the listeners, as the runtime runs it last (B71). -->
+<html><head><title>target-phase</title><meta charset="utf-8"></head><body>
+<div id="outer"><span id="inner"></span></div>
+<div id="host"></div>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const outer = document.getElementById("outer"), inner = document.getElementById("inner");
+
+  // listeners on target and the way there, each logging its name and eventPhase; returns the order
+  function run(target, type, add, init = { bubbles: true }) {
+    const order = [];
+    const f = name => e => order.push(name + " " + e.eventPhase);
+    add(f, order);
+    target.dispatchEvent(new Event(type, init));
+    return order.join(",");
+  }
+
+  // an element: capture listeners added after, between and before the others
+  log("element", run(inner, "e1", f => {
+    inner.addEventListener("e1", f("a"));
+    inner.addEventListener("e1", f("capA"), true);
+    inner.addEventListener("e1", f("b"));
+    inner.addEventListener("e1", f("capB"), true);
+    outer.addEventListener("e1", f("outerBubble"));
+    outer.addEventListener("e1", f("outerCapture"), true);
+  }));
+  // a handleEvent object, and the handler property (onclick)
+  log("object", run(inner, "e2", f => {
+    inner.addEventListener("e2", { handleEvent: f("object") });
+    inner.addEventListener("e2", { handleEvent: f("objectCap") }, true);
+  }));
+  inner.addEventListener("click", e => log("click listener", e.eventPhase));
+  inner.onclick = e => log("click handler", e.eventPhase);
+  inner.addEventListener("click", e => log("click capture", e.eventPhase), true);
+  inner.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+  // stopPropagation in a capture listener at the target: its other capture listeners still run, its
+  // other listeners not, nor the ancestors'
+  log("stopPropagation", run(inner, "e3", f => {
+    inner.addEventListener("e3", f("a"));
+    inner.addEventListener("e3", e => { f("cap1")(e); e.stopPropagation(); }, true);
+    inner.addEventListener("e3", f("cap2"), true);
+    outer.addEventListener("e3", f("outerBubble"));
+  }));
+  // stopImmediatePropagation there: nothing after it
+  log("stopImmediatePropagation", run(inner, "e4", f => {
+    inner.addEventListener("e4", f("a"));
+    inner.addEventListener("e4", e => { f("cap1")(e); e.stopImmediatePropagation(); }, true);
+    inner.addEventListener("e4", f("cap2"), true);
+  }));
+  // stopPropagation in a listener at the target: the rest of the target's run, no ancestor
+  log("stop in bubble", run(inner, "e5", f => {
+    inner.addEventListener("e5", e => { f("a")(e); e.stopPropagation(); });
+    inner.addEventListener("e5", f("b"));
+    inner.addEventListener("e5", f("cap"), true);
+    outer.addEventListener("e5", f("outerBubble"));
+  }));
+  // once, and listeners added or removed by a capture listener at the target
+  const late = e => log("added during capture", e.eventPhase);
+  log("changes", run(inner, "e6", f => {
+    const b = f("b");
+    inner.addEventListener("e6", f("a"), { once: true });
+    inner.addEventListener("e6", b);
+    inner.addEventListener("e6", e => { f("cap")(e); inner.removeEventListener("e6", b); inner.addEventListener("e6", late); }, { capture: true, once: true });
+  }));
+  log("changes again", run(inner, "e6", () => {}));
+
+  // the window, the document, a node out of the document and a target that is not a node
+  log("window", run(window, "e7", f => {
+    window.addEventListener("e7", f("a"));
+    window.addEventListener("e7", f("cap"), true);
+  }));
+  log("document", run(document, "e8", f => {
+    document.addEventListener("e8", f("a"));
+    document.addEventListener("e8", f("cap"), true);
+    window.addEventListener("e8", f("windowBubble"));
+  }));
+  const loose = document.createElement("p");
+  log("detached", run(loose, "e9", f => {
+    loose.addEventListener("e9", f("a"));
+    loose.addEventListener("e9", f("cap"), true);
+  }));
+  const et = new EventTarget();
+  log("EventTarget", run(et, "e10", f => {
+    et.addEventListener("e10", f("a"));
+    et.addEventListener("e10", f("cap"), true);
+  }));
+  // a non-bubbling event: the target's capture and other listeners both run, no ancestor's bubble
+  log("no bubbles", run(inner, "e11", f => {
+    inner.addEventListener("e11", f("a"));
+    inner.addEventListener("e11", f("cap"), true);
+    outer.addEventListener("e11", f("outerBubble"));
+    outer.addEventListener("e11", f("outerCapture"), true);
+  }, { bubbles: false }));
+
+  // a shadow host when the event comes from its shadow tree, and the shadow root
+  const host = document.getElementById("host");
+  const root = host.attachShadow({ mode: "open" });
+  root.innerHTML = "<b id=b>x</b>";
+  const sb = root.getElementById("b");
+  log("shadow", run(sb, "e12", f => {
+    sb.addEventListener("e12", f("node"));
+    sb.addEventListener("e12", f("nodeCap"), true);
+    root.addEventListener("e12", f("root"));
+    root.addEventListener("e12", f("rootCap"), true);
+    host.addEventListener("e12", f("host"));
+    host.addEventListener("e12", f("hostCap"), true);
+  }, { bubbles: true, composed: true }));
+  log("done");
+</script></body></html>

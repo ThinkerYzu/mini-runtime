@@ -1,0 +1,150 @@
+<!doctype html>
+<!-- Notification (Gecko's dom/notification) against release Firefox: bench/compare_bridge.py
+     notification. The interface and its members; the permission (Firefox's, for the page's origin);
+     requestPermission with and without a callback, its argument errors and when it resolves; the
+     constructor's conversion of NotificationOptions (which members it reads, in what order), its
+     errors, the attributes it sets, the `error` event a notification gets without the permission and
+     when; brand checks; the same in a dedicated worker (notification-worker.js). Facebook, X,
+     Instagram and Reddit read it (session 94). -->
+<html><head><meta charset="utf-8"><title>notification</title></head><body><p>notification test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  // the case server's port differs between the two sides
+  const L = (...a) => log.push(a.join(" ").split(location.origin).join("ORIGIN"));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : String(e);
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const tick = ms => new Promise(r => setTimeout(r, ms));
+  const settle = (p, ms = 1000) => Promise.race([p.then(v => "resolved " + J(v), e => "rejected " + E(e)), tick(ms).then(() => `pending after ${ms} ms`)]);
+  const names = o => Object.getOwnPropertyNames(o).sort();
+  const desc = (o, k) => { const d = Object.getOwnPropertyDescriptor(o, k); return d && [k, typeof d.get, typeof d.set, "value" in d, d.writable, d.enumerable, d.configurable, d.get && d.get.name]; };
+
+  // the interface
+  T("global", () => [typeof Notification, "Notification" in window, desc(window, "Notification"), Notification.name, Notification.length]);
+  T("chain", () => [Object.getPrototypeOf(Notification) === EventTarget, Object.getPrototypeOf(Notification.prototype) === EventTarget.prototype,
+                    Object.prototype.toString.call(Notification.prototype), desc(Notification, "prototype")]);
+  T("statics", () => [names(Notification), ...["permission", "maxActions", "requestPermission"].map(k => desc(Notification, k))]);
+  T("members", () => names(Notification.prototype));
+  T("member descriptors", () => names(Notification.prototype).map(k => desc(Notification.prototype, k)));
+  T("requestPermission", () => [Notification.requestPermission.name, Notification.requestPermission.length, typeof Notification.requestPermission]);
+  T("close", () => [Notification.prototype.close.name, Notification.prototype.close.length]);
+
+  // the permission and maxActions: static getters, so any `this`
+  T("permission", () => [Notification.permission, typeof Notification.permission, Notification.maxActions]);
+  T("permission getter this", () => [Object.getOwnPropertyDescriptor(Notification, "permission").get.call({}),
+                                     Object.getOwnPropertyDescriptor(Notification, "permission").get.call(undefined),
+                                     Object.getOwnPropertyDescriptor(Notification, "maxActions").get.call(5)]);
+  T("permission set", () => { Notification.permission = "granted"; return Notification.permission; });
+
+  // requestPermission: no user activation here
+  {
+    const order = [];
+    const p = Notification.requestPermission(v => order.push("callback " + v));
+    order.push("returned " + (p instanceof Promise));
+    Promise.resolve().then(() => order.push("microtask"));
+    setTimeout(() => order.push("timeout 0"), 0);
+    L("requestPermission", await settle(p.then(v => { order.push("resolved " + v); return v; })));
+    await tick(20);
+    L("requestPermission order", J(order));
+  }
+  L("requestPermission no callback", await settle(Notification.requestPermission()));
+  L("requestPermission undefined", await settle(Notification.requestPermission(undefined)));
+  for (const [label, arg] of [["null", null], ["number", 1], ["object", {}]]) {
+    let p;
+    try { p = Notification.requestPermission(arg); } catch (e) { L("requestPermission", label, "threw", E(e)); continue; }
+    L("requestPermission", label, await settle(p));
+  }
+  {
+    const p = Notification.requestPermission(() => { throw new RangeError("from the callback"); });
+    L("requestPermission callback throws", await settle(p));
+  }
+  L("requestPermission other this", await settle(Notification.requestPermission.call({})));
+  T("permission after", () => Notification.permission);
+
+  // the constructor
+  T("call", () => Notification("t"));
+  T("no args", () => new Notification());
+  const show = n => [n instanceof Notification, Object.prototype.toString.call(n), n.title, n.dir, n.lang, n.body, n.tag, n.icon, n.navigate,
+                     n.requireInteraction, n.silent, n.data, n.actions, n.onclick, n.onshow, n.onerror, n.onclose, n.vibrate];
+  T("defaults", () => show(new Notification("hello")));
+  T("title conversion", () => [new Notification(1).title, new Notification(null).title, new Notification(undefined).title, new Notification({ toString() { return "obj"; } }).title]);
+  T("title symbol", () => new Notification(Symbol("s")));
+  T("options", () => show(new Notification("t", {
+    dir: "rtl", lang: "fr", body: "b\uD800", tag: 7, icon: "icon.png", navigate: "/go?x=1", requireInteraction: 1, silent: "yes",
+    data: { a: [1, 2], d: new Date(0) }, badge: "badge.png", image: "img.png", renotify: true, timestamp: 1000,
+    actions: [{ action: "a1", title: "A1", navigate: "act" }, { action: "a2", title: "A2" }, { action: "a3", title: "A3" }],
+  })));
+  T("bad urls", () => { const n = new Notification("t", { icon: "http://[bad", navigate: "", actions: [{ action: "x", title: "y", navigate: "http://[bad" }] }); return [n.icon, n.navigate, n.actions]; });
+  for (const [label, opts] of [["null", null], ["undefined", undefined], ["number", 1], ["string", "s"], ["function", () => 0],
+                               ["bad dir", { dir: "up" }], ["dir object", { dir: { toString() { return "ltr"; } } }],
+                               ["actions not iterable", { actions: 5 }], ["actions object", { actions: {} }], ["actions null", { actions: null }],
+                               ["action missing title", { actions: [{ action: "a" }] }], ["action missing action", { actions: [{ title: "a" }] }],
+                               ["action not object", { actions: [5] }], ["action null", { actions: [null] }],
+                               ["vibrate", { vibrate: [100, 200] }], ["vibrate number", { vibrate: 300 }], ["vibrate bad", { vibrate: {} }],
+                               ["silent vibrate", { silent: true, vibrate: 200 }],
+                               ["data function", { data: () => 0 }], ["data undefined", { data: undefined }], ["data zero", { data: 0 }],
+                               ["timestamp", { timestamp: "x" }]]) {
+    T("options " + label, () => { const n = new Notification("t", opts); return [n.dir, n.data, n.actions, n.silent, n.vibrate]; });
+  }
+  // which members are read, in what order, and how many times
+  {
+    const reads = [];
+    const opts = new Proxy({ dir: "ltr", actions: [{ action: "a", title: "b" }] }, { get(t, k) { reads.push(String(k)); return t[k]; }, has(t, k) { reads.push("has " + String(k)); return k in t; } });
+    T("reads", () => { new Notification("t", opts); return reads; });
+    const areads = [];
+    const action = new Proxy({ action: "a", title: "b", navigate: "n" }, { get(t, k) { areads.push(String(k)); return t[k]; } });
+    T("action reads", () => { new Notification("t", { actions: [action] }); return areads; });
+    const thrower = { get body() { throw new RangeError("from the getter"); } };
+    T("getter throws", () => new Notification("t", thrower));
+  }
+  // data: a clone, the same object on each read
+  {
+    const data = { x: 1 };
+    const n = new Notification("t", { data });
+    T("data", () => [n.data === data, n.data === n.data, J(n.data)]);
+    T("actions frozen", () => { const m = new Notification("t", { actions: [{ action: "a", title: "b" }] });
+      return [m.actions === m.actions, Object.isFrozen(m.actions), Object.isFrozen(m.actions[0]), Array.isArray(m.actions)]; });
+  }
+  // brand checks
+  T("title getter", () => Object.getOwnPropertyDescriptor(Notification.prototype, "title").get.call({}));
+  T("data getter", () => Object.getOwnPropertyDescriptor(Notification.prototype, "data").get.call(window));
+  T("close other", () => Notification.prototype.close.call({}));
+  T("onerror other", () => Object.getOwnPropertyDescriptor(Notification.prototype, "onerror").get.call({}));
+  T("expando", () => { const n = new Notification("t"); n.title = "changed"; n.foo = 1; return [n.title, n.foo, Object.keys(n)]; });
+  // subclassing
+  T("subclass", () => { class Sub extends Notification {} const s = new Sub("sub"); return [s instanceof Sub, s.title, Object.prototype.toString.call(s)]; });
+
+  // the events: `error` without the permission, after the parent's answer
+  {
+    const order = [];
+    const n = new Notification("events", { tag: "e" });
+    for (const t of ["show", "error", "close", "click"]) n.addEventListener(t, e => order.push(`${t} ${e.isTrusted} ${e.bubbles} ${e.cancelable} ${e.target === n} ${e.constructor.name}`));
+    n.onerror = () => order.push("onerror");
+    Promise.resolve().then(() => order.push("microtask"));
+    setTimeout(() => order.push("timeout 0"), 0);
+    await tick(300);
+    L("events", J(order));
+    order.length = 0;
+    n.close();
+    n.close();
+    await tick(100);
+    L("after close", J(order));
+    const m = new Notification("closed at once");
+    m.addEventListener("error", () => order.push("m error"));
+    m.addEventListener("close", () => order.push("m close"));
+    m.close();
+    await tick(300);
+    L("close at once", J(order));
+  }
+
+  // a dedicated worker
+  {
+    const w = new Worker("notification-worker.js");
+    const got = await Promise.race([new Promise(r => { w.onmessage = e => r(e.data); w.onerror = e => r(["error " + e.message]); }), tick(5000).then(() => ["worker timeout"])]);
+    for (const line of got) L("worker", line);
+    w.terminate();
+  }
+  L("done");
+})();
+</script></body></html>

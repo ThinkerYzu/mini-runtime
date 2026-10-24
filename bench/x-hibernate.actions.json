@@ -1,0 +1,5 @@
+[["waitfor", "article[data-testid=\"tweet\"] [data-testid=\"tweetText\"]", 120000], ["pause", 5000], ["mark", "x-home"],
+ ["hide"], ["pause", 3000], ["mark", "x-hidden"], ["pause", 20000], ["mark", "x-hidden-20s"],
+ ["show"], ["pause", 1000],
+ ["click", "article[data-testid=\"tweet\"] [data-testid=\"tweetText\"]"],
+ ["waiturl", "/status/", 30000], ["pause", 5000], ["mark", "x-post"]]

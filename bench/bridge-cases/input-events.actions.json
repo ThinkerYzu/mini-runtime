@@ -1,0 +1,3 @@
+[["move", "#s"], ["pause", 300],
+ ["click", "#b"], ["click", "#l"], ["click", "#host"], ["click", "#t"], ["type", "ab"], ["type", ""], ["type", " "],
+ ["wheel", "#s", 0, 50], ["pause", 300], ["click", "#s"]]

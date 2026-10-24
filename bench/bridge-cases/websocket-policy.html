@@ -1,0 +1,101 @@
+<!doctype html>
+<!-- WebSocket beyond the protocol (GAPS B163), against release Firefox: bench/compare_bridge.py
+     websocket-policy (the bridge tab's WebSocket, or the API process's with API_PROCESS=all). Served by
+     ws_echo.py's /doc/ with websocket-policy.html.headers: a CSP whose connect-src allows this origin
+     and 127.0.0.1's /echo only, with upgrade-insecure-requests (no upgrade: the document is loopback),
+     and a report-only CSP that would refuse everything. What connect-src lets through; permessage-deflate
+     both ways (what the page sent compressed, as the server saw it) and the parameters a server may
+     answer with; three connections to one host while each handshake takes 300 ms (one at a time?); and
+     the delays before reconnecting to a path that refused. Times are the server's, as ranges. -->
+<html><head><meta charset="utf-8"><title>websocket policy</title></head><body><p>websocket policy test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const port = location.port;
+  // this load's tag prefix: the server's log also has the requests of earlier loads
+  const N = "n" + Math.random().toString(36).slice(2, 8);
+  const wslog = async tag => (await (await fetch(`/wslog?tag=${N}-${tag}`)).json());
+  // a connection's events up to its close (or 4 s), the page closing it once open (or after the 4 s)
+  const run = (url, onopen) => new Promise(resolve => {
+    let ws;
+    try { ws = new WebSocket(url); } catch (e) {
+      resolve(["throws " + [e.name, JSON.stringify(e.message), e.constructor.name, e instanceof DOMException, e.code, e.result].join(" ")]);
+      return;
+    }
+    const seen = [];
+    const done = () => { clearTimeout(t); resolve(seen); };
+    // (closed: Firefox lets one handshake at a time go to a host, the others wait for it)
+    const t = setTimeout(() => { seen.push("timeout"); ws.onclose = null; ws.close(); resolve(seen); }, 4000);
+    ws.onopen = async () => {
+      seen.push("open " + JSON.stringify(ws.extensions));
+      if (onopen) seen.push(...await onopen(ws));
+      ws.close();
+    };
+    ws.onerror = () => seen.push("error");
+    ws.onclose = e => { seen.push("close " + e.code + " " + e.wasClean); done(); };
+  });
+  const next = ws => new Promise(r => ws.addEventListener("message", e => r(e.data), { once: true }));
+  const echo = async (ws, data) => {
+    ws.send(data);
+    const d = await next(ws);
+    return d instanceof Blob ? "blob " + new Uint8Array(await d.arrayBuffer()).join(",") : JSON.stringify(d.length > 40 ? d.length + " chars" : d);
+  };
+
+  // connect-src
+  const C = async (what, url) => L("csp", what, JSON.stringify(await run(url)));
+  await C("self", `ws://localhost:${port}/echo`);
+  await C("self other port", `ws://localhost:1/echo`);
+  await C("listed", `ws://127.0.0.1:${port}/echo`);
+  await C("listed via http", `http://127.0.0.1:${port}/echo`);
+  await C("other path", `ws://127.0.0.1:${port}/other`);
+  await C("listed as wss", `wss://127.0.0.1:${port}/echo`);
+  await C("other host", `ws://127.0.0.2:${port}/echo`);
+  // what a refusal throws: Gecko's Exception for NS_ERROR_CONTENT_BLOCKED, not a DOMException
+  try { new WebSocket(`ws://127.0.0.1:${port}/other`); } catch (e) {
+    const proto = Object.getPrototypeOf(e);
+    L("csp exception", Object.prototype.toString.call(e), Object.getPrototypeOf(proto) === Object.prototype, proto.constructor === Object,
+      JSON.stringify(Object.getOwnPropertyNames(proto).sort()), JSON.stringify(Object.keys(e)), typeof e.filename, e.lineNumber > 0,
+      e.columnNumber > 0, e.data, typeof e.stack, JSON.stringify(String(e).replace(/location: "[^"]*"/, "location: L")));
+  }
+
+  // permessage-deflate
+  const D = async (what, pmce, sends) => {
+    const tag = "d" + what;
+    const got = await run(`ws://localhost:${port}/echo?deflate=1&tag=${N}-${tag}&pmce=${encodeURIComponent(pmce)}`,
+                          async ws => { const out = []; for (const s of sends) out.push(await echo(ws, s)); return out; });
+    L("deflate", what, JSON.stringify(got));
+    const seen = await wslog(tag);
+    L("deflate", what, "server saw", JSON.stringify(seen.map(e => [e.offered, e.frames.map(f => f.rsv1)])));
+  };
+  const text = "hello hello hello hello hello hello hello hello";
+  await D("plain", "", [text, text, "", new Uint8Array([1, 2, 3, 1, 2, 3, 1, 2, 3]), "x".repeat(70000), "ab"]);
+  await D("no context", "; client_no_context_takeover", [text, "ab", text]);
+  await D("server no context", "; server_no_context_takeover", [text, text]);
+  await D("window bits", "; client_max_window_bits=9; server_max_window_bits=10", [text, text]);
+  await D("unknown param", "; bogus", [text]);
+  await D("bad bits", "; server_max_window_bits=7", [text]);
+  await D("twice", "; client_no_context_takeover; client_no_context_takeover", [text]);
+  await D("value on flag", "; server_no_context_takeover=1", [text]);
+
+  // three at once to one host, each 101 after 300 ms
+  const A = await Promise.all([0, 1, 2].map(i => run(`ws://localhost:${port}/echo?delay=300&tag=${N}-a${i}`)));
+  L("admission events", JSON.stringify(A));
+  const a = (await wslog("a")).sort((x, y) => x.at - y.at);
+  L("admission", a.length, "one at a time", a.slice(1).map((e, i) => e.at >= a[i].done - 5).join(","));
+
+  // reconnecting to a path that refused: the gaps between the server's requests
+  const gaps = async (tag, path, n) => {
+    for (let i = 0; i < n; i++) await run(`ws://localhost:${port}/${path}?tag=${N}-${tag}`);
+    const e = (await wslog(tag)).sort((x, y) => x.at - y.at);
+    return e.slice(1).map((x, i) => x.at - e[i].at);
+  };
+  const g = await gaps("f", "refused-" + N, 4);
+  L("fail delay", g.length, "first", g[0] >= 180 && g[0] <= 450, "second", g[1] >= 1.4 * g[0] - 30 && g[1] <= 700,
+    "third", g[2] >= 1.4 * g[1] - 30 && g[2] <= 1050);
+  // another path to the same host is not delayed
+  await run(`ws://localhost:${port}/other-${N}?tag=${N}-o`);
+  const f = (await wslog("f")).sort((x, y) => x.at - y.at), o = await wslog("o");
+  L("fail delay other path", o.length, o.length && o[0].at - f[f.length - 1].at < 150);
+})();
+</script></body></html>

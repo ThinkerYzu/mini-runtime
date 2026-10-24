@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>cookie child</title></head><body>
+<script>
+  const out = {};
+  const T = (what, ...writes) => { for (const w of writes) document.cookie = w; out[what] = document.cookie; };
+  T("start");
+  T("unset samesite", "p1=1");
+  T("lax", "p2=2; SameSite=Lax");
+  T("strict", "p3=3; SameSite=Strict");
+  T("none secure", "p4=4; SameSite=None; Secure");
+  T("partitioned", "p5=5; Partitioned; Secure");
+  for (const n of ["p1", "p4", "p5"]) document.cookie = `${n}=; max-age=0; Secure`;
+  for (const n of ["p1"]) document.cookie = `${n}=; max-age=0`;
+  T("cleared");
+  parent.postMessage(out, "*");
+</script></body></html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<!-- navigator.permissions (Gecko's dom/permission) and navigator.storage (dom/quota's StorageManager)
+     against release Firefox: bench/compare_bridge.py permissions-storage. The interfaces; query() with
+     each name of PermissionName and the names X asks for that Firefox does not know, the descriptor's
+     conversion and its getters, the errors and brand checks, when the promise resolves; PermissionStatus;
+     estimate(), persisted(), persist() as far as no prompt shows; the same in a dedicated worker
+     (permissions-storage-worker.js). -->
+<html><head><meta charset="utf-8"><title>permissions-storage</title></head><body><p>permissions and storage test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : String(e);
+  const tick = ms => new Promise(r => setTimeout(r, ms));
+  // a promise that is still pending after a second says so (persist() waits on a prompt in Firefox)
+  const settle = (p, ms = 1000) => Promise.race([p.then(v => "resolved " + show(v), e => "rejected " + (e instanceof Error || e instanceof DOMException ? E(e) : J(e))),
+                                                 tick(ms).then(() => `pending after ${ms} ms`)]);
+  const show = v => v instanceof PermissionStatus ? J([Object.prototype.toString.call(v), v.name, v.state, v.onchange])
+                    : v && typeof v === "object" ? J([Object.prototype.toString.call(v), Object.keys(v).sort()]) : J(v);
+  const names = o => Object.getOwnPropertyNames(o).sort();
+
+  L("interfaces", J([typeof Permissions, typeof PermissionStatus, typeof StorageManager, "permissions" in navigator, "storage" in navigator,
+                     navigator.permissions instanceof Permissions, navigator.storage instanceof StorageManager,
+                     navigator.permissions === navigator.permissions, navigator.storage === navigator.storage,
+                     Object.prototype.toString.call(navigator.permissions), Object.prototype.toString.call(navigator.storage),
+                     Object.getPrototypeOf(PermissionStatus.prototype) === EventTarget.prototype]));
+  L("members", J([names(Permissions.prototype), names(PermissionStatus.prototype), names(StorageManager.prototype),
+                  Permissions.prototype.query.length, StorageManager.prototype.estimate.length]));
+  for (const C of [Permissions, PermissionStatus, StorageManager]) { try { new C(); L("new", C.name, "no throw"); } catch (e) { L("new", C.name, E(e)); } }
+
+  // every name Firefox's PermissionName has, and some it does not (X asks for them)
+  for (const name of ["geolocation", "notifications", "push", "persistent-storage", "midi", "storage-access", "screen-wake-lock",
+                      "camera", "microphone", "loopback-network", "local-network",
+                      "background-sync", "clipboard-read", "accelerometer", "Notifications", ""]) {
+    L("query", J(name), await settle(navigator.permissions.query({ name })));
+  }
+  L("query midi sysex", await settle(navigator.permissions.query({ name: "midi", sysex: true })));
+  // the descriptor's conversion
+  for (const [label, arg] of [["none", undefined], ["null", null], ["string", "notifications"], ["number", 1], ["empty", {}],
+                              ["name undefined", { name: undefined }], ["name null", { name: null }],
+                              ["name object", { name: { toString() { return "geolocation"; } } }], ["function", Object.defineProperty(() => 0, "name", { value: "push" })]]) {
+    let p;
+    try { p = label === "none" ? navigator.permissions.query() : navigator.permissions.query(arg); } catch (e) { L("query", label, "threw", E(e)); continue; }
+    L("query", label, await settle(p));
+  }
+  // which members of the descriptor are read, and in what order
+  {
+    const reads = [];
+    const desc = new Proxy({ name: "midi", sysex: 1 }, { get(t, k) { reads.push(String(k)); return t[k]; } });
+    const r = await settle(navigator.permissions.query(desc));
+    L("reads midi", J(reads), r);
+    reads.length = 0;
+    const desc2 = new Proxy({ name: "geolocation", sysex: 1 }, { get(t, k) { reads.push(String(k)); return t[k]; } });
+    L("reads geolocation", J(reads.splice(0)), await settle(navigator.permissions.query(desc2)), J(reads));
+    const thrower = { get name() { throw new RangeError("from the getter"); } };
+    L("getter throws", await settle(navigator.permissions.query(thrower)));
+  }
+  // brand checks, as Google Docs calls query detached
+  {
+    const q = navigator.permissions.query;
+    L("detached", await settle(q({ name: "notifications" })));
+    L("other this", await settle(q.call(navigator.storage, { name: "notifications" })));
+    let p;
+    try { p = Permissions.prototype.query.call({}, 5); L("other this bad arg", await settle(p)); } catch (e) { L("other this bad arg threw", E(e)); }
+    try { L("state getter", Object.getOwnPropertyDescriptor(PermissionStatus.prototype, "state").get.call({})); } catch (e) { L("state getter", E(e)); }
+    try { L("name getter", Object.getOwnPropertyDescriptor(PermissionStatus.prototype, "name").get.call(navigator)); } catch (e) { L("name getter", E(e)); }
+    L("estimate detached", await settle(navigator.storage.estimate.call(navigator.permissions)));
+  }
+  // when query resolves: against a microtask and a 0 ms timeout set after the call
+  {
+    const order = [];
+    const p = navigator.permissions.query({ name: "notifications" }).then(() => order.push("resolved"));
+    order.push("returned");
+    Promise.resolve().then(() => order.push("microtask"));
+    setTimeout(() => order.push("timeout 0"), 0);
+    await p;
+    await tick(20);
+    L("query order", J(order));
+  }
+  // a status: new each time, its event handler, its own properties
+  {
+    const a = await navigator.permissions.query({ name: "geolocation" });
+    const b = await navigator.permissions.query({ name: "geolocation" });
+    a.onchange = () => {};
+    L("status", J([a === b, typeof a.onchange, b.onchange, Object.keys(a), a instanceof EventTarget, "type" in a,
+                   a.addEventListener === EventTarget.prototype.addEventListener]));
+    a.state = "granted";
+    L("status state set", a.state);
+  }
+  // StorageManager: the values depend on the profile, so only their shape
+  {
+    const order = [];
+    const p = navigator.storage.estimate().then(v => { order.push("resolved"); return v; });
+    order.push("returned");
+    setTimeout(() => order.push("timeout 0"), 0);
+    const est = await p;
+    await tick(20);
+    L("estimate", J([Object.keys(est).sort(), typeof est.usage, typeof est.quota, est.quota > 0, est.usage >= 0,
+                     Object.getPrototypeOf(est) === Object.prototype]), J(order));
+    L("persisted", await settle(navigator.storage.persisted()));
+    // persist(): the persistent-storage permission is "prompt" in a fresh profile, so Firefox asks the
+    // user and the promise stays pending
+    L("persist", await settle(navigator.storage.persist(), 500));
+    L("getDirectory", typeof StorageManager.prototype.getDirectory);
+  }
+  // a dedicated worker
+  {
+    const w = new Worker("permissions-storage-worker.js");
+    const lines = await new Promise(r => { w.onmessage = e => r(e.data); });
+    for (const line of lines) L("worker", line);
+    w.terminate();
+  }
+  L("done");
+})().catch(e => window.__log.push("uncaught " + (e && e.name) + ": " + (e && e.message) + " " + (e && e.stack)));
+</script></body></html>

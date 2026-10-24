@@ -1,0 +1,2 @@
+[["pause", 15000], ["waitfor", "article[data-testid=\"tweet\"] [data-testid=\"tweetText\"]"],
+ ["click", "article[data-testid=\"tweet\"] [data-testid=\"tweetText\"]"], ["pause", 1000]]

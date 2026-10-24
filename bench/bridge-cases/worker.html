@@ -1,0 +1,200 @@
+<!doctype html>
+<!-- Dedicated workers (DESIGN "Workers: the build plan", W1) against release Firefox: bench/compare_bridge.py
+     worker. The Worker interface and its constructor's checks, the worker's global (its names, location,
+     navigator), messages both ways with their events' fields and the structured clone, a transferred
+     ArrayBuffer, importScripts, timers inside the worker, errors (in a task, handled by onerror or a
+     listener, at the top level, a syntax error, a script that fails to load), close() and terminate().
+     The worker's scripts are worker-*.js. Only the order within one side is logged: Firefox runs the
+     worker in parallel. -->
+<html><head><meta charset="utf-8"><title>worker</title></head><body><p>worker test</p>
+<script>
+(async function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const base = name => String(name).replace(/^.*\//, "");
+  const next = (w, pred = () => true) => new Promise(r => {
+    const l = e => { if (pred(e.data)) { w.removeEventListener("message", l); r(e); } };
+    w.addEventListener("message", l);
+  });
+  const errorOf = w => new Promise(r => w.addEventListener("error", r, { once: true }));
+  const describeError = ev => [ev.constructor.name, ev.type, ev.message, base(ev.filename), ev.lineno, ev.colno,
+                               ev.error === undefined ? "undef" : ev.error === null ? "null" : E(ev.error),
+                               ev.cancelable, ev.bubbles, ev.defaultPrevented];
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // the interface
+  T("shape", () => [typeof Worker, Worker.length, Object.getPrototypeOf(Worker.prototype) === EventTarget.prototype,
+                    Object.prototype.toString.call(Worker.prototype), Object.keys(Worker.prototype).sort()]);
+  T("no new", () => Worker("worker-main.js"));
+  T("no argument", () => new Worker());
+  T("brand", () => Worker.prototype.postMessage.call({}, 1));
+  T("bad URL", () => new Worker("http://[::1"));
+  T("other origin", () => new Worker("http://127.0.0.1:1/x.js"));
+  T("bad type", () => new Worker("worker-name.js", { type: "foo" }));
+  T("bad credentials", () => new Worker("worker-name.js", { credentials: "foo" }));
+  // Facebook's check for module workers (supportsModuleWorker)
+  {
+    let read = false;
+    const options = { get type() { read = true; } };
+    try { new Worker("blob://", options); L("blob:// ok", read); } catch (e) { L("blob:// throws", E(e), read); }
+  }
+
+  // a worker, its first message, its global
+  const w = new Worker("worker-main.js", { name: "main worker" });
+  T("instance", () => [Object.prototype.toString.call(w), w.onmessage, w.onerror, w.onmessageerror, Object.keys(w)]);
+  // messages posted before its script ran wait for it
+  w.postMessage({ cmd: "count" });
+  const started = await next(w, d => d && d.started);
+  L("started", J(started.data), started.constructor.name, started.origin, started.lastEventId, started.source,
+    started.ports.length, started.target === w, started.bubbles, started.cancelable);
+  L("count", J((await next(w, d => d && "count" in d)).data));
+  w.postMessage({ cmd: "shape" });
+  const shape = (await next(w, d => d && d.types)).data;
+  for (const k of Object.keys(shape)) L("worker", k, J(shape[k]));
+
+  // events of a message both ways
+  w.postMessage({ cmd: "echo", value: "hi" });
+  L("echo", J((await next(w, d => d && "echo" in d)).data));
+  // the handler attribute
+  let viaHandler = null;
+  w.onmessage = e => { viaHandler = e.data; };
+  w.postMessage({ cmd: "echo", value: 2 });
+  await next(w, d => d && d.echo === 2);
+  L("onmessage", J(viaHandler));
+  w.onmessage = null;
+
+  // the structured clone
+  const value = { map: new Map([[1, "a"], ["b", { c: 2 }]]), date: new Date(1700000000000), nested: [1, [2, [3]], { x: null }],
+                  u8: new Uint8Array([1, 2, 3]), ab: new ArrayBuffer(5), re: /a+b/g, set: new Set([1, "s"]), big: 12345678901234567890n };
+  value.self = value;
+  w.postMessage({ cmd: "clone", value });
+  L("clone", JSON.stringify((await next(w, d => d && d.clone)).data.clone, (k, v) => typeof v === "bigint" ? "big " + v : v));
+  T("uncloneable from the page", () => w.postMessage({ f: () => 1 }));
+  T("uncloneable node", () => w.postMessage(document.body));
+  w.postMessage({ cmd: "uncloneable" });
+  L("uncloneable in the worker", J((await next(w, d => d && d.uncloneable)).data));
+
+  // a transfer
+  const ab = new ArrayBuffer(8);
+  new Uint8Array(ab)[0] = 7;
+  w.postMessage({ cmd: "transfer", value: ab }, [ab]);
+  L("after transfer", ab.byteLength);
+  L("transfer", J((await next(w, d => d && "transferred" in d)).data));
+  T("transfer twice", () => w.postMessage(1, [ab, ab]));
+  T("transfer options", () => { const b = new ArrayBuffer(2); w.postMessage(1, { transfer: [b] }); return b.byteLength; });
+
+  // importScripts
+  w.postMessage({ cmd: "import" });
+  L("import", J((await next(w, d => d && d.import)).data));
+
+  // timers inside the worker
+  w.postMessage({ cmd: "timers" });
+  L("timers", J((await next(w, d => d && d.timers)).data));
+
+  // several messages from one task arrive in order
+  w.postMessage({ cmd: "many" });
+  const many = [];
+  await new Promise(r => { const l = e => { if (e.data && "many" in e.data) { many.push(e.data.many); if (many.length === 3) { w.removeEventListener("message", l); r(); } } }; w.addEventListener("message", l); });
+  L("many", J(many));
+
+  // errors
+  {
+    const p = errorOf(w);
+    w.postMessage({ cmd: "throw", n: 1 });
+    const ev = await p;
+    L("error at the Worker", J(describeError(ev)));
+  }
+  {
+    // cancelled at the Worker: nothing further (Firefox would otherwise report it to the console)
+    w.addEventListener("error", e => e.preventDefault(), { once: true });
+    const p = errorOf(w);
+    w.postMessage({ cmd: "throw", n: 2 });
+    L("error prevented", J(describeError(await p)));
+  }
+  w.postMessage({ cmd: "throw-handled" });
+  L("handled in the worker", J((await next(w, d => d && d.onerror)).data));
+  {
+    const p = errorOf(w);
+    w.postMessage({ cmd: "throw-listener" });
+    L("listener in the worker", J((await next(w, d => d && d.errorEvent)).data));
+    L("then at the Worker", J(describeError(await p)));
+  }
+  w.postMessage({ cmd: "reject" });
+  L("reject", J((await next(w, d => d && d.rejected)).data));
+  w.postMessage({ cmd: "count" });
+  L("still running", J((await next(w, d => d && "count" in d)).data));
+
+  // close() inside: what was posted in the same task still arrives, nothing after
+  {
+    const got = [];
+    const l = e => got.push(e.data);
+    w.addEventListener("message", l);
+    w.postMessage({ cmd: "close" });
+    await sleep(300);
+    w.postMessage({ cmd: "count" });
+    await sleep(300);
+    L("close", J(got));
+    w.removeEventListener("message", l);
+  }
+
+  // terminate(): nothing arrives after it
+  {
+    const t = new Worker("worker-main.js");
+    await next(t, d => d && d.started);
+    const got = [];
+    t.addEventListener("message", e => got.push(e.data));
+    t.postMessage({ cmd: "many" });
+    t.terminate();
+    t.terminate();
+    t.postMessage({ cmd: "count" });
+    await sleep(300);
+    L("terminate", J(got));
+  }
+
+  // a script that throws at its top level, a syntax error, a script that is missing
+  for (const [name, script] of [["top-level", "worker-toplevel-throw.js"], ["syntax", "worker-syntax.js"], ["missing", "worker-missing.js"]]) {
+    const x = new Worker(script);
+    const got = [];
+    x.onmessage = e => got.push(e.data);
+    const ev = await Promise.race([errorOf(x), sleep(2000).then(() => null)]);
+    L(name, J(got), ev ? J(describeError(ev)) : "no error");
+    x.terminate();
+  }
+
+  // the name option
+  for (const options of [undefined, { name: "n" }, { name: 5 }, {}]) {
+    const x = new Worker("worker-name.js", options);
+    L("name", J(options), J((await next(x)).data));
+    x.terminate();
+  }
+
+  // a relative URL resolves against the document's base
+  {
+    const x = new Worker("./sub/../worker-name.js?q=1#h", { name: "rel" });
+    L("relative", J((await next(x)).data));
+    x.terminate();
+  }
+  // module workers (W3)
+  {
+    const m = new Worker("worker-module.js", { type: "module" });
+    L("module", J((await next(m)).data));
+    m.postMessage("hi");
+    L("module echo", J((await next(m)).data));
+    m.terminate();
+  }
+  for (const [name, script] of [["module syntax", "worker-module-syntax.js"], ["module throw", "worker-module-throw.js"],
+                                ["module bad import", "worker-module-bad-import.js"], ["module missing", "worker-missing.js"]]) {
+    const x = new Worker(script, { type: "module" });
+    const got = [];
+    x.onmessage = e => got.push(e.data);
+    const ev = await Promise.race([errorOf(x), sleep(2000).then(() => null)]);
+    L(name, J(got), ev ? J(describeError(ev)) : "no error");
+    x.terminate();
+  }
+  L("done");
+})();
+</script>
+</body></html>

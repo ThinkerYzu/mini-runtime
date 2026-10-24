@@ -1,0 +1,97 @@
+<!doctype html>
+<!-- What YouTube's BotGuard VM reads from the page (task 135a, GAPS B38), against release Firefox:
+     bench/compare_bridge.py botguard-reads. The reads are the ones bench/probe_botguard_reads.js
+     recorded in Firefox's run of the VM, in its order, each with the shape behind it: where the
+     property lives (an accessor on the interface's prototype), the class of what it returns, and
+     the brand checks' errors. -->
+<html><head><meta charset="utf-8"><title>botguard-reads</title></head><body><p>botguard-reads test</p>
+<script>
+(function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const tag = o => Object.prototype.toString.call(o);
+  // where a property is found on o's chain: the owner's tag and the descriptor's kind
+  const where = (o, k) => {
+    for (let p = o; p; p = Object.getPrototypeOf(p)) {
+      const d = Object.getOwnPropertyDescriptor(p, k);
+      if (d) return (p === o ? "own" : tag(p)) + (d.get ? " get" : "") + (d.set ? " set" : "") + ("value" in d ? " value:" + typeof d.value : "") + (d.enumerable ? " e" : "") + (d.configurable ? " c" : "");
+    }
+    return "none";
+  };
+  const R = (name, o, k) => T(name + "." + k, () => { const v = o[k]; return [where(o, k), typeof v, v === null || typeof v !== "object" ? v : tag(v)]; });
+
+  // Trusted Types and eval
+  T("trustedTypes", () => { const p = trustedTypes.createPolicy("bg", { createScript: s => s, createHTML: s => s }); const s = p.createScript("1+1"); return [tag(p), tag(s), eval(s), tag(trustedTypes.emptyHTML), String(trustedTypes.emptyHTML)]; });
+  T("eval of an empty TrustedScript with new lines", () => { const p = trustedTypes.createPolicy("bg2", { createScript: s => s }); return eval(p.createScript("\n\n\n0")); });
+  // the options' members addEventListener reads, in order
+  T("listener options read", () => { const r = []; const o = {}; for (const k of ["capture", "once", "passive", "signal"]) Object.defineProperty(o, k, { get() { r.push(k); return undefined; } }); window.addEventListener("test", () => {}, o); window.removeEventListener("test", () => {}, o); return r; });
+  R("performance", performance, "timeOrigin");
+  T("performance.now", () => [typeof performance.now(), where(performance, "now"), tag(performance)]);
+  R("document", document, "readyState");
+  R("document", document, "hidden");
+  R("document", document, "body");
+  T("atob", () => [where(window, "atob"), atob("oGGhoCiH").length]);
+
+  // the hidden frame
+  const f = document.createElement("iframe");
+  R("iframe", f, "style");
+  T("iframe.style.display", () => { f.style.display = "none"; return [where(f.style, "display"), f.style.display, f.getAttribute("style")]; });
+  T("iframe connected", () => [f.isConnected, document.body.appendChild(f) === f, f.isConnected, f.querySelectorAll("*").length, tag(f.querySelectorAll("*")), f.tagName]);
+  R("iframe", f, "contentWindow");
+  const w = f.contentWindow;
+  T("frame window names", () => Object.getOwnPropertyNames(w).length);
+  for (const k of ["SharedWorker", "AudioParamMap", "PannerNode", "FileList", "HTMLImageElement", "SVGAnimatedEnumeration", "CSSFontFaceRule", "CustomElementRegistry", "SpeechSynthesisEvent"]) {
+    T("frame " + k + ".prototype names", () => w[k] ? Object.getOwnPropertyNames(w[k].prototype) : "absent");
+  }
+  for (const k of ["CSSStyleProperties", "Document"]) T("frame " + k + ".prototype name count", () => w[k] ? Object.getOwnPropertyNames(w[k].prototype).length : "absent");
+  T("frame window tag", () => [tag(w), w.Object === Object, tag(w.document)]);
+
+  // a style, an image, a mouse event
+  const div = document.createElement("div");
+  for (const k of ["overflow-anchor", "MozBoxOrdinalGroup", "column-count"]) T("div.style[" + k + "]", () => [where(div.style, k), div.style[k], k in div.style]);
+  const img = document.createElement("img");
+  R("img", img, "longDesc");
+  T("createEvent MouseEvents", () => { const e = document.createEvent("MouseEvents"); return [tag(e), where(e, "screenX"), e.screenX, typeof e.initMouseEvent, e.type, Object.getOwnPropertyNames(e)]; });
+  T("createEvent kinds", () => ["Event", "Events", "HTMLEvents", "UIEvents", "MouseEvent", "KeyboardEvent", "CustomEvent", "TouchEvent", "Nope"].map(k => { try { return k + ":" + tag(document.createEvent(k)); } catch (e) { return k + ":" + e.name; } }));
+  T("new Event own names", () => [Object.getOwnPropertyNames(new Event("x")), Object.getOwnPropertyNames(new MouseEvent("x")), where(new MouseEvent("x"), "screenX")]);
+
+  // the navigator and the window's other objects
+  R("window", window, "navigator");
+  T("navigator", () => [tag(navigator), where(navigator, "webdriver"), where(navigator, "userAgent")]);
+  for (const k of ["webdriver", "platform", "hardwareConcurrency", "maxTouchPoints", "doNotTrack", "userAgent", "language", "languages", "plugins", "mimeTypes", "userActivation", "permissions"]) R("navigator", navigator, k);
+  R("window", window, "parent");
+  R("window", window, "screen");
+  for (const k of ["width", "height", "availWidth", "availHeight", "availLeft", "availTop"]) R("screen", screen, k);
+  T("location.ancestorOrigins", () => [where(location, "ancestorOrigins"), tag(location.ancestorOrigins), location.ancestorOrigins && location.ancestorOrigins.length]);
+  for (const k of ["devicePixelRatio", "history", "menubar", "toolbar", "locationbar", "statusbar", "isSecureContext", "opener", "outerWidth", "outerHeight", "innerWidth", "innerHeight"]) R("window", window, k);
+  T("bars", () => ["menubar", "toolbar", "locationbar", "statusbar"].map(k => window[k] && [tag(window[k]), window[k].visible, where(window[k], "visible")]));
+  R("history", history, "length");
+  R("document", document, "defaultView");
+  R("document", document, "documentElement");
+  R("document", document, "URL");
+  T("documentElement webdriver attribute", () => document.documentElement.hasAttribute("webdriver"));
+  T("plugins", () => Array.from({ length: navigator.plugins.length }, (_, i) => [tag(navigator.plugins[i]), navigator.plugins[i].name, navigator.plugins[i].description, where(navigator.plugins[i], "name")]));
+  T("userActivation", () => navigator.userActivation && [tag(navigator.userActivation), navigator.userActivation.hasBeenActive, navigator.userActivation.isActive, where(navigator.userActivation, "isActive")]);
+  T("hasFocus", () => [where(document, "hasFocus"), document.hasFocus()]);
+  T("scripts", () => { const c = document.getElementsByTagName("script"); return [tag(c), c.length, c[0].src, where(c[0], "src")]; });
+
+  // brand checks
+  for (const [i, k] of [["Navigator", "plugins"], ["Navigator", "mimeTypes"], ["Navigator", "userAgent"]]) {
+    T("brand " + i + "." + k, () => { const d = Object.getOwnPropertyDescriptor(window[i].prototype, k); return d ? [typeof d.get, d.get.call({})] : "no descriptor"; });
+  }
+  T("brand HTMLMediaElement.canPlayType", () => HTMLMediaElement.prototype.canPlayType.call({}, "audio/x-m4a"));
+  T("iframe own descriptors", () => [Object.getOwnPropertyDescriptor(f, "srcdoc"), Object.getOwnPropertyDescriptor(f, "contentWindow"), where(f, "srcdoc")]);
+  T("srcdoc TrustedHTML", () => { f.srcdoc = trustedTypes.emptyHTML; return f.getAttribute("srcdoc"); });
+
+  // canvas, media queries, timing, observers, permissions
+  T("webgl", () => { const c = document.createElement("canvas"); const g = c.getContext("webgl") || c.getContext("experimental-webgl"); return g ? [tag(g), typeof g.getParameter(7937), typeof g.getParameter(7936)] : null; });
+  T("matchMedia any-pointer", () => { const m = matchMedia("(any-pointer:fine)"); return [tag(m), m.matches, where(m, "matches")]; });
+  T("navigation timing", () => { const n = performance.getEntriesByType("navigation"); return [n.length, n[0] && tag(n[0]), n[0] && ["responseStart", "requestStart", "connectEnd", "connectStart", "domainLookupEnd", "domainLookupStart"].map(k => [k, typeof n[0][k], where(n[0], k)])]; });
+  T("IntersectionObserver", () => { const o = new IntersectionObserver(() => {}); return [tag(o), where(o, "observe")]; });
+  T("anchor click", () => { const a = document.createElement("a"); let n = 0; a.onclick = e => { n++; e.preventDefault(); return false; }; a.click(); return [n, where(a, "onclick")]; });
+  T("permissions.query", () => [tag(navigator.permissions), typeof navigator.permissions.query]);
+})();
+</script></body></html>

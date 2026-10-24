@@ -1,0 +1,103 @@
+<!doctype html>
+<!-- Trusted Types enforced by a CSP against release Firefox: bench/compare_bridge.py
+     trusted-types-enforced (GAPS B91). The page's CSP (a <meta>, as the case server sends no headers)
+     requires Trusted objects at the script sinks and allows three policy names. Gecko:
+     TrustedTypeUtils.cpp GetTrustedTypesCompliantString (a sink type mismatch: the default policy, else
+     a violation and a TypeError), TrustedTypePolicyFactory::CreatePolicy (a name the CSP does not
+     allow). The Gmail, Google Docs and YouTube pages are served with require-trusted-types-for. -->
+<html><head><title>trusted-types-enforced</title><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="require-trusted-types-for 'script'; trusted-types one two default">
+</head><body>
+<div id="out"></div>
+<iframe id="frame"></iframe>
+<script>
+  window.__log = [];
+  const log = (...a) => window.__log.push(a.join(" "));
+  const tryIt = (what, f) => { try { const v = f(); log(what, "=", v === undefined ? "undefined" : String(v)); } catch (e) { log(what, "threw", e.name, e.message); } };
+  const violations = [];
+  document.addEventListener("securitypolicyviolation", e => {
+    violations.push([e.effectiveDirective, e.violatedDirective, e.blockedURI, e.disposition, JSON.stringify(e.sample), e.target === document,
+                     e.bubbles, e.composed, e.cancelable, e.isTrusted].join(" "));
+  });
+  // the violation events are dispatched in a task after the sink (Gecko's CSP queues them)
+  const flushViolations = what => new Promise(r => setTimeout(() => { log(what, "violations", violations.length ? violations.join(" | ") : "none"); violations.length = 0; r(); }, 0));
+
+  (async () => {
+    const one = trustedTypes.createPolicy("one", {
+      createHTML: s => s, createScript: s => s, createScriptURL: s => s,
+    });
+    log("one", one.name);
+    tryIt("two", () => trustedTypes.createPolicy("two", {}).name);
+    tryIt("one again", () => trustedTypes.createPolicy("one", {}).name);
+    tryIt("three", () => trustedTypes.createPolicy("three", {}).name);
+    await flushViolations("policies");
+
+    const out = document.getElementById("out");
+    tryIt("innerHTML string", () => { out.innerHTML = "<b>s</b>"; return out.innerHTML; });
+    tryIt("innerHTML trusted", () => { out.innerHTML = one.createHTML("<b>t</b>"); return out.innerHTML; });
+    tryIt("outerHTML string", () => { out.firstChild.outerHTML = "<i>o</i>"; return out.innerHTML; });
+    tryIt("insertAdjacentHTML string", () => { out.insertAdjacentHTML("beforeend", "<u>a</u>"); return out.innerHTML; });
+    tryIt("insertAdjacentText string", () => { out.insertAdjacentText("beforeend", "text"); return out.textContent; });
+    tryIt("textContent of a div", () => { out.textContent = "plain"; return out.textContent; });
+    tryIt("DOMParser string", () => new DOMParser().parseFromString("<p>x</p>", "text/html").body.innerHTML);
+    tryIt("createContextualFragment string", () => document.createRange().createContextualFragment("<p>y</p>").childNodes.length);
+    tryIt("srcdoc string", () => { document.getElementById("frame").srcdoc = "<p>z</p>"; return "set"; });
+    tryIt("setAttribute srcdoc string", () => { document.getElementById("frame").setAttribute("srcdoc", "<p>z</p>"); return "set"; });
+    tryIt("setAttribute onclick string", () => { out.setAttribute("onclick", "1"); return out.getAttribute("onclick"); });
+    tryIt("setAttribute title string", () => { out.setAttribute("title", "fine"); return out.getAttribute("title"); });
+    await flushViolations("html sinks");
+
+    const s = document.createElement("script");
+    tryIt("script text string", () => { s.text = "1"; return s.text; });
+    tryIt("script textContent string", () => { s.textContent = "2"; return s.textContent; });
+    tryIt("script innerText string", () => { s.innerText = "3"; return s.textContent; });
+    tryIt("script src string", () => { s.src = "x.js"; return s.getAttribute("src"); });
+    tryIt("script setAttribute src string", () => { s.setAttribute("src", "y.js"); return s.getAttribute("src"); });
+    tryIt("script src trusted", () => { s.src = one.createScriptURL("z.js"); return s.getAttribute("src"); });
+    tryIt("script text trusted", () => { s.text = one.createScript("4"); return s.text; });
+    tryIt("eval string", () => eval("6 * 7"));
+    tryIt("eval trusted", () => eval(one.createScript("6 * 8")));
+    tryIt("Function string", () => new Function("return 1")());
+    tryIt("setTimeout string", () => (setTimeout("window.__t1 = 1", 0), "queued"));
+    tryIt("Worker string", () => (new Worker("nothing.js"), "made"));
+    tryIt("Worker trusted", () => (new Worker(one.createScriptURL("data:text/javascript,")), "made"));
+    await flushViolations("script sinks");
+
+    // a default policy: the sinks' strings go through it with the type and the sink's name
+    const calls = [];
+    trustedTypes.createPolicy("default", {
+      createHTML: (v, type, sink) => { calls.push(["html", v, type, sink].join(",")); return v === "refuse" ? null : v.toUpperCase(); },
+      createScript: (v, type, sink) => { calls.push(["script", v, type, sink].join(",")); return v; },
+      createScriptURL: (v, type, sink) => { calls.push(["url", v, type, sink].join(",")); return v + "?checked"; },
+    });
+    tryIt("default innerHTML", () => { out.innerHTML = "<b>d</b>"; return out.innerHTML; });
+    tryIt("default refused", () => { out.innerHTML = "refuse"; return out.innerHTML; });
+    tryIt("default script src", () => { s.src = "d.js"; return s.getAttribute("src"); });
+    tryIt("default script text", () => { s.text = "5"; return s.text; });
+    tryIt("default eval", () => eval("2 + 3"));
+    tryIt("default DOMParser", () => new DOMParser().parseFromString("<p>q</p>", "text/html").body.innerHTML);
+    log("default calls", calls.join(" | "));
+    await flushViolations("default policy");
+
+    // a frame made by script: its initial about:blank document, and after document.open
+    const f2 = document.createElement("iframe");
+    document.body.appendChild(f2);
+    const fw = f2.contentWindow, fd = f2.contentDocument;
+    tryIt("frame innerHTML", () => { fd.body.innerHTML = "<b>i</b>"; return fd.body.innerHTML; });
+    tryIt("frame eval", () => fw.eval("1 + 1"));
+    tryIt("frame policy name", () => fw.trustedTypes.createPolicy("four", {}).name);
+    tryIt("frame write", () => { fd.open(); fd.write("<body>w</body>"); fd.close(); return fd.body.innerHTML; });
+    tryIt("frame write trusted", () => { fd.open(); fd.write(one.createHTML("<body>t</body>")); fd.close(); return fd.body.innerHTML; });
+    tryIt("frame write two trusted", () => { fd.open(); fd.write(one.createHTML("<body>a"), one.createHTML("b</body>")); fd.close(); return fd.body.innerHTML; });
+    tryIt("frame innerHTML after open", () => { fd.body.innerHTML = "<b>j</b>"; return fd.body.innerHTML; });
+    tryIt("frame setTimeout", () => (fw.setTimeout("1", 0), "queued"));
+    await flushViolations("frame");
+
+    // an element of another document: its owner document's CSP (none) applies
+    const other = document.implementation.createHTMLDocument("");
+    tryIt("other document innerHTML", () => { const d = other.createElement("div"); d.innerHTML = "<b>o</b>"; return d.innerHTML; });
+    log("timer", window.__t1);
+    await flushViolations("end");
+    log("done");
+  })();
+</script></body></html>
