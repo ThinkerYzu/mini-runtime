@@ -58,6 +58,17 @@ API_PROCESS=all FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python \
 
 Runtime tests require compatible binaries; they do not rebuild them automatically. Browser tests use Firefox only as the test driver and viewer. The standalone service itself still starts no Firefox or privileged bridge. A successful process exit is not sufficient for acceptance of a site flow; check its visible outcome as well.
 
+## Automatic source setup acceptance
+
+```sh
+python3 tools/engine/test_build.py
+python3 tools/build.py --fetch-only
+python3 tools/build.py --fetch-only  # verify cache reuse, no new fetch
+python3 tools/build.py --jobs 8
+```
+
+The lifecycle suite uses disposable local Git repositories. The live acquisition/build check uses the official repository and exact revision in tools/engine/source.json. Verify that the checkout is clean at that revision, only the JS project is built, and source/object/optional SDK reuse works without switching user checkouts. Setup may fetch the pinned cbindgen helper into its own cache if absent. It installs no OS packages. Run the standard standalone and viewer suites against the resulting binaries. The optional SDK-only namespace acceptance below checks a different path that has no source tree at all.
+
 ## SDK build acceptance
 
 ```sh

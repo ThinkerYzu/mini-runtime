@@ -1,10 +1,10 @@
 # Build without a Firefox source checkout: SDK contract
 
-**Status:** SDK tooling and the consumer build are implemented. A matching local SDK can build the standalone HTTP viewer with no Firefox tree. No SDK download or prebuilt application release is published yet. The initial local engine artifact retains producer diagnostic paths and is not publication-ready.
+**Status:** the default consumer setup now acquires pinned Mozilla source and builds the engine locally; a separately downloaded SDK is optional. SDK tooling and the SDK consumer build are implemented. A matching local SDK can build the standalone HTTP viewer with no Firefox tree. No SDK download or prebuilt application release is published yet. The initial local engine artifact retains producer diagnostic paths and is not publication-ready.
 
 ## Goal and scope
 
-Clone this repository, obtain its pinned SDK, build realsite and mrt-api, record a browser environment with an installed Firefox, then run the standalone HTTP viewer. Consumer inputs are this source, the SDK, locked public Rust dependencies and declared system libraries. Maintainers use compatible Firefox source to produce the SDK. SpiderMonkey remains the JavaScript engine.
+For the optional SDK path, clone this repository, obtain its pinned SDK, build realsite and mrt-api, record a browser environment with an installed Firefox, then run the standalone HTTP viewer. Consumer inputs are this source, the SDK, locked public Rust dependencies and declared system libraries. Maintainers use compatible Firefox source to produce the SDK. SpiderMonkey remains the JavaScript engine.
 
 Version 1 supports native Linux x86_64, glibc and GNU libstdc++ ABI. Android, cross builds and arbitrary system libmozjs versions are outside this SDK. A prebuilt application bundle is a separate deliverable.
 
@@ -12,7 +12,7 @@ Version 1 supports native Linux x86_64, glibc and GNU libstdc++ ABI. Android, cr
 
 | Input | Implementation |
 |---|---|
-| Engine | Shared libmozjs-154a1.so, public Firefox revision a8d334e3bde6e6572e3d162db5202def666e6206, standalone optimized non-debug/non-jemalloc configuration. |
+| Engine | Shared libmozjs-154a1.so, legacy local producer checkout a8d334e3bde6e6572e3d162db5202def666e6206 on public base 2839629039f3c910952215d88e1a3565d9dcda29, standalone optimized non-debug/non-jemalloc configuration. |
 | Engine headers | Complete dereferenced dist/include closure plus js-confdefs.h, tied to the library by the pinned manifest. Both JS glue and the vendored HTML parser consume them. |
 | Compression | Exact public libz-rs-sys/zlib-rs 0.6.8 dependencies, retaining the upstream Raptor Lake workaround. Vendored zlib/zconf/mozzconf headers preserve MOZ_Z_ symbol names. See [provenance and upstream checksums](../vendor/zlib-PROVENANCE.md). |
 | Other Rust inputs | Locked registry crates and mrt-api's exact public mp4parse Git revision, including its submodules. No Firefox-tree Cargo paths remain. |
@@ -40,7 +40,7 @@ share/licenses/
   provenance.json
 ```
 
-The schema-1 manifest binds public engine revision, version, patches, configure options, compiler version, target, ABI symbol-version requirements, system-library SONAMEs and every file's checksum. It contains no local source/object paths. The producer dereferences exported header links, rejects an unexpected engine SONAME or embedded loader path, and checks source/configuration compatibility. v1 forbids all SDK symlinks, including internal links, by storing the SONAME library as a regular file.
+The schema-1 manifest binds the recorded producer revision, version, patches, configure options, compiler version, target, ABI symbol-version requirements, system-library SONAMEs and every file's checksum. It contains no local source/object paths. The producer dereferences exported header links, rejects an unexpected engine SONAME or embedded loader path, and checks source/configuration compatibility. v1 forbids all SDK symlinks, including internal links, by storing the SONAME library as a regular file.
 
 Validation checks the pinned manifest before accepting its inventory. Missing, additional or modified contents fail. The installer checks a separately reviewed archive digest before extracting; absolute/traversing paths, links, special files and duplicates fail. Extraction happens in a temporary staging directory and is installed only after validation.
 
@@ -54,7 +54,7 @@ The viewer is displayed by an ordinary browser, whose media codecs and policies 
 
 ## Maintainer production
 
-See [source build setup](build.md#maintainer-source-build-alternative). For the already pinned object build:
+See [source build setup](build.md#maintainer-source-build-alternative). For the already pinned legacy object build (reproducing this pin requires the original producer checkout; fresh public-source builds should use tools/build.py instead):
 
 ```sh
 python3 tools/sdk/sdk.py produce \
@@ -65,7 +65,7 @@ python3 tools/sdk/sdk.py pack /path/to/new-sdk /path/to/new-sdk.tar
 
 Produce verifies the existing pin by default. When deliberately introducing another reviewed producer build, use `--lock-output /path/to/candidate.lock.json`. It refuses to overwrite existing SDK/lock outputs. Review the candidate metadata, provenance, license inventory and content changes before updating the application pin. Two runs against the current engine outputs produced the identical pinned manifest. The tar packer normalizes ownership, timestamps, ordering and modes for deterministic archive bytes.
 
-The current pin describes an existing development engine build. Its metadata is public, but libmozjs contains diagnostic source paths and debug information from that producer. Keep this candidate local. A future controlled producer should build in a neutral directory, remap C++ and Rust source/debug paths, retain exact corresponding source/build inputs, and strip only appropriate debug sections before generating and reviewing a new pin. Rebuilding the engine can change bytes and therefore requires an explicit pin update.
+The current SDK pin describes an existing development engine build. Its recorded producer revision contains two local Gecko-only commits and cannot be fetched from Mozilla; the public source bootstrap uses the pinned public ancestor instead. Correct the legacy candidate source URL/provenance as part of the controlled binary release, without treating the local producer hash as downloadable. Its metadata is public, but libmozjs contains diagnostic source paths and debug information from that producer. Keep this candidate local. A future controlled producer should build in a neutral directory, remap C++ and Rust source/debug paths, retain exact corresponding source/build inputs, and strip only appropriate debug sections before generating and reviewing a new pin. Rebuilding the engine can change bytes and therefore requires an explicit pin update.
 
 ## First-run environment recording
 

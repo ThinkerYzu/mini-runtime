@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/mozilla-firefox/firefox.git",
+  "revision": "2839629039f3c910952215d88e1a3565d9dcda29",
+  "engine_version": "154.0a1",
+  "soname": "libmozjs-154a1.so",
+  "build_tools": {
+    "cbindgen": "0.29.4"
+  }
+}

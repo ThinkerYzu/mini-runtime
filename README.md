@@ -20,23 +20,30 @@ Loading another document creates a new runtime for that document. Closing the vi
 
 ## Quick start
 
-The SDK consumer build targets Linux x86_64 with glibc and the GNU C++ ABI. You need Python 3, Rust 1.93.0, a C++20 compiler, Fontconfig/fonts, Brotli development libraries, EGL/OpenGL ES development libraries, and the pinned engine SDK. **No public SDK download is published yet**; obtain the matching archive from a maintainer. The consumer build requires no Firefox source checkout. An installed Firefox executable is used for one-time environment recording; an ordinary browser displays the viewer.
+The default build targets Linux x86_64. Install Rust, a current Clang/C++20 toolchain, Python 3, Git, make/ar/pkg-config, Brotli development libraries, EGL/OpenGL ES development libraries, Fontconfig and fonts. The setup command fetches a pinned Mozilla source checkout when you do not supply one, then builds only SpiderMonkey and the two runtime binaries. The first run needs internet access, several gigabytes of disk space and time to compile the engine. Later runs reuse the cached source and incremental build.
 
-[Build setup](docs/build.md) covers SDK installation/integrity checks, native prerequisites, and the explicit maintainer source-build alternative.
+An installed Firefox executable is used once for browser environment recording; an ordinary browser displays the viewer. No separately downloaded SDK is required. [Build setup](docs/build.md) covers prerequisites, source/cache controls and the optional SDK path.
 
 ### 1. Build the two binaries
 
-After [installing the SDK](docs/build.md#install-and-select-the-sdk), run from this repository's root:
+From this repository's root:
 
 ```sh
 export MINI_RUNTIME="$PWD"
-export MRT_SDK_DIR=/absolute/path/to/mrt-sdk
-export CXX=/usr/bin/c++
-(cd mrt-js && cargo build --release --locked --bin realsite)
-(cd mrt-api && cargo build --release --locked)
+python3 tools/build.py
 ```
 
-Run Cargo inside mrt-js so it reads that crate's checked-in compression prefix configuration. No manifest editing or private Cargo settings are needed. The runtime automatically stages its matching engine in `mrt-js/target/release/lib/`; keep that directory with realsite when relocating it. The API binary is `mrt-api/target/release/mrt-api`.
+The source revision and official Mozilla repository are pinned in `tools/engine/source.json`. Source and engine objects are cached under `${XDG_CACHE_HOME:-$HOME/.cache}/mini-runtime/spidermonkey/`. The script never switches, cleans or overwrites an existing user checkout, and does not install system packages.
+
+To reuse source or engine outputs you already have:
+
+```sh
+python3 tools/build.py --source /path/to/clean/pinned/mozilla-checkout
+# Or skip the engine build if you already built compatible SpiderMonkey:
+python3 tools/build.py --objdir /path/to/obj-js
+```
+
+Use `--fetch-only` to download source without compiling, `--cache DIRECTORY` to select storage and `--jobs N` to limit build parallelism. Outputs are `mrt-js/target/release/realsite` and `mrt-api/target/release/mrt-api`. Source-mode binaries load the cached engine, so retain its object directory. If you already have the optional binary SDK, `python3 tools/build.py --sdk /path/to/sdk` skips source acquisition and engine compilation. There is no public SDK download yet.
 
 ### 2. Serve the included demo
 

@@ -10,7 +10,7 @@ Keep browser profiles, cookies, access tokens, login data, page captures, screen
 
 ## Configurable inputs
 
-- Consumer builds select `MRT_SDK_DIR`; source builds explicitly select `MRT_ENGINE_SOURCE=1` and `MRT_JS_OBJDIR`. No Cargo manifest paths refer to Firefox. SDK artifacts remain separate from the source repository.
+- The default `tools/build.py` setup fetches public Mozilla source at the pinned revision into its cache. Optional SDK consumer builds select `MRT_SDK_DIR`; source builds explicitly select `MRT_ENGINE_SOURCE=1` and `MRT_JS_OBJDIR`. No Cargo manifest paths refer to Firefox. SDK artifacts remain separate from the source repository.
 - Set `FIREFOX_BIN` for browser recording and comparison tools.
 - Set `GDOC_URL` to your own document when selecting the optional Google Docs benchmark. There is no embedded personal document URL.
 - Android experiments need an external harness selected with `MRT_PHONE_SUPPORT`; that harness is not included or needed for the standalone HTTP viewer.

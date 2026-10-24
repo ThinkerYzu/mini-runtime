@@ -1,19 +1,44 @@
 # Build and initial setup
 
-Consumer builds use a pinned engine SDK and this source repository. They do not need a Firefox source checkout. The initial SDK target is native Linux x86_64 with glibc and the GNU C++ ABI. SDK production is a maintainer step; **no public SDK download is published yet**. Obtain the matching local SDK from its producer, or use the explicit source-build alternative below.
+The default command downloads the pinned Mozilla source checkout when absent, builds SpiderMonkey locally, then builds the standalone viewer binaries. A separate SDK download is optional. The initial target is native Linux x86_64 with glibc and the GNU C++ ABI. This builds the JS engine, not Firefox's browser application.
+
+## Automatic source checkout and build
+
+From the repository root:
+
+```sh
+python3 tools/build.py
+```
+
+[tools/engine/source.json](../tools/engine/source.json) pins Mozilla's repository and exact public commit `2839629039f3c910952215d88e1a3565d9dcda29`, compatible with the current SpiderMonkey 154 glue. Setup uses a shallow Git fetch and checks out that exact commit. It includes Mozilla's shared build dependencies outside js/, so the source download still contains more than SpiderMonkey's engine directory. No repository history or browser binary is built.
+
+Source and engine outputs are stored under `${XDG_CACHE_HOME:-$HOME/.cache}/mini-runtime/spidermonkey/<revision>/`. Expect several gigabytes of source/build storage and a substantial initial engine compile. The command rechecks existing source and runs an incremental build on later invocations. Partial downloads are staged and never installed as a usable checkout. A modified or wrong-revision checkout is refused rather than switched or cleaned.
+
+```sh
+python3 tools/build.py --fetch-only             # acquire source, no compilation
+python3 tools/build.py --jobs 4                 # limit engine compilation concurrency
+python3 tools/build.py --cache /path/to/cache   # choose persistent storage
+python3 tools/build.py --source /path/to/source # existing clean checkout at the pinned revision
+python3 tools/build.py --objdir /path/to/obj-js # compatible engine already built
+python3 tools/build.py --sdk /path/to/sdk       # optional SDK, no source download or engine compile
+```
+
+The source build uses a generated mozconfig outside the source tree, with an explicit object directory, an optimized non-debug shared engine and Mozilla's automatic toolchain bootstrap disabled. It uses declared Clang/Rust/system tools, never installs OS packages, and reports missing prerequisites. If no compatible cbindgen is supplied through CBINDGEN or PATH, it installs pinned cbindgen0.29.4 with Cargo into the cache, then reuses it. No global Cargo tool installation is modified. `CC`/`CXX` can select explicit compilers. Run setup under the Python interpreter you want mach to use. Existing running viewer services are not restarted.
+
+After the engine build, the command selects the existing `MRT_ENGINE_SOURCE=1` integration and invokes Cargo with its lockfiles from the correct crate directories. Source-mode binaries load the shared engine from that cached object directory; retain it while using them. The optional SDK mode retains its relocatable staged lib/ behavior described below. Neither mode needs manifest editing or private Cargo configuration.
 
 ## Native prerequisites
 
-- Rust 1.93.0 (tested), Cargo, a C++20 compiler with GNU libstdc++ ABI (tested with GCC 15.2), `ar`, and Python 3.
+- Rust 1.93.0 (tested), Cargo, a current Clang C++20 compiler with GNU libstdc++ ABI for the engine build, Git, make, ar, pkg-config and Python 3 with venv support. SDK-only consumer compilation also works with GCC 15.2. Mozilla may require additional compiler/linker development tools; missing prerequisites fail explicitly.
 - Brotli development headers/libraries (`brotlienc`, `brotlidec`), EGL/OpenGL ES development libraries (`libEGL`, `libGLESv2`), Fontconfig and fonts. Mesa llvmpipe is the tested software renderer.
 - Engine runtime requirements are recorded in `sdk.json`: glibc >= 2.18, GLIBCXX >= 3.4.21, CXXABI >= 1.3, and the listed system SONAMEs. The application and other system libraries may require newer versions. Clean consumer acceptance was run on Ubuntu 26.04; the manual CI job targets Ubuntu 24.04.
 - An installed Firefox executable for one-time environment recording and optional viewer tests. Xvfb is useful without a display. Neither recording nor viewing requires browser source.
 
-Typical Debian/Ubuntu development packages: `build-essential python3 python3-venv libbrotli-dev libegl1-mesa-dev libgles2-mesa-dev fontconfig fonts-dejavu-core xvfb`. Rust is installed separately. Clean isolation tests additionally use `bubblewrap` and `binutils`.
+Typical Debian/Ubuntu development packages: `build-essential clang lld llvm python3 python3-venv git pkg-config libbrotli-dev libegl1-mesa-dev libgles2-mesa-dev fontconfig fonts-dejavu-core xvfb`. Rust is installed separately. Clean isolation tests additionally use `bubblewrap` and `binutils`.
 
 ## Install and select the SDK
 
-The SDK identity, engine revision and manifest SHA-256 are pinned in [sdk.lock.json](../tools/sdk/sdk.lock.json). A manifest binds every header, shared library and notice to a content checksum. Do not substitute arbitrary system libmozjs packages.
+**Optional:** no public binary SDK download is published yet. Use automatic source setup above unless you already have a compatible archive. The SDK identity, producer revision and manifest SHA-256 are pinned in [sdk.lock.json](../tools/sdk/sdk.lock.json). A manifest binds every header, shared library and notice to a content checksum. Do not substitute arbitrary system libmozjs packages.
 
 From the repository root, install a producer-supplied archive using its reviewed SHA-256:
 
@@ -66,7 +91,7 @@ Continue with [the demo](../README.md#2-serve-the-included-demo).
 
 ## Maintainer source-build alternative
 
-A producer needs the compatible Firefox revision and a standalone shared SpiderMonkey build. The pinned engine source is `a8d334e3bde6e6572e3d162db5202def666e6206`; layout/HarfBuzz provenance files describe other translated components, not engine compatibility. The configuration is:
+A producer needs the compatible Firefox revision and a standalone shared SpiderMonkey build. The downloadable engine source is pinned to public Mozilla revision `2839629039f3c910952215d88e1a3565d9dcda29`. The existing local SDK records producer checkout `a8d334e3bde6e6572e3d162db5202def666e6206`, which includes two local Gecko-only commits on that base; that commit must not be used for automatic downloads. Layout/HarfBuzz provenance files describe other translated components, not engine compatibility. The configuration is:
 
 ```sh
 ac_add_options --enable-project=js

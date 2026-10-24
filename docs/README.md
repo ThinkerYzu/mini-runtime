@@ -6,7 +6,7 @@ Start with the [project README](../README.md) for an introduction and a local st
 |---|---|
 | [Publication hygiene](publication.md) | Local recordings, source allowlist, credential checks and retained attribution. |
 | [SDK contract and release checks](sdk-build-plan.md) | Source-independent consumer builds, local SDK production, integrity and acceptance. |
-| [Build setup](build.md) | Native prerequisites, SpiderMonkey, browser environment recordings and build troubleshooting. |
+| [Build setup](build.md) | Automatic pinned source setup, optional SDKs, prerequisites, browser recording and troubleshooting. |
 | [Viewer operation](viewer.md) | Standalone configuration, stores, navigation, replay limits and live-site behavior. |
 | [Architecture](architecture.md) | Runtime/API/viewer responsibilities, event ordering, navigation and hibernation. |
 | [Source layout](source-layout.md) | Crates, browser adapters, test fixtures and entry points for changes. |

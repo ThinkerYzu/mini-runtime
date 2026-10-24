@@ -963,7 +963,10 @@ parser/vendor/nsHtml5UTF16Buffer.cpp
 parser/vendor/nsHtml5UTF16Buffer.h
 parser/vendor/nsHtml5UTF16BufferCppSupplement.h
 parser/vendor/nsHtml5UTF16BufferHSupplement.h
+tools/build.py
 tools/check-publication.py
+tools/engine/source.json
+tools/engine/test_build.py
 tools/publication-files.txt
 tools/sdk/accept.py
 tools/sdk/build.rs
