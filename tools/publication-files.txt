@@ -292,6 +292,7 @@ docs/architecture.md
 docs/build.md
 docs/measurements.md
 docs/publication.md
+docs/sdk-build-plan.md
 docs/source-layout.md
 docs/testing.md
 docs/viewer.md

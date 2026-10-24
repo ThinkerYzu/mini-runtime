@@ -58,3 +58,7 @@ API_PROCESS=all FIREFOX_BIN=/path/to/firefox xvfb-run -a ./mach python \
 ```
 
 Runtime tests require compatible binaries; they do not rebuild them automatically. Browser tests use Firefox only as the test driver and viewer. The standalone service itself still starts no Firefox or privileged bridge. A successful process exit is not sufficient for acceptance of a site flow; check its visible outcome as well.
+
+## Planned SDK build acceptance
+
+The [SDK acceptance criteria](sdk-build-plan.md#acceptance-criteria) require building and running from a clean checkout without a Firefox source tree, private benchmark data, local Cargo configuration or existing build caches. They include malformed/mismatched SDK rejection, relocatable dynamic loading, compression parity and ordinary-Python environment recording. These checks are planned; passing today's source-based suites does not establish SDK-only support.

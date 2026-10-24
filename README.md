@@ -24,6 +24,8 @@ The current development environment is Linux. You need Python 3, a Rust toolchai
 
 If you do not have the Firefox engine build yet, follow [build setup](docs/build.md). That guide includes the engine build configuration, native dependency checks and solutions to common build failures. No separate project documentation is needed.
 
+A [planned SDK build](docs/sdk-build-plan.md) will remove the Firefox source-checkout requirement for consumers. It is not implemented yet; the current steps below still require the engine build and source dependencies.
+
 ### 1. Build the two binaries
 
 Run from this repository's root. Replace the Firefox source path with yours:

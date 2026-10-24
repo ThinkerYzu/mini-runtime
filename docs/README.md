@@ -5,6 +5,7 @@ Start with the [project README](../README.md) for an introduction and a local st
 | Guide | Read it for |
 |---|---|
 | [Publication hygiene](publication.md) | Local recordings, source allowlist, credential checks and retained attribution. |
+| [SDK build plan](sdk-build-plan.md) | Planned consumer build without a Firefox source checkout, with packaging and acceptance criteria. |
 | [Build setup](build.md) | Native prerequisites, SpiderMonkey, browser environment recordings and build troubleshooting. |
 | [Viewer operation](viewer.md) | Standalone configuration, stores, navigation, replay limits and live-site behavior. |
 | [Architecture](architecture.md) | Runtime/API/viewer responsibilities, event ordering, navigation and hibernation. |

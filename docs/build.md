@@ -2,6 +2,10 @@
 
 This guide prepares the binaries and environment recording used by the [README quick start](../README.md#quick-start). The supported development path described here is Linux with a compatible Firefox source checkout. The repository does not currently provide a portable installer or prebuilt runtime distribution.
 
+## Planned SDK alternative
+
+The [SDK build plan](sdk-build-plan.md) specifies a future consumer build without a Firefox source checkout, including versioned engine headers/libraries, source-independent compression dependencies, relocatable linkage and ordinary-Python environment recording. It is not available yet. Keep using the current source-build instructions below until the clean-environment acceptance checks pass.
+
 ## Native prerequisites
 
 Install these through your development environment or distribution:
