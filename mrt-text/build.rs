@@ -2,7 +2,7 @@
 // static library, by calling the C++ compiler directly (no `cc` crate: the parser build in
 // ../parser/build.sh works the same way). The defines are the ones in gfx/harfbuzz/src/moz.build,
 // except that HarfBuzz's own Unicode tables (hb-ucd.cc) are used instead of Firefox's intl component.
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
@@ -10,9 +10,7 @@ fn compiler() -> String {
     if let Ok(c) = std::env::var("CXX") {
         return c;
     }
-    let home = std::env::var("HOME").unwrap_or_default();
-    let moz = format!("{home}/.mozbuild/clang/bin/clang++");
-    if Path::new(&moz).exists() { moz } else { "c++".to_string() }
+    "c++".to_string()
 }
 
 fn main() {

@@ -1,31 +1,25 @@
-// Compiles glue/mrt_js.cpp against the SpiderMonkey headers of the Firefox tree's js build (obj-js)
-// and links the tree's shared libmozjs. The shared library, not libjs_static.a: the static archive
+// Compiles glue/mrt_js.cpp against the pinned SDK (or explicit maintainer source build)
+// and links its matching shared libmozjs. The shared library, not libjs_static.a: the static archive
 // carries SpiderMonkey's own Rust code with its own copy of the Rust standard library, which clashes
-// with ours in one binary. MRT_JS_OBJDIR overrides the objdir.
+// with ours in one binary. See docs/build.md for SDK selection.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "../tools/sdk/build.rs"]
+mod sdk;
+
 fn compiler() -> String {
-    if let Ok(c) = std::env::var("CXX") {
-        return c;
-    }
-    let home = std::env::var("HOME").unwrap_or_default();
-    let moz = format!("{home}/.mozbuild/clang/bin/clang++");
-    if Path::new(&moz).exists() { moz } else { "c++".to_string() }
+    std::env::var("CXX").unwrap_or_else(|_| "c++".to_string())
 }
 
 fn main() {
     let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let objdir = std::env::var("MRT_JS_OBJDIR").expect("set MRT_JS_OBJDIR to your Firefox SpiderMonkey object directory; see docs/build.md");
-    let include = Path::new(&objdir).join("dist/include");
-    let bin = Path::new(&objdir).join("dist/bin");
-    let lib = std::fs::read_dir(&bin)
-        .unwrap_or_else(|e| panic!("{}: {e} (build SpiderMonkey first, see IMPLEMENTATION-GUIDE)", bin.display()))
-        .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .find(|n| n.starts_with("libmozjs-") && n.ends_with(".so"))
-        .expect("no libmozjs-*.so in obj-js/dist/bin");
-    let libname = lib.trim_start_matches("lib").trim_end_matches(".so").to_string();
+    let engine = sdk::engine(&dir.join(".."));
+    let include = &engine.include;
+    let bin = &engine.lib;
+    let libname = &engine.name;
+    let objdir = std::env::var("MRT_JS_OBJDIR").unwrap_or_default();
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=glue/mrt_js.cpp");
@@ -46,11 +40,11 @@ fn main() {
         .args(&brotli_include)
         .arg("-isystem").arg(&include)
         // the defines the tree's own js build compiles with (XP_UNIX, XP_LINUX, ...)
-        .arg("-include").arg(Path::new(&objdir).join("js/src/js-confdefs.h"))
+        .arg("-include").arg(&engine.confdefs)
         .arg(format!("-I{}", dir.join("glue").display()))
         // the tree's zlib.h, whose zconf.h includes mozzconf.h: zlib's functions as libz-rs-sys's
         // MOZ_Z_ symbols, as Gecko's C++ calls them
-        .arg("-iquote").arg(Path::new(&objdir).join("../modules/zlib/src"))
+        .arg("-iquote").arg(dir.join("../vendor/zlib-headers"))
         .arg("-c").arg(dir.join("glue/mrt_js.cpp")).arg("-o").arg(&obj)
         .status()
         .expect("run the C++ compiler");
@@ -80,7 +74,19 @@ fn main() {
         }
         return;
     }
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", bin.display());
+    if engine.sdk {
+        // Binaries in release/ and tests in release/deps/ share a relocatable lib/ directory.
+        let profile = out.ancestors().nth(3).expect("Cargo profile directory");
+        let libs = profile.join("lib");
+        std::fs::create_dir_all(&libs).unwrap();
+        let soname = format!("lib{libname}.so");
+        let staged = out.join(&soname);
+        std::fs::copy(bin.join(&soname), &staged).expect("stage SDK engine library");
+        std::fs::rename(staged, libs.join(&soname)).expect("install SDK engine library atomically");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/lib:$ORIGIN/../lib");
+    } else {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", bin.display());
+    }
     println!("cargo:rustc-link-lib=dylib=stdc++");
     // CompressionStream's brotli (dom/compression); its zlib is libz-rs-sys, a dependency
     for lib in ["brotlienc", "brotlidec"] {

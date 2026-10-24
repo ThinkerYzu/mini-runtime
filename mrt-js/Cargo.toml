@@ -5,16 +5,15 @@ edition = "2024"
 build = "build.rs"
 
 # Stage 3: SpiderMonkey from the Firefox tree (obj-js) through a thin C++ layer (glue/), DOM bindings
-# over the arena DOM. No crates from crates.io: build.rs calls the compiler itself, as mrt-text's does.
+# over the arena DOM. build.rs calls the C++ compiler directly.
 # See README.md.
 [dependencies]
 mrt-layout = { path = "../mrt-layout" }
 mrt-style = { path = "../mrt-style" }
-# zlib as release Firefox has it (USE_LIBZ_RS, toolkit/library/rust/shared/Cargo.toml): the tree's
-# vendored zlib-rs with Firefox's features and symbol prefix (.cargo/config.toml), for
-# CompressionStream (GAPS D106)
-libz-rs-sys = { path = "../../firefox-source/third_party/rust/libz-rs-sys", features = ["custom-prefix"] }
-zlib-rs = { path = "../../firefox-source/third_party/rust/zlib-rs", features = ["avx512"] }
+# Public Rust compression crates, pinned and checked against Firefox's compression fixtures.
+# custom-prefix exports the existing MOZ_Z_ C ABI configured in .cargo/config.toml.
+libz-rs-sys = { version = "=0.6.8", features = ["custom-prefix"] }
+zlib-rs = { version = "=0.6.8", features = ["avx512"] }
 
 [profile.release]
 debug = false
@@ -29,4 +28,3 @@ harness = false
 [patch.crates-io]
 stylo = { path = "../vendor/stylo" }
 stylo_atoms = { path = "../vendor/stylo_atoms" }
-zlib-rs = { path = "../../firefox-source/third_party/rust/zlib-rs" }

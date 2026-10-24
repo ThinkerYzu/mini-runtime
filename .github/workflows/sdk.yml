@@ -1,0 +1,33 @@
+name: SDK consumer acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_url:
+        description: HTTPS URL of the reviewed SDK tar archive matching tools/sdk/sdk.lock.json
+        required: true
+      sdk_sha256:
+        description: Reviewed archive SHA-256 (manifest and all contents are independently pinned)
+        required: true
+jobs:
+  consumer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install declared system inputs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3 bubblewrap binutils pkg-config libbrotli-dev libegl1-mesa-dev libgles2-mesa-dev fontconfig fonts-dejavu-core
+          rustup toolchain install 1.93.0 --profile minimal
+      - name: Install the pinned SDK
+        env:
+          SDK_URL: ${{ inputs.sdk_url }}
+          SDK_SHA256: ${{ inputs.sdk_sha256 }}
+        run: |
+          curl --fail --location --proto '=https' --proto-redir '=https' --output "$RUNNER_TEMP/sdk.tar" "$SDK_URL"
+          python3 tools/sdk/sdk.py install "$RUNNER_TEMP/sdk.tar" --sha256 "$SDK_SHA256" --output "$RUNNER_TEMP/sdk"
+      - name: Build and test with no producer filesystem or network access
+        run: |
+          # Ubuntu's runner AppArmor policy otherwise blocks nested user namespaces.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          python3 tools/sdk/test_sdk.py
+          python3 tools/sdk/accept.py --sdk "$RUNNER_TEMP/sdk" --output "$RUNNER_TEMP/consumer" --toolchain "$(rustup run 1.93.0 rustc --print sysroot)"

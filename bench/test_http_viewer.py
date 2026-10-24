@@ -541,6 +541,10 @@ class Runtime(unittest.TestCase):
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("MRT_", "API_", "REALSITE", "REPLAY", "BRIDGE_", "MINI_"))
                and k not in ("VIEWER_HTTP", "VIEWER_MEDIA_REPLAY_UNLIMITED", "NO_FIREFOX", "INTERACTIVE", "INTERACTIVE_S", "RENDER", "HEAP_SCAN", "DISPLAY", "WAYLAND_DISPLAY")}
+        # Acceptance can select SDK-built/relocated binaries while all page/profile state stays isolated.
+        for key in ("REALSITE_BIN", "API_BIN"):
+            if os.environ.get(key):
+                env[key] = os.environ[key]
         env.update(VIEWER_HTTP="127.0.0.1:0", API_ENV=str(recording), FIREFOX_BIN="/nonexistent/firefox", ONLY="demo",
                    EXTRA_SITES=json.dumps({"demo": f"http://localhost:{self.server.server_port}/{page}"}),
                    REALSITES_PROFILE=str(self.root / "empty-profile"), MINI_OUT=str(self.root / "result.json"),
@@ -774,7 +778,7 @@ class Runtime(unittest.TestCase):
         self.assertFalse(result["unsupported_ops"])
         self.assertGreater(result["requests"]["mediaType"], 0)
 
-    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 under ./mach python to drive Firefox")
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_slow_fetch(self):
         from marionette_driver.marionette import Marionette
         import firefox_exit
@@ -815,7 +819,7 @@ class Runtime(unittest.TestCase):
         self.assertFalse(result["unsupported_ops"], result)
         self.assertEqual(result["bridge_tab"], {"made": False})
 
-    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 under ./mach python to drive Firefox")
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_document_input(self):
         from marionette_driver.marionette import Marionette
         import firefox_exit
@@ -852,7 +856,7 @@ class Runtime(unittest.TestCase):
         self.assertFalse(result["unsupported_ops"], result)
         self.assertEqual(result["bridge_tab"], {"made": False})
 
-    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 under ./mach python to drive Firefox")
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_editable(self):
         from marionette_driver.marionette import Marionette
         import firefox_exit
@@ -931,7 +935,7 @@ class Runtime(unittest.TestCase):
         self.assertFalse(result["unsupported_ops"],result)
         self.assertEqual(result["bridge_tab"],{"made":False})
 
-    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 under ./mach python to drive Firefox")
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_shadow_adopted(self):
         from marionette_driver.marionette import Marionette
         import firefox_exit
@@ -1000,7 +1004,7 @@ class Runtime(unittest.TestCase):
         self.assertFalse(result["unsupported_ops"], result)
         self.assertEqual(result["bridge_tab"], {"made": False})
 
-    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 under ./mach python to drive Firefox")
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser(self):
         from marionette_driver.marionette import Marionette
         import firefox_exit
@@ -1061,7 +1065,7 @@ class Runtime(unittest.TestCase):
         finally:
             firefox_exit.close(browser)
 
-    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 under ./mach python to drive Firefox")
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_webgl(self):
         from marionette_driver.marionette import Marionette
         import firefox_exit
@@ -1114,7 +1118,7 @@ class Runtime(unittest.TestCase):
         self.assertGreater(result["viewer"]["webgl_replays"], 0)
         self.assertFalse(result["unsupported_ops"])
 
-    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 under ./mach python to drive Firefox")
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_delayed_scroll(self):
         from marionette_driver.marionette import Marionette
         import firefox_exit
@@ -1207,7 +1211,7 @@ class Runtime(unittest.TestCase):
         self.assertEqual(self.media_get(videos["cookie"]["src"], "bytes=0-")[0], 409)
         self.assertEqual(len(self.media_requests), count)
 
-    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 under ./mach python to drive Firefox")
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_media_resources(self):
         """GAPS B172 in Firefox: the cookie-gated and runtime-Blob videos decode in the viewer and
         play; the CORS-refused audio errors, in the viewer and in the runtime; all survive reconnect."""
@@ -1245,7 +1249,7 @@ class Runtime(unittest.TestCase):
         finally:
             firefox_exit.close(browser)
 
-    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 under ./mach python to drive Firefox")
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_media(self):
         from marionette_driver.marionette import Marionette
         import firefox_exit
@@ -1519,7 +1523,7 @@ class Runtime(unittest.TestCase):
             else:
                 self.assertEqual(r["body"], "a=1\r\nb=x y\r\nz\r\nr=\r\ns=go\r\n")
 
-    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 under ./mach python to drive Firefox")
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_navigation(self):
         from marionette_driver.marionette import Marionette
         from marionette_driver.keys import Keys
@@ -1632,7 +1636,7 @@ class Runtime(unittest.TestCase):
         self.assertEqual(result["bridge_tab"], {"made": False})
         self.assertEqual(result["viewer"]["navigations"], 7, result["navigations"])
 
-    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 under ./mach python to drive Firefox")
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_navigation_controls(self):
         from marionette_driver.marionette import Marionette
         import firefox_exit

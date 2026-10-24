@@ -18,12 +18,11 @@ python3 bench/test_no_firefox.py
 python3 bench/test_http_viewer.py
 ```
 
-The standalone suite has 14 checks. The viewer suite has 35 cases: 24 run without a browser and 11 require `VIEWER_BROWSER=1`. The local fixtures create their own environment recordings and HTTP servers. To run all viewer cases, use a Firefox source tree's `mach python` with Marionette available:
+The standalone suite has 14 checks. The viewer suite has 35 cases: 24 run without a browser and 11 require `VIEWER_BROWSER=1`. The local fixtures create their own environment recordings and HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
 
 ```sh
-# Run from the Firefox source tree, using the absolute path to this checkout.
-VIEWER_BROWSER=1 FIREFOX_BIN=/path/to/firefox xvfb-run -a ./mach python \
-  /path/to/mini-runtime/bench/test_http_viewer.py
+VIEWER_BROWSER=1 FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python \
+  bench/test_http_viewer.py
 ```
 
 Append a test name to select a focused case:
@@ -50,15 +49,32 @@ Append a test name to select a focused case:
 (cd mrt-api && cargo test --release --offline)
 ```
 
-`bench/compare_bridge.py` compares individual API fixtures with Firefox. For example, from a Firefox source tree:
+`bench/compare_bridge.py` compares individual API fixtures with Firefox. For example, from this source repository:
 
 ```sh
-API_PROCESS=all FIREFOX_BIN=/path/to/firefox xvfb-run -a ./mach python \
-  /path/to/mini-runtime/bench/compare_bridge.py history fetch-bytes
+API_PROCESS=all FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python \
+  bench/compare_bridge.py history fetch-bytes compression
 ```
 
 Runtime tests require compatible binaries; they do not rebuild them automatically. Browser tests use Firefox only as the test driver and viewer. The standalone service itself still starts no Firefox or privileged bridge. A successful process exit is not sufficient for acceptance of a site flow; check its visible outcome as well.
 
-## Planned SDK build acceptance
+## SDK build acceptance
 
-The [SDK acceptance criteria](sdk-build-plan.md#acceptance-criteria) require building and running from a clean checkout without a Firefox source tree, private benchmark data, local Cargo configuration or existing build caches. They include malformed/mismatched SDK rejection, relocatable dynamic loading, compression parity and ordinary-Python environment recording. These checks are planned; passing today's source-based suites does not establish SDK-only support.
+```sh
+python3 tools/sdk/test_sdk.py
+python3 tools/sdk/accept.py --sdk /absolute/path/to/sdk \
+  --output /tmp/new-consumer-build --toolchain "$(rustc --print sysroot)"
+```
+
+The output directory must be absent. The acceptance runner copies only tracked source into a fresh directory, fetches locked public Rust inputs into a separate Cargo home, then uses bubblewrap to hide the producer filesystem, private Cargo configuration, recordings and all previous target caches. The namespace has only declared source/SDK/toolchain/system inputs and no network. It builds both release binaries, runs Rust, standalone and viewer protocol tests, then relocates the binaries and checks a standalone network flow with the SDK unmounted. The output remains for inspection. Linux user namespaces must be enabled.
+
+Run the complete real-browser suite against those built binaries too:
+
+```sh
+REALSITE_BIN=/tmp/new-consumer-build/relocated/realsite \
+  API_BIN=/tmp/new-consumer-build/relocated/mrt-api \
+  VIEWER_BROWSER=1 FIREFOX_BIN=/path/to/firefox \
+  xvfb-run -a .venv/bin/python bench/test_http_viewer.py
+```
+
+The manual [SDK acceptance workflow](../.github/workflows/sdk.yml) takes an explicit reviewed archive URL and digest; it does not select a newest release. The local full acceptance and ordinary-Python recording are separate checks from executing that remote workflow. SDK binary publication remains gated by [release checks](sdk-build-plan.md#release-checks).

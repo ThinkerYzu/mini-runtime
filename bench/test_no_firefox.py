@@ -97,6 +97,10 @@ console.log("WEBGL " + JSON.stringify([Array.from(px), gl.getShaderParameter(s, 
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("MRT_", "API_", "REALSITE", "REPLAY", "BRIDGE_", "MINI_"))
                and k not in ("INTERACTIVE", "INTERACTIVE_S", "RENDER", "HEAP_SCAN", "DISPLAY", "WAYLAND_DISPLAY")}
+        # Acceptance can select SDK-built/relocated binaries while all page/profile state stays isolated.
+        for key in ("REALSITE_BIN", "API_BIN"):
+            if os.environ.get(key):
+                env[key] = os.environ[key]
         env.update(NO_FIREFOX="1", FIREFOX_BIN="/nonexistent/firefox", API_ENV=str(self.recording),
                    REALSITES_PROFILE=str(self.root / "empty-profile"), ONLY=case,
                    EXTRA_SITES=json.dumps({case: url}), MINI_OUT=str(out), MINI_DIR=str(self.root / "logs"),

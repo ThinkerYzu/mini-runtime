@@ -10,7 +10,7 @@ Keep browser profiles, cookies, access tokens, login data, page captures, screen
 
 ## Configurable inputs
 
-- Set `FIREFOX_SRC`, `MRT_JS_OBJDIR` and `JS` for your engine checkout/build. The manifest's default sibling directory is `firefox-source`; README setup shows how to change it.
+- Consumer builds select `MRT_SDK_DIR`; source builds explicitly select `MRT_ENGINE_SOURCE=1` and `MRT_JS_OBJDIR`. No Cargo manifest paths refer to Firefox. SDK artifacts remain separate from the source repository.
 - Set `FIREFOX_BIN` for browser recording and comparison tools.
 - Set `GDOC_URL` to your own document when selecting the optional Google Docs benchmark. There is no embedded personal document URL.
 - Android experiments need an external harness selected with `MRT_PHONE_SUPPORT`; that harness is not included or needed for the standalone HTTP viewer.
@@ -35,3 +35,7 @@ Existing third-party license and copyright notices are retained, including Firef
 ## Initial snapshot validation
 
 The sanitized source built both release binaries with a compatible engine. Validation passed: 35 HTTP viewer tests (including 11 Firefox 157 browser cases), 14 standalone tests, four isolated recorded-data policy tests, and 26 API unit tests with one fixture-dependent test ignored by default. Temporary build outputs and test captures were removed from the publication directory afterwards. Credential scans used Gitleaks 8.30.1 with redacted reports kept outside this repository.
+
+## SDK artifacts
+
+SDK manifests record only public provenance, toolchain versions, target/ABI requirements and content hashes. Engine/header/license inventories are pinned independently of archive transport. Keep personal environment recordings and profiles out of SDKs and source commits. See [production and release gates](sdk-build-plan.md#release-checks). The current local SDK is not a public release: the existing producer engine includes source-path diagnostic strings. A controlled build with remapped paths and an updated reviewed pin is required before binary publication.

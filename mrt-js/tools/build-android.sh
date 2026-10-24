@@ -3,6 +3,7 @@
 # which runs next to obj-js-android's libmozjs. Needs SpiderMonkey built for Android first
 # (a SpiderMonkey Android build) and the NDK mach bootstraps (r29).
 set -e
+export MRT_ENGINE_SOURCE=1
 cd "$(dirname "$0")/.."
 NDK=${NDK:-$HOME/.mozbuild/android-ndk-r29}
 API=${API:-34}

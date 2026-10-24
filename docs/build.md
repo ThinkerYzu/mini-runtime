@@ -1,121 +1,108 @@
 # Build and initial setup
 
-This guide prepares the binaries and environment recording used by the [README quick start](../README.md#quick-start). The supported development path described here is Linux with a compatible Firefox source checkout. The repository does not currently provide a portable installer or prebuilt runtime distribution.
-
-## Planned SDK alternative
-
-The [SDK build plan](sdk-build-plan.md) specifies a future consumer build without a Firefox source checkout, including versioned engine headers/libraries, source-independent compression dependencies, relocatable linkage and ordinary-Python environment recording. It is not available yet. Keep using the current source-build instructions below until the clean-environment acceptance checks pass.
+Consumer builds use a pinned engine SDK and this source repository. They do not need a Firefox source checkout. The initial SDK target is native Linux x86_64 with glibc and the GNU C++ ABI. SDK production is a maintainer step; **no public SDK download is published yet**. Obtain the matching local SDK from its producer, or use the explicit source-build alternative below.
 
 ## Native prerequisites
 
-Install these through your development environment or distribution:
+- Rust 1.93.0 (tested), Cargo, a C++20 compiler with GNU libstdc++ ABI (tested with GCC 15.2), `ar`, and Python 3.
+- Brotli development headers/libraries (`brotlienc`, `brotlidec`), EGL/OpenGL ES development libraries (`libEGL`, `libGLESv2`), Fontconfig and fonts. Mesa llvmpipe is the tested software renderer.
+- Engine runtime requirements are recorded in `sdk.json`: glibc >= 2.18, GLIBCXX >= 3.4.21, CXXABI >= 1.3, and the listed system SONAMEs. The application and other system libraries may require newer versions. Clean consumer acceptance was run on Ubuntu 26.04; the manual CI job targets Ubuntu 24.04.
+- An installed Firefox executable for one-time environment recording and optional viewer tests. Xvfb is useful without a display. Neither recording nor viewing requires browser source.
 
-- A Rust toolchain supporting edition 2024, Cargo, a C++20 compiler (`clang++`), `make` and `ar`.
-- Python 3 for the driver and HTTP service. Standalone runs need only its standard library.
-- Fontconfig's `fc-match` and installed fonts for font selection.
-- Brotli headers and libraries (`brotlienc`, `brotlidec`), plus the C++ standard library.
-- EGL and OpenGL ES development libraries (`libEGL`, `libGLESv2`) and an OpenGL ES 3 implementation. Mesa llvmpipe is the tested software-rendering configuration.
-- For initial recording and browser tests: a Firefox executable, a compatible Firefox source tree with `mach python` and Marionette available, and Xvfb if running headless.
+Typical Debian/Ubuntu development packages: `build-essential python3 python3-venv libbrotli-dev libegl1-mesa-dev libgles2-mesa-dev fontconfig fonts-dejavu-core xvfb`. Rust is installed separately. Clean isolation tests additionally use `bubblewrap` and `binutils`.
 
-Useful checks are `rustc --version`, `cargo --version`, `clang++ --version`, `python3 --version` and `fc-match serif`. These commands verify tools, not complete source compatibility. Firefox's own source-build prerequisites must also be installed.
+## Install and select the SDK
 
-## Build SpiderMonkey
+The SDK identity, engine revision and manifest SHA-256 are pinned in [sdk.lock.json](../tools/sdk/sdk.lock.json). A manifest binds every header, shared library and notice to a content checksum. Do not substitute arbitrary system libmozjs packages.
 
-The runtime links Firefox's JavaScript engine as a shared library and uses that build's generated headers. An installed browser executable alone does not supply them. Obtain the source and prepare build dependencies using Mozilla's [Linux source setup guide](https://firefox-source-docs.mozilla.org/setup/linux_build.html). For an existing checkout, its `./mach bootstrap` workflow prepares the development environment. Choose full source-build prerequisites rather than an artifact-only browser setup: this project compiles against engine headers and libraries.
-
-From the Firefox source root, create a dedicated build configuration:
+From the repository root, install a producer-supplied archive using its reviewed SHA-256:
 
 ```sh
-cat > mozconfig-mini-runtime <<'CONFIG'
+python3 tools/sdk/sdk.py install /path/to/sdk.tar \
+  --sha256 REVIEWED_ARCHIVE_SHA256 --output /absolute/path/to/mrt-sdk
+export MRT_SDK_DIR=/absolute/path/to/mrt-sdk
+python3 tools/sdk/sdk.py validate "$MRT_SDK_DIR"
+```
+
+The installer verifies the archive digest before extraction, rejects traversal, links, devices and duplicate entries, then validates the pinned manifest and full inventory. SDK v1 contains only regular files and directories; exported headers are dereferenced during production. Missing or corrupt SDKs and incompatible metadata/targets fail before JS/parser compilation. SDK mode ignores old `JS`, `MRT_JS_OBJDIR` and `FIREFOX_SRC` settings and never consults `.mozbuild`. `MRT_ENGINE_SOURCE=1` and `MRT_SDK_DIR` are mutually exclusive.
+
+## Build mini-runtime and the API process
+
+From the repository root:
+
+```sh
+export MINI_RUNTIME="$PWD"
+export CXX=/usr/bin/c++
+(cd mrt-js && cargo build --release --locked --bin realsite)
+(cd mrt-api && cargo build --release --locked)
+```
+
+Run the first command inside `mrt-js` so Cargo reads its checked-in `.cargo/config.toml`, which sets `LIBZ_RS_SYS_PREFIX=MOZ_Z_`. No manifests need editing. Compression uses exact public libz-rs-sys/zlib-rs 0.6.8 crates with the existing prefix/features and three small source-local C interface headers; see [provenance](../vendor/zlib-PROVENANCE.md). Other Rust sources are locked registry dependencies and mrt-api's pinned public mp4parse Git dependency. The first fetch needs network access; `--offline` is available once those inputs are cached. There is no root Cargo workspace.
+
+Outputs are `mrt-js/target/release/realsite`, `mrt-js/target/release/lib/libmozjs-154a1.so` and `mrt-api/target/release/mrt-api`. JS binaries and tests load the staged engine via `$ORIGIN/lib:$ORIGIN/../lib`, without an SDK/producer absolute loader path. Keep `realsite` and its `lib/` directory together when moving them; `mrt-api` does not link libmozjs. The runtime does not need the SDK headers after compilation. An ordinary browser displays the viewer, with its own codecs and playback policies.
+
+Parser and HarfBuzz objects are built automatically. Parser compiler failures now stop the build; its objects live in Cargo's output directory. `CXX` selects the compiler, otherwise `c++` is used. A rebuilt executable does not replace a running service; restart a service when you want it to use new code.
+
+## Recording the browser environment
+
+Create a normal Python virtual environment for recording and browser tests:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r tools/sdk/requirements-browser.txt
+export FIREFOX_BIN=/absolute/path/to/firefox
+xvfb-run -a .venv/bin/python bench/record_env.py \
+  --output "$PWD/bench/realsites-env/local.json"
+export API_ENV="$PWD/bench/realsites-env/local.json"
+```
+
+Omit `xvfb-run -a` on a desktop display. The complete Python dependency set is version pinned; it was tested in a fresh Python 3.14 environment. The recorder launches an installed Firefox in a fresh temporary profile, serves synthetic local context pages, and records insecure, secure and secure-plus-isolated contexts. It checks each actual context before saving; insecure plus isolated is not a browser-supported combination. It does not start the runtime, read personal profiles or require the demo server. The file contains `firefox`, `viewport` and `entries` keyed by `secure=0|1,isolated=0|1`, using the same capture code as the browser bridge.
+
+The output path is explicit and must not already exist. `--port` selects another Marionette port if an automation session is already using 2828. These are browser/profile-specific values, not a universal compatibility preset. Record your own environment and keep it private. Use an ordinary empty profile for the demo; the service's `REALSITES_PROFILE` can point to an empty directory. Login-site profile seeding remains optional and local.
+
+Subsequent standalone execution uses only Python's standard library, the binaries, and this recording. It starts no Firefox and imports no Marionette. Missing context entries fail explicitly. The historical harness can still record environment values from a site's actual profile, using this virtual environment rather than `mach python`.
+
+Continue with [the demo](../README.md#2-serve-the-included-demo).
+
+## Maintainer source-build alternative
+
+A producer needs the compatible Firefox revision and a standalone shared SpiderMonkey build. The pinned engine source is `a8d334e3bde6e6572e3d162db5202def666e6206`; layout/HarfBuzz provenance files describe other translated components, not engine compatibility. The configuration is:
+
+```sh
 ac_add_options --enable-project=js
 ac_add_options --enable-optimize
 ac_add_options --disable-debug
 ac_add_options --disable-jemalloc
 mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-js
-CONFIG
-MOZCONFIG="$PWD/mozconfig-mini-runtime" ./mach build
 ```
 
-The required outputs are:
+Use Mozilla's [source setup](https://firefox-source-docs.mozilla.org/setup/linux_build.html) and `MOZCONFIG=... ./mach build` from that source tree. Shared libmozjs is required; its static archive contains a conflicting Rust standard library.
 
-- `obj-js/dist/include/`: generated SpiderMonkey and Mozilla headers.
-- `obj-js/js/src/js-confdefs.h`: engine build definitions.
-- `obj-js/dist/bin/libmozjs-*.so`: the shared JavaScript library.
-
-Check these before building the runtime. A static-only JavaScript library is insufficient: its bundled Rust code conflicts with this application's Rust linkage.
-
-The tested engine in this development setup is `libmozjs-154a1.so`. SpiderMonkey embedding interfaces and Firefox's vendored Rust crates are version-sensitive; arbitrary newer source revisions are not guaranteed to compile unchanged. `mrt-layout/GECKO_REV` records the source revision used for translated layout code, and `mrt-text/vendor/harfbuzz/FIREFOX_REV` records the vendored text source. Those files describe component provenance, not a universal engine compatibility promise.
-
-## Point the runtime at your Firefox checkout
-
-From the mini-runtime repository root:
+To build against the object directory explicitly instead of an SDK:
 
 ```sh
-export MINI_RUNTIME="$PWD"
-export FIREFOX_SRC=/absolute/path/to/firefox/source
-export MRT_JS_OBJDIR="$FIREFOX_SRC/obj-js"
-export JS="$MRT_JS_OBJDIR"
-export CXX="$(command -v clang++)"
+unset MRT_SDK_DIR
+export MRT_ENGINE_SOURCE=1
+export MRT_JS_OBJDIR=/absolute/path/to/firefox/obj-js
+export CXX=/usr/bin/c++
+(cd mrt-js && cargo build --release --locked --bin realsite)
+(cd mrt-api && cargo build --release --locked)
 ```
 
-`MRT_JS_OBJDIR` configures the JavaScript glue build. `JS` configures the parser build's header path. Both variables must be set explicitly for your engine build.
+This mode retains the producer library's absolute runtime path. It is a development alternative, not the consumer distribution. Compression sources no longer come from Firefox in either mode. The Android helper selects source mode explicitly; SDK v1 does not support Android.
 
-Three dependency entries in `mrt-js/Cargo.toml` default to `../../firefox-source`: `libz-rs-sys`, `zlib-rs` and its patch entry. Change them to your checkout if it is elsewhere. On a fresh checkout, this command makes the replacement:
-
-```sh
-python3 - <<'PY'
-import os
-from pathlib import Path
-p = Path('mrt-js/Cargo.toml')
-p.write_text(p.read_text().replace(
-    '../../firefox-source', os.environ['FIREFOX_SRC']))
-PY
-```
-
-This intentionally edits your local manifest. If you previously changed it to another checkout, update those three entries directly. The Firefox tree must contain the referenced `third_party/rust/libz-rs-sys` and `third_party/rust/zlib-rs` crates with compatible APIs.
-
-## Build mini-runtime and the API process
-
-```sh
-(cd mrt-js && cargo build --release --bin realsite)
-(cd mrt-api && cargo build --release)
-```
-
-Run the first command inside `mrt-js`: Cargo must read `mrt-js/.cargo/config.toml`, which sets Firefox's zlib symbol prefix. Using `--manifest-path mrt-js/Cargo.toml` from the root does not load that directory's Cargo configuration. Each crate has its own manifest and target directory; there is no root workspace.
-
-The DOM crate's build script compiles the vendored parser automatically. The text crate compiles vendored HarfBuzz. Cargo fetches Rust dependencies on the first build; `--offline` works only after those dependencies are cached.
-
-The JavaScript build embeds a runtime search path for its shared library. Keep the SpiderMonkey build available after compilation. Rebuilding the runtime does not update an existing service: stop and start a new service to use the new binary.
-
-## Recording the browser environment
-
-`API_ENV` supplies values that would normally come from a browser: navigator identity, interface names, screen information and viewport dimensions. It is a JSON file with an `entries` object keyed by `secure=0|1,isolated=0|1` and a two-element `viewport` array. These values are recorded from Firefox; a made-up minimal fixture is suitable for tests, not a general live-site environment.
-
-Start the demo HTTP server as shown in the README, then use its one-time recording command. The harness runs Firefox under Marionette with `API_PROCESS=all`, records the relevant environment and completes a finite runtime run. It saves `bench/realsites-env/<firefox-build-id>.json` in this source checkout. It does not need an HTTP viewer during recording.
-
-For a different context, repeat the recording command with that source page in `EXTRA_SITES`. For example, an HTTPS page generally needs a secure, non-isolated entry. A page using cross-origin isolation needs its own matching entry. Standalone mode fails explicitly if an entry is missing; it never starts Firefox to fill it.
-
-Use the source tree's `./mach python` for this step. Check that its Python environment can import `marionette_driver`; install the Firefox checkout's automation dependencies if it cannot. `FIREFOX_BIN` names an executable, not the source directory or a launcher command with arguments. A normal compatible Firefox installation can be used; building the full browser is not required just to display the standalone viewer.
-
-The demo uses a fresh empty profile. For a login-based site, prepare a separate Firefox profile and log in normally, then select it with `REALSITES_PROFILE`. The harness seeds supported profile data into its own stores. Standalone execution does not refresh expired authentication.
-
-Environment recordings and browser profiles are local generated artifacts. They are not supplied with a fresh clone. By default the driver selects the newest matching recording from `bench/realsites-env/`; `API_ENV=/absolute/path/to/file.json` selects one explicitly. Live runs and replay recordings use different filename suffixes.
+See [SDK production and release checks](sdk-build-plan.md) and [testing](testing.md).
 
 ## Troubleshooting
 
 | Symptom | Check |
 |---|---|
-| No `libmozjs-*.so` or missing headers | Build the shared engine and set both `MRT_JS_OBJDIR` and `JS` to its object directory. |
-| Cargo cannot find `libz-rs-sys` or `zlib-rs` | Update all three Firefox dependency paths in `mrt-js/Cargo.toml`. |
-| Undefined `MOZ_Z_` compression symbols | Build from inside `mrt-js` so its `.cargo/config.toml` is read. |
-| Parser compilation errors or unresolved `mrt_parser_*` | Check compiler output and generated Firefox headers. The parser shell build can continue after compiler errors, so its shell exit code alone is insufficient. |
-| Missing `EGL`, `GLESv2`, Brotli or C++ libraries | Install the corresponding development libraries; verify the compiler/linker search paths. |
-| No matching fonts | Install Fontconfig and fonts; check `fc-match serif`. |
-| `NO_FIREFOX=1 needs an existing browser environment recording` | Run the one-time recording step or set `API_ENV` to an existing recording. |
-| Missing secure/isolated context | Record a page with the required context using the Firefox harness. |
-| `marionette_driver` import fails | Use the Firefox source tree's configured `mach python` environment with automation dependencies available. |
-| Demo does not load | Keep the source server on port 8000 running and check the source URL. Open the printed viewer URL, not the source page, to interact with the runtime. |
-| Port already in use | Choose another loopback port or use `VIEWER_HTTP=127.0.0.1:0`. |
-| Updated toolbar stays disabled on an old service | Restart that service with the updated runtime; refreshing viewer assets alone does not replace its executable. |
-
-Continue with [the local demo](../README.md#2-serve-the-included-demo), then [testing](testing.md) or [viewer operation](viewer.md).
+| Missing SDK or manifest checksum mismatch | Obtain the exact SDK matching the checked-in lock. Do not edit the pin to bypass a failure. |
+| SDK integrity failure or symlinks | Reinstall the intact archive with its reviewed digest; never copy unresolved dist/include links. |
+| libmozjs cannot be loaded | Keep realsite next to its staged lib/ directory; inspect `ldd` and `readelf -d`. |
+| Undefined MOZ_Z_ symbols | Run Cargo inside mrt-js so its prefix configuration is loaded. |
+| C++ compilation failure | Use the declared C++20 GNU-ABI toolchain and complete pinned SDK; the first compiler error is now fatal. |
+| Missing EGL/GLES, Brotli or fonts | Install their development/runtime packages and check `fc-match serif`. |
+| No environment recording or context entry | Run record_env.py, then set API_ENV to its absolute output path. |
+| Marionette import or port failure | Use the pinned virtual environment; select an unused `--port`. |
+| Port busy or stale viewer code | Choose another VIEWER_HTTP port, or restart the intended service with the new executable. |

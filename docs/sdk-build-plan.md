@@ -1,33 +1,29 @@
-# Build without a Firefox source checkout: plan
+# Build without a Firefox source checkout: SDK contract
 
-**Status: planned, not implemented.** The current build still needs the engine outputs and compression sources described in [build setup](build.md). No SDK release, SDK download command or prebuilt runtime package is available yet. This document defines the intended build and validation contract before implementation.
+**Status:** SDK tooling and the consumer build are implemented. A matching local SDK can build the standalone HTTP viewer with no Firefox tree. No SDK download or prebuilt application release is published yet. The initial local engine artifact retains producer diagnostic paths and is not publication-ready.
 
 ## Goal and scope
 
-A new reader should be able to clone this repository, obtain a pinned dependency SDK, build `realsite` and `mrt-api`, and try the standalone HTTP viewer without downloading a Firefox source checkout. The SDK contains build inputs derived from Firefox; it does not remove SpiderMonkey or replace the JavaScript engine.
+Clone this repository, obtain its pinned SDK, build realsite and mrt-api, record a browser environment with an installed Firefox, then run the standalone HTTP viewer. Consumer inputs are this source, the SDK, locked public Rust dependencies and declared system libraries. Maintainers use compatible Firefox source to produce the SDK. SpiderMonkey remains the JavaScript engine.
 
-Maintainers may use a compatible Firefox checkout to produce the SDK. Consumer builds must depend only on this repository, the SDK, locked Rust dependencies and declared system development libraries. The initial target is Linux x86_64 with a declared GNU/Linux ABI and minimum system-library versions. Android, other operating systems and arbitrary system `libmozjs` versions are outside the first delivery.
+Version 1 supports native Linux x86_64, glibc and GNU libstdc++ ABI. Android, cross builds and arbitrary system libmozjs versions are outside this SDK. A prebuilt application bundle is a separate deliverable.
 
-A later prebuilt application package can remove the compiler requirement for readers who only want to try the viewer. That package is a separate deliverable from the SDK used to compile the application.
+## Dependency identities
 
-## Current dependencies to replace
-
-| Current dependency | Planned treatment |
+| Input | Implementation |
 |---|---|
-| `MRT_JS_OBJDIR/dist/include` and `js/src/js-confdefs.h` | Package the complete compatible public, Mozilla and generated header closure in the SDK. Both JS glue and the vendored parser use it. |
-| `MRT_JS_OBJDIR/dist/bin/libmozjs-*.so` | Package the matching shared engine library, its SONAME links and declared runtime dependencies. Continue using shared linkage; do not substitute SpiderMonkey's static Rust archive. |
-| Firefox `modules/zlib/src` headers | Supply compatible `zlib.h`, `zconf.h` and `mozzconf.h` through the SDK or a reviewed source-local dependency. Preserve the required symbol naming. |
-| `../../firefox-source/third_party/rust/libz-rs-sys` and `zlib-rs` Cargo paths | Replace with exact-version registry dependencies or a reviewed vendored copy, with lockfile/provenance and license notices. Confirm required features and the existing `MOZ_Z_` prefix before selecting the source. No Firefox-tree path remains in the consumer manifest. |
-| Compiler fallback to a local Mozilla toolchain | Support an explicitly configured C++ compiler and an ordinary system-toolchain fallback. Document compiler/ABI requirements. |
-| Recorded environment setup through `mach python` | Validate and document ordinary Python with pinned automation dependencies and an installed Firefox executable. No source-tree Python environment is required by the consumer path. |
+| Engine | Shared libmozjs-154a1.so, public Firefox revision a8d334e3bde6e6572e3d162db5202def666e6206, standalone optimized non-debug/non-jemalloc configuration. |
+| Engine headers | Complete dereferenced dist/include closure plus js-confdefs.h, tied to the library by the pinned manifest. Both JS glue and the vendored HTML parser consume them. |
+| Compression | Exact public libz-rs-sys/zlib-rs 0.6.8 dependencies, retaining the upstream Raptor Lake workaround. Vendored zlib/zconf/mozzconf headers preserve MOZ_Z_ symbol names. See [provenance and upstream checksums](../vendor/zlib-PROVENANCE.md). |
+| Other Rust inputs | Locked registry crates and mrt-api's exact public mp4parse Git revision, including its submodules. No Firefox-tree Cargo paths remain. |
+| C++ compiler | Explicit CXX or system c++; no .mozbuild fallback. C++20 GNU C++ ABI, GCC 15.2 tested. |
+| Browser recording | Ordinary Python, complete pinned [automation dependencies](../tools/sdk/requirements-browser.txt), an installed Firefox, and synthetic local context pages. No mach required. |
 
-The HTML tokenizer/tree builder, Stylo and HarfBuzz sources are already vendored. They remain in this repository. Their build still needs the correct header/library inputs; vendoring those source files alone does not make today's build independent of Firefox.
+The tokenizer/tree builder, Stylo and HarfBuzz remain vendored as before.
 
 ## Versioned SDK contract
 
-The proposed selector is `MRT_SDK_DIR`. It is a future interface, not a setting accepted by the current build. A reviewed SDK identity and expected checksum must be pinned by the application, rather than selecting the newest release implicitly.
-
-An SDK should contain:
+`MRT_SDK_DIR` selects one SDK; [sdk.lock.json](../tools/sdk/sdk.lock.json) pins its identity and manifest SHA-256. The SDK layout is:
 
 ```text
 sdk.json
@@ -35,52 +31,64 @@ include/
   js/
   mozilla/
   js-confdefs.h
-  ... complete generated/header dependencies ...
+  ... complete exported headers ...
 lib/
-  libmozjs-<engine-version>.so
-  ... required SONAME links and declared bundled dependencies ...
+  libmozjs-154a1.so
 share/licenses/
+  Firefox-LICENSE
+  license.html
+  provenance.json
 ```
 
-The exact layout becomes a versioned build interface. `sdk.json` must identify its schema version, SDK identity, public engine source revision and applied patches, engine version, target architecture/OS/libc requirements, C++ ABI requirements, build configuration, library SONAMEs, content checksums and license/provenance inventory. Record compiler versions and flags without private build-directory paths.
+The schema-1 manifest binds public engine revision, version, patches, configure options, compiler version, target, ABI symbol-version requirements, system-library SONAMEs and every file's checksum. It contains no local source/object paths. The producer dereferences exported header links, rejects an unexpected engine SONAME or embedded loader path, and checks source/configuration compatibility. v1 forbids all SDK symlinks, including internal links, by storing the SONAME library as a regular file.
 
-Packaging must dereference exported-header symlinks that point back into a Firefox checkout and validate that every required file is inside the SDK. Internal library links may remain relative and contained. Reject absolute links, traversal outside the extraction root, missing files and incompatible metadata. Copying `dist/include` with unresolved links is insufficient.
+Validation checks the pinned manifest before accepting its inventory. Missing, additional or modified contents fail. The installer checks a separately reviewed archive digest before extracting; absolute/traversing paths, links, special files and duplicates fail. Extraction happens in a temporary staging directory and is installed only after validation.
 
-Build scripts must select and validate a single SDK before invoking the compiler. Missing SDKs, mismatched headers/libraries, unsupported targets and integrity failures must produce actionable errors. An SDK consumer build must not silently fall back to `FIREFOX_SRC`, an adjacent `firefox-source` directory, a local `.mozbuild` installation or an unrelated system engine. The existing maintainer source-build path can remain as an explicitly selected alternative.
+JS/parser build scripts validate before invoking C++, watch all SDK inputs for Cargo rebuilds, and reject unsupported target/host combinations or insufficient glibc. No SDK failure falls back to a source checkout, private Cargo configuration, .mozbuild or a system engine. Explicit maintainer source builds use `MRT_ENGINE_SOURCE=1` and `MRT_JS_OBJDIR`, mutually exclusive with SDK selection.
 
 ## Linking and runtime packaging
 
-The built runtime must load its matching shared engine from a documented SDK location or an application-relative `lib/` directory. Runtime search paths must be relocatable, for example an appropriate `$ORIGIN`-relative path on Linux. They must not embed the SDK producer's checkout/object directory. Document which native libraries are bundled and which remain system requirements, including Brotli, EGL/OpenGL ES, the C++ runtime, Fontconfig and fonts as applicable.
+The JS build atomically stages its matching shared library into the Cargo profile's lib/ directory and links `$ORIGIN/lib:$ORIGIN/../lib`. This supports both release binaries and test binaries in release/deps. Relocating realsite with its lib/ directory needs no SDK mount or producer files. mrt-api has no libmozjs dependency. System Brotli, EGL/GLES, C++ runtime, Fontconfig and fonts remain declared requirements, not bundled SDK files.
 
-Installing the SDK does not provide a full browser. The viewer runs in the reader's ordinary browser; native page services run in `mrt-api`. Video/audio playback continues to depend on the attached browser's codecs and policies.
+The viewer is displayed by an ordinary browser, whose media codecs and policies still apply. Installing this SDK does not install a browser. SDK mode does not change runtime semantics or recorded-data opt-in.
+
+## Maintainer production
+
+See [source build setup](build.md#maintainer-source-build-alternative). For the already pinned object build:
+
+```sh
+python3 tools/sdk/sdk.py produce \
+  --source /path/to/compatible/firefox --obj /path/to/compatible/firefox/obj-js \
+  --output /path/to/new-sdk
+python3 tools/sdk/sdk.py pack /path/to/new-sdk /path/to/new-sdk.tar
+```
+
+Produce verifies the existing pin by default. When deliberately introducing another reviewed producer build, use `--lock-output /path/to/candidate.lock.json`. It refuses to overwrite existing SDK/lock outputs. Review the candidate metadata, provenance, license inventory and content changes before updating the application pin. Two runs against the current engine outputs produced the identical pinned manifest. The tar packer normalizes ownership, timestamps, ordering and modes for deterministic archive bytes.
+
+The current pin describes an existing development engine build. Its metadata is public, but libmozjs contains diagnostic source paths and debug information from that producer. Keep this candidate local. A future controlled producer should build in a neutral directory, remap C++ and Rust source/debug paths, retain exact corresponding source/build inputs, and strip only appropriate debug sections before generating and reviewing a new pin. Rebuilding the engine can change bytes and therefore requires an explicit pin update.
 
 ## First-run environment recording
 
-A source-independent quick start also needs a way to produce `API_ENV` without `mach`. Validate a recording workflow in a fresh Python virtual environment, using a pinned `marionette_driver` dependency set and `FIREFOX_BIN` pointing at an installed compatible Firefox executable. Record against the included local demo, using a fresh empty profile by default.
+[record_env.py](../bench/record_env.py) serves synthetic insecure, secure and isolated-context pages on loopback, using Firefox's local DNS preference only in a fresh temporary profile. It saves all three feasible context entries and the viewport to an explicit new JSON path. It uses the same [capture code](../bench/browser_env.js) as the bridge. No profile, cookie jar, permission data, page capture or environment dump is shipped with the SDK.
 
-Document how to obtain each required secure/isolated-context entry, where the JSON is saved, and how to select it with `API_ENV`. The initial recording may launch Firefox; subsequent standalone service execution must not launch Firefox or import Marionette. An ordinary browser is still needed to display the viewer.
-
-Do not ship a developer's browser profile, cookies, permissions, page content, benchmark results or environment dump inside the SDK. Any future generic environment preset needs its own documented provenance and compatibility checks; it must not be presented as equivalent to every browser/profile. Recorded-data comparisons remain opt-in and require locally recorded inputs.
-
-## Implementation sequence
-
-1. Define the SDK schema and pinned engine/source/compression dependency identities. Inventory header symlinks, shared-library dependencies and required licenses.
-2. Produce a relocatable SDK in a controlled maintainer build, with deterministic file inventory, checksums and public provenance. Resolve applicable redistribution obligations before publishing binary artifacts.
-3. Add SDK validation/selection to the JS and parser builds. Remove consumer Firefox paths from Cargo and compression header lookup; preserve tested compression behavior.
-4. Validate source-independent Python recording and runtime startup; update the README quick start only after those paths work.
-5. Add the clean-environment acceptance job and release documentation. A prebuilt application bundle may follow, with its own runtime dependency and relocation checks.
-
-These steps are a plan, not a claim that release infrastructure or implementation already exists. This documentation change does not select a new project-wide license.
+[Build setup](build.md#recording-the-browser-environment) gives the ordinary-Python commands. Recording may launch Firefox once. Later standalone service execution uses ordinary Python with no Firefox or Marionette import. An ordinary browser displays the viewer. Missing environment/context data fails explicitly; it does not launch automation to fill it in.
 
 ## Acceptance criteria
 
-- Build a fresh source checkout in a clean Linux environment with no Firefox source/object tree, sibling engine alias, private Cargo configuration, private `bench/` data or pre-existing target cache. Only the pinned SDK, locked Rust dependencies, toolchain and declared system libraries are available.
-- Build both release binaries without editing manifests. Verify that SDK-only builds do not read outside their declared inputs. Producer-side builds may use Firefox source; consumer-side builds may not.
-- Relocate the SDK/application and remove access to the producer's build directories. Inspect dynamic dependencies and run the resulting binaries successfully.
-- Reject a missing SDK, corrupt archive/checksum, unsupported target, mismatched engine/header metadata and header links escaping the SDK, with clear diagnostics and no fallback to a source checkout.
-- Verify compression bytes, stream errors and symbol linkage against the existing fixtures; run default unit tests plus standalone/API regressions. Default tests must not acquire personal recordings.
-- In a fresh Python environment, record the local demo's browser environment using an installed Firefox executable and no Firefox source tree. Then run the service without browser automation, attach a viewer, type/click/scroll, traverse local history and reconnect.
-- Run the complete real-browser viewer suite against SDK-built binaries. Check API-origin storage/network behavior, media and WebGL replay using the existing local fixtures.
-- Inspect SDK/application archives and producer logs intended for publication for credentials, personal paths, profiles and captured data; preserve all required third-party notices and source provenance.
+- Build both release binaries from a fresh tracked source copy with no Firefox source/object tree, sibling alias, private Cargo configuration, recordings or target cache accessible.
+- Use only the pinned SDK, locked public Rust inputs, declared toolchain and system libraries. Disable network during compilation.
+- Relocate the runnable binaries and engine library, remove SDK/producer access, inspect loader dependencies and exercise a standalone network flow.
+- Reject missing/corrupt SDKs, bad manifest/engine/target identities, escaping links and unsafe archive entries without source fallback.
+- Run JS/API unit tests, standalone and HTTP-viewer regressions; run the entire optional browser suite against SDK-built binaries. Verify compression bytes/stream errors against Firefox fixtures.
+- Record a real environment in a fresh ordinary-Python environment with an installed Firefox and no mach, then attach a viewer, interact, traverse history and reconnect.
+- Keep personal data out of source and artifacts; retain third-party notices and inspect publication artifacts before release.
 
-See [testing](testing.md) for today's checks and [publication hygiene](publication.md) for the source/data boundary.
+The reproducible clean-build runner is [accept.py](../tools/sdk/accept.py); malformed-input coverage is [test_sdk.py](../tools/sdk/test_sdk.py). Commands and the manual CI job are in [testing](testing.md#sdk-build-acceptance).
+
+## Release checks
+
+Before publishing SDK binaries, produce the controlled path-remapped engine, review/update the SDK pin, inspect all artifact contents and logs, and resolve redistribution/source-availability and attribution obligations. The local development SDK is not a release. The project-wide license for original code is still an owner decision; this work does not select one.
+
+Publish an immutable reviewed archive and its SHA-256, then provide its URL in the source build instructions. Run the manual SDK acceptance workflow against that exact artifact. Its registry/Git fetch preparation is separate from its filesystem/network-isolated build. Run browser acceptance separately with an installed compatible Firefox. A later prebuilt application archive needs its own system dependency, relocation, license and privacy review.
+
+See [publication hygiene](publication.md) for the source/data boundary.

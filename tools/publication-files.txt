@@ -1,3 +1,4 @@
+.github/workflows/sdk.yml
 .gitignore
 README.md
 bench/api_summary.py
@@ -183,6 +184,7 @@ bench/bridge-cases/xframes.html
 bench/bridge-cases/xhr-charset.html
 bench/bridge-cases/xsite-child.html
 bench/bridge-cases/xsite.html
+bench/browser_env.js
 bench/compare_boxes.py
 bench/compare_bridge.py
 bench/compare_console.py
@@ -264,6 +266,7 @@ bench/probe_element_tree.js
 bench/probe_load_timing.js
 bench/probe_sheet_cssom.js
 bench/proc_uss.py
+bench/record_env.py
 bench/recorded_tests.py
 bench/replay.py
 bench/replay_addon.py
@@ -962,6 +965,12 @@ parser/vendor/nsHtml5UTF16BufferCppSupplement.h
 parser/vendor/nsHtml5UTF16BufferHSupplement.h
 tools/check-publication.py
 tools/publication-files.txt
+tools/sdk/accept.py
+tools/sdk/build.rs
+tools/sdk/requirements-browser.txt
+tools/sdk/sdk.lock.json
+tools/sdk/sdk.py
+tools/sdk/test_sdk.py
 vendor/stylo/.cargo-ok
 vendor/stylo/.cargo_vcs_info.json
 vendor/stylo/Cargo.lock
@@ -1287,3 +1296,7 @@ vendor/stylo_atoms/build.rs
 vendor/stylo_atoms/lib.rs
 vendor/stylo_atoms/predefined_counter_styles.rs
 vendor/stylo_atoms/static_atoms.txt
+vendor/zlib-PROVENANCE.md
+vendor/zlib-headers/mozzconf.h
+vendor/zlib-headers/zconf.h
+vendor/zlib-headers/zlib.h

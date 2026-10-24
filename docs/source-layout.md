@@ -46,7 +46,7 @@ The viewer runs inside an ordinary browser. The Python process is the service; `
 | `parser/vendor/`, `parser/shim/` | Firefox's HTML tokenizer/tree builder and its standalone C++ adapter. |
 | `docs/` | Source-local build, operation, design, testing and measurement guides. |
 
-Generated runtime output is kept under each crate's `target/`; parser objects go under `parser/obj/`. Environment recordings go under `bench/realsites-env/`. The driver writes captured documents, request logs and API logs below `bench/<MINI_DIR>/`, and reports to `bench/<MINI_OUT>`. Generated state is not the source of a test fixture.
+Generated runtime output is kept under each crate's `target/`; parser objects go under Cargo build output directories. Environment recordings go under `bench/realsites-env/`. The driver writes captured documents, request logs and API logs below `bench/<MINI_DIR>/`, and reports to `bench/<MINI_OUT>`. Generated state is not the source of a test fixture.
 
 ## Common changes
 

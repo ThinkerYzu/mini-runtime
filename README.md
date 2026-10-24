@@ -20,39 +20,23 @@ Loading another document creates a new runtime for that document. Closing the vi
 
 ## Quick start
 
-The current development environment is Linux. You need Python 3, a Rust toolchain supporting edition 2024, a C++20 compiler, Fontconfig and fonts, Brotli development libraries, EGL/OpenGL ES development libraries, and a compatible Firefox source checkout with a built SpiderMonkey shared library. Initial setup also needs a Firefox executable and its source tree's `mach python` environment with Marionette, plus Xvfb for the headless recording command below.
+The SDK consumer build targets Linux x86_64 with glibc and the GNU C++ ABI. You need Python 3, Rust 1.93.0, a C++20 compiler, Fontconfig/fonts, Brotli development libraries, EGL/OpenGL ES development libraries, and the pinned engine SDK. **No public SDK download is published yet**; obtain the matching archive from a maintainer. The consumer build requires no Firefox source checkout. An installed Firefox executable is used for one-time environment recording; an ordinary browser displays the viewer.
 
-If you do not have the Firefox engine build yet, follow [build setup](docs/build.md). That guide includes the engine build configuration, native dependency checks and solutions to common build failures. No separate project documentation is needed.
-
-A [planned SDK build](docs/sdk-build-plan.md) will remove the Firefox source-checkout requirement for consumers. It is not implemented yet; the current steps below still require the engine build and source dependencies.
+[Build setup](docs/build.md) covers SDK installation/integrity checks, native prerequisites, and the explicit maintainer source-build alternative.
 
 ### 1. Build the two binaries
 
-Run from this repository's root. Replace the Firefox source path with yours:
+After [installing the SDK](docs/build.md#install-and-select-the-sdk), run from this repository's root:
 
 ```sh
 export MINI_RUNTIME="$PWD"
-export FIREFOX_SRC=/absolute/path/to/firefox/source
-export MRT_JS_OBJDIR="$FIREFOX_SRC/obj-js"
-export JS="$MRT_JS_OBJDIR"
-export CXX="$(command -v clang++)"
+export MRT_SDK_DIR=/absolute/path/to/mrt-sdk
+export CXX=/usr/bin/c++
+(cd mrt-js && cargo build --release --locked --bin realsite)
+(cd mrt-api && cargo build --release --locked)
 ```
 
-The Cargo manifest defaults to a sibling `firefox-source` checkout. Update its dependency paths to your checkout before the first build:
-
-```sh
-python3 - <<'PY'
-import os
-from pathlib import Path
-p = Path('mrt-js/Cargo.toml')
-p.write_text(p.read_text().replace(
-    '../../firefox-source', os.environ['FIREFOX_SRC']))
-PY
-(cd mrt-js && cargo build --release --bin realsite)
-(cd mrt-api && cargo build --release)
-```
-
-Run Cargo inside `mrt-js` as shown so it reads that crate's `.cargo/config.toml`. The outputs are `mrt-js/target/release/realsite` and `mrt-api/target/release/mrt-api`. There is no root Cargo workspace. Keep these environment variables in the terminal used for the remaining steps.
+Run Cargo inside mrt-js so it reads that crate's checked-in compression prefix configuration. No manifest editing or private Cargo settings are needed. The runtime automatically stages its matching engine in `mrt-js/target/release/lib/`; keep that directory with realsite when relocating it. The API binary is `mrt-api/target/release/mrt-api`.
 
 ### 2. Serve the included demo
 
@@ -68,22 +52,19 @@ Leave this server running. The source page is `http://localhost:8000/demo.html`.
 
 The runtime needs a recording of browser identity, exposed interfaces and viewport values. It cannot generate one in standalone mode. If this checkout already has a suitable recording in `bench/realsites-env/`, skip this step.
 
-In the first terminal, set the path to an installed Firefox executable, create a fresh profile for the demo, then run the recording harness:
+In the first terminal, create a normal Python environment with the pinned browser-automation dependencies and record against fresh local context pages:
 
 ```sh
+python3 -m venv .venv
+.venv/bin/pip install -r tools/sdk/requirements-browser.txt
 export FIREFOX_BIN=/absolute/path/to/firefox
+xvfb-run -a .venv/bin/python bench/record_env.py \
+  --output "$MINI_RUNTIME/bench/realsites-env/local.json"
+export API_ENV="$MINI_RUNTIME/bench/realsites-env/local.json"
 mkdir -p "$MINI_RUNTIME/bench/realsites-mini-demo-profile"
-(
-  cd "$FIREFOX_SRC"
-  API_PROCESS=all ONLY=demo \
-    EXTRA_SITES='{"demo":"http://localhost:8000/demo.html"}' \
-    REALSITES_PROFILE="$MINI_RUNTIME/bench/realsites-mini-demo-profile" \
-    MINI_DIR=realsites-mini-demo-setup MINI_OUT=mini_realsites_demo_setup.json \
-    xvfb-run -a ./mach python "$MINI_RUNTIME/bench/mini_realsites.py"
-)
 ```
 
-This one-time command starts Firefox and writes `bench/realsites-env/<firefox-build-id>.json`. Let it finish. Subsequent standalone runs reuse the recording and do not start Firefox. Recordings distinguish secure and cross-origin-isolated contexts; a page using a different context may need another recording. See [environment setup](docs/build.md#recording-the-browser-environment).
+Omit xvfb-run on a desktop display. This starts an installed Firefox in a fresh temporary profile and writes all three supported secure/isolated context entries. It does not require mach or Firefox source. The output path must be new. Subsequent standalone runs use only ordinary Python and the saved recording. See [environment setup](docs/build.md#recording-the-browser-environment).
 
 ### 4. Start the standalone viewer
 
@@ -145,7 +126,7 @@ python3 bench/test_http_viewer.py
 The viewer command skips its optional real-browser tests by default. [Testing](docs/testing.md) explains how to run the full suite.
 
 - [Documentation index](docs/README.md): guides for users and contributors.
-- [Build setup](docs/build.md): Firefox engine, dependencies and troubleshooting.
+- [Build setup](docs/build.md): SDK, dependencies, environment recording and troubleshooting.
 - [Architecture](docs/architecture.md): processes, mirroring, navigation and hibernation.
 - [Source layout](docs/source-layout.md): crates, adapters and where to change code.
 - [Viewer operation](docs/viewer.md): configuration, services, media and known limits.
