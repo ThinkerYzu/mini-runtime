@@ -12,12 +12,21 @@ python3 tools/build.py
 
 [tools/engine/source.json](../tools/engine/source.json) pins Mozilla's repository and exact public commit `2839629039f3c910952215d88e1a3565d9dcda29`, compatible with the current SpiderMonkey 154 glue. Setup uses a shallow Git fetch and checks out that exact commit. It includes Mozilla's shared build dependencies outside js/, so the source download still contains more than SpiderMonkey's engine directory. No repository history or browser binary is built.
 
-Source and engine outputs are stored under `${XDG_CACHE_HOME:-$HOME/.cache}/mini-runtime/spidermonkey/<revision>/`. Expect several gigabytes of source/build storage and a substantial initial engine compile. The command rechecks existing source and runs an incremental build on later invocations. Partial downloads are staged and never installed as a usable checkout. A modified or wrong-revision checkout is refused rather than switched or cleaned.
+Source lives at `firefox-source/` in the mini-runtime repository root, regardless of the shell working directory. This Git-ignored path can be an existing checkout or a symlink to one. If absent, setup fetches the pinned Mozilla commit there. A broken symlink is refused and preserved. Engine outputs are stored separately under `${XDG_CACHE_HOME:-$HOME/.cache}/mini-runtime/spidermonkey/<revision>/`; build tools also use this cache. Expect several gigabytes of source/build storage and a substantial initial engine compile. The command rechecks existing source and runs an incremental build on later invocations. Partial downloads are staged and never installed as a usable checkout. A modified or wrong-revision checkout is refused rather than switched or cleaned.
+
+To reuse a local clean checkout at the pinned revision, run from the repository root:
+
+```sh
+ln -s /path/to/clean/pinned/mozilla-checkout firefox-source
+python3 tools/build.py
+```
+
+The symlink resolves to its physical checkout path for engine builds. Setup never switches an existing checkout to the pin. `--cache` changes object/tool storage, not the default source location. Explicit `--source` requires an existing checkout.
 
 ```sh
 python3 tools/build.py --fetch-only             # acquire source, no compilation
 python3 tools/build.py --jobs 4                 # limit engine compilation concurrency
-python3 tools/build.py --cache /path/to/cache   # choose persistent storage
+python3 tools/build.py --cache /path/to/cache   # choose object/tool storage
 python3 tools/build.py --source /path/to/source # existing clean checkout at the pinned revision
 python3 tools/build.py --objdir /path/to/obj-js # compatible engine already built
 python3 tools/build.py --sdk /path/to/sdk       # optional SDK, no source download or engine compile

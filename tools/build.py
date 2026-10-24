@@ -39,12 +39,12 @@ def validate_source(source, pin=PIN):
     return source
 
 
-def acquire(cache, supplied=None, pin=PIN):
+def acquire(supplied=None, pin=PIN):
     if supplied is not None:
         return validate_source(supplied.resolve(strict=True), pin)
-    source = cache / pin['revision'] / 'source'
-    if source.exists():
-        return validate_source(source, pin)
+    source = ROOT / 'firefox-source'
+    if source.exists() or source.is_symlink():
+        return validate_source(source.resolve(strict=True), pin)
     source.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.source-', dir=source.parent) as tmp:
         stage = Path(tmp) / 'source'
@@ -140,7 +140,7 @@ def build_runtime(obj=None, sdk=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     default_cache = Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'mini-runtime/spidermonkey'
-    parser.add_argument('--cache', type=Path, default=default_cache)
+    parser.add_argument('--cache', type=Path, default=default_cache, help='engine object and build-tool storage')
     choice = parser.add_mutually_exclusive_group()
     choice.add_argument('--source', type=Path, help='reuse an existing clean checkout at the pinned revision')
     choice.add_argument('--objdir', type=Path, help='reuse an existing compatible built SpiderMonkey')
@@ -160,7 +160,7 @@ def main():
         elif args.objdir:
             build_runtime(obj=engine_outputs(args.objdir.resolve(strict=True)))
         else:
-            source = acquire(args.cache.absolute(), args.source)
+            source = acquire(args.source)
             print(f'Pinned Mozilla source: {source}', flush=True)
             if not args.fetch_only:
                 build_runtime(obj=build_engine(source, args.cache.absolute(), args.jobs))

@@ -82,3 +82,6 @@ bench/realsites-env/
 .venv/
 venv/
 .gitleaks-report*
+
+# Local Mozilla checkout or symlink, acquired by tools/build.py.
+/firefox-source

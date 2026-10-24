@@ -20,7 +20,7 @@ Loading another document creates a new runtime for that document. Closing the vi
 
 ## Quick start
 
-The default build targets Linux x86_64. Install Rust, a current Clang/C++20 toolchain, Python 3, Git, make/ar/pkg-config, Brotli development libraries, EGL/OpenGL ES development libraries, Fontconfig and fonts. The setup command fetches a pinned Mozilla source checkout when you do not supply one, then builds only SpiderMonkey and the two runtime binaries. The first run needs internet access, several gigabytes of disk space and time to compile the engine. Later runs reuse the cached source and incremental build.
+The default build targets Linux x86_64. Install Rust, a current Clang/C++20 toolchain, Python 3, Git, make/ar/pkg-config, Brotli development libraries, EGL/OpenGL ES development libraries, Fontconfig and fonts. The setup command fetches a pinned Mozilla source checkout when you do not supply one, then builds only SpiderMonkey and the two runtime binaries. The first run needs internet access, several gigabytes of disk space and time to compile the engine. Later runs reuse `firefox-source/` and the incremental build.
 
 An installed Firefox executable is used once for browser environment recording; an ordinary browser displays the viewer. No separately downloaded SDK is required. [Build setup](docs/build.md) covers prerequisites, source/cache controls and the optional SDK path.
 
@@ -33,9 +33,16 @@ export MINI_RUNTIME="$PWD"
 python3 tools/build.py
 ```
 
-The source revision and official Mozilla repository are pinned in `tools/engine/source.json`. Source and engine objects are cached under `${XDG_CACHE_HOME:-$HOME/.cache}/mini-runtime/spidermonkey/`. The script never switches, cleans or overwrites an existing user checkout, and does not install system packages.
+The source revision and official Mozilla repository are pinned in `tools/engine/source.json`. Source lives at `firefox-source/` in this repository root, ignored by Git. An existing directory or symlink is reused after validation; if absent, setup fetches it from Mozilla. Engine objects and build tools are cached separately under `${XDG_CACHE_HOME:-$HOME/.cache}/mini-runtime/spidermonkey/`. The script never switches, cleans or overwrites an existing user checkout, and does not install system packages.
 
-To reuse source or engine outputs you already have:
+To reuse a clean checkout at the pinned revision, create a local symlink before setup:
+
+```sh
+ln -s /path/to/clean/pinned/mozilla-checkout firefox-source
+python3 tools/build.py
+```
+
+Alternatively, supply source or engine outputs explicitly:
 
 ```sh
 python3 tools/build.py --source /path/to/clean/pinned/mozilla-checkout
@@ -43,7 +50,7 @@ python3 tools/build.py --source /path/to/clean/pinned/mozilla-checkout
 python3 tools/build.py --objdir /path/to/obj-js
 ```
 
-Use `--fetch-only` to download source without compiling, `--cache DIRECTORY` to select storage and `--jobs N` to limit build parallelism. Outputs are `mrt-js/target/release/realsite` and `mrt-api/target/release/mrt-api`. Source-mode binaries load the cached engine, so retain its object directory. If you already have the optional binary SDK, `python3 tools/build.py --sdk /path/to/sdk` skips source acquisition and engine compilation. There is no public SDK download yet.
+Use `--fetch-only` to download source without compiling, `--cache DIRECTORY` to select object/tool storage and `--jobs N` to limit build parallelism. Outputs are `mrt-js/target/release/realsite` and `mrt-api/target/release/mrt-api`. Source-mode binaries load the cached engine, so retain its object directory. If you already have the optional binary SDK, `python3 tools/build.py --sdk /path/to/sdk` skips source acquisition and engine compilation. There is no public SDK download yet.
 
 ### 2. Serve the included demo
 
