@@ -33,7 +33,7 @@ The service uses HTTP long polling for updates and JSON POSTs for input/lifecycl
 
 ## Document navigation
 
-A runtime's document global and origin are fixed at startup. For another document, the driver fetches the destination, launches a new runtime and switches the viewer after it is ready. It then shuts down the old runtime and its API processes. Same-document history changes keep the current runtime.
+A runtime's document global and origin are fixed at startup. For another document, the driver fetches the destination, launches a new runtime and switches the viewer after it is ready. It then shuts down the old runtime and its API processes. Same-document history changes keep the current runtime. If the destination requests another navigation during startup, the driver holds that request until the destination becomes the current page, then handles it normally. Immediate script redirects therefore retain history and storage state through the same commit path.
 
 The driver preserves session history and per-origin sessionStorage, while native persisted stores carry cookies and supported storage across document changes. Toolbar Back/Forward commands traverse that runtime history through ordered input. Cross-document traversal reloads the URL as GET; there is no back-forward document cache or form-body resubmission.
 

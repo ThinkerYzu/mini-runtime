@@ -429,6 +429,15 @@ class Runtime(unittest.TestCase):
                     page = (HERE / "http-viewer" / "nav-echo.html").read_text().replace("@PORT@", str(runtime.server.server_port))
                     page = page.replace("@ENCTYPE@", query.get("enctype", ["application/x-www-form-urlencoded"])[0])
                     send(200, page.replace("@REQUIRED@", "required" if query.get("required") else "").encode())
+                elif url.path == "/nav-startup":
+                    step = query.get("step", ["one"])[0]
+                    target = {"one": "/nav-startup?step=two", "two": "/nav-echo?step=startup-final", "bad": "/nav-json"}[step]
+                    send(200, ("<!doctype html><meta charset=utf-8><p id=state>startup-" + step +
+                        "</p><button id=increment>Count</button><output id=count>0</output><script>" +
+                        "sessionStorage.setItem('k', (sessionStorage.getItem('k') || '') + '+' + " + json.dumps(step) + ");" +
+                        "location.replace(" + json.dumps(target) + ");" +
+                        "let count=0;document.getElementById('increment').onclick=()=>{document.getElementById('count').textContent=String(++count)};" +
+                        "</script>").encode())
                 elif url.path == "/nav-redirect":
                     send(302, extra=[("Location", query["to"][0])])
                 elif url.path == "/nav-nocontent":
@@ -1523,6 +1532,44 @@ class Runtime(unittest.TestCase):
         self.assertEqual(result["exit"],0,result)
         self.assertEqual(result["js_errors"],0,result)
         self.assertFalse(result["unsupported_ops"],result)
+
+    def test_navigation_startup_redirects(self):
+        local = f"http://localhost:{self.server.server_port}"
+        session, seq, elements = self.document()
+        self.send_input(session, seq, elements["startup"])
+        final = local + "/nav-echo?step=startup-final"
+        self.until(lambda: self.call("runtimes")[0]["url"] == final)
+        session, seq, elements = self.document()
+        info = self.info(elements)
+        self.assertEqual((info["href"], info["length"], info["ss"]), (final, 2, "start+one+two"))
+        self.assertEqual(info["referrer"], local + "/nav-startup?step=two")
+        requests = [r for r in self.nav_requests if r["path"] in
+            ("/nav-startup?step=one", "/nav-startup?step=two", "/nav-echo?step=startup-final")]
+        self.assertEqual([r["path"] for r in requests],
+            ["/nav-startup?step=one", "/nav-startup?step=two", "/nav-echo?step=startup-final"])
+        self.assertEqual([r["Referer"] for r in requests],
+            [local + "/nav-start", local + "/nav-startup?step=one", local + "/nav-startup?step=two"])
+        self.assertEqual([r["Sec-Fetch-User"] for r in requests], ["?1", None, None])
+        # A refused redirect keeps the document that initiated it, with its
+        # scripts and ordinary input still usable after the startup request.
+        self.send_input(session, seq, elements["home"])
+        session, seq, elements = self.navigated(session)
+        self.send_input(session, seq, elements["startup-failure"])
+        self.until(lambda: self.call("runtimes")[0]["url"] == local + "/nav-startup?step=bad")
+        session, seq, elements = self.document()
+        self.notice(session, seq, "application/json")
+        self.assertEqual(self.text(elements["state"]), "startup-bad")
+        self.send_input(session, seq, elements["increment"])
+        self.until(lambda: self.text(self.document()[2]["count"]) == "1")
+        self.assertEqual(self.children(self.proc.pid).count("realsite"), 1)
+        self.assertEqual(self.children(self.proc.pid).count("mrt-api"), 1)
+        self.call("stop", {})
+        self.proc.wait(timeout=10)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual(self.proc.returncode, 0, result)
+        self.assertEqual(result["js_errors"], 0, result)
+        self.assertEqual(result["viewer"]["navigations"], 5)
+        self.assertEqual(result["viewer"]["navigation_failures"], 1)
 
     def test_navigation_forms(self):
         port = self.server.server_port

@@ -1425,11 +1425,11 @@ class Runtime:
         self.doc = None             # its document's policies over its requests (doc_policies, the API process's fetch)
         # an HTTP viewer navigation's runtime (Frames.navigate): its own API processes and top-level
         # site, what its env reply adds (`navigation`: referrer, history, sessionStorage, type), and
-        # the first wait it sent, answered once it is the page
+        # the first wait or startup navigation it sent, answered once it is the page
         self.api = None
         self.top = None
         self.navigation = None
-        self.first_wait = None
+        self.first_request = None
 
     def next_time(self):
         times = [m["time"] for m in self.queue]
@@ -1689,10 +1689,10 @@ class Frames:
             time.sleep(0.25)
 
     def load_until_ready(self, rt, limit=60):
-        """Serve a navigation's new runtime until its first wait (parsed, DOMContentLoaded fired, its
-        event loop started), which stays unanswered until it is the page. The old page meanwhile waits
-        for its `navigate` reply. Returns None, or why it did not get there: it exited, or `limit`
-        seconds passed (then it is killed)."""
+        """Serve a destination until its first wait or startup navigation, held unanswered until
+        it is the page. A wait follows parsing/DOMContentLoaded; a script can navigate earlier.
+        The old page meanwhile waits for its `navigate` reply. Returns None, or why it did not
+        get there: it exited, or `limit` seconds passed (then it is killed)."""
         late = []
         timer = threading.Timer(limit, lambda: (late.append(True), rt.proc.kill()))
         timer.start()
@@ -1703,8 +1703,10 @@ class Frames:
                     rt.done = True
                     return f"did not load in {limit} s" if late else f"its runtime exited (code {rt.proc.wait()}) while loading"
                 req = json.loads(line)
-                if req["op"] == "wait":
-                    rt.first_wait = req
+                if req["op"] in ("wait", "navigate"):
+                    # Startup redirects belong to this destination. Dispatching
+                    # one before commit would reject it as a non-current runtime.
+                    rt.first_request = req
                     return None
                 if req["op"] == "step":
                     # (one runtime: its turn at once)
@@ -1716,14 +1718,14 @@ class Frames:
 
     def switch_page(self):
         """The navigation's commit: the old page has unloaded (or ended); run() kills it and makes the
-        new runtime the page, whose first wait is answered now. Returns it."""
+        new runtime the page, whose held request is answered now. Returns it."""
         new, self.pending_page, self.unloaded = self.pending_page, None, False
         old = self.page
         self.page = new
         self.runtimes = [new]
         self.on_switch(old, new)
-        new.reply(self.wait(new.first_wait))
-        new.first_wait = None
+        request, new.first_request = new.first_request, None
+        new.reply(self.wait(request) if request["op"] == "wait" else self.handle(new, request))
         return new
 
     def run_until_wait(self, rt):
@@ -2518,7 +2520,7 @@ def run(name, url):
         def load_destination(rt, req, new_api, n):
             """The destination of runtime `rt`'s navigation `req`, fetched through `new_api` (a set of
             API processes on the page's store) and loaded into a new runtime, served until its first
-            wait: (that Runtime, None), or (None, why not)."""
+            wait or startup navigation: (that Runtime, None), or (None, why not)."""
             import re
             url = req["url"]
             if not re.match(r"(?i)https?:", url):

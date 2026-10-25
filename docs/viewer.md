@@ -85,6 +85,12 @@ Use the toolbar's **Back** and **Forward** buttons to traverse runtime history. 
 
 Failures or refused destinations keep the current document and show a reason on the status line. New windows, downloads, non-HTML destinations, nested-frame navigation and a browser-style leave-page prompt remain unsupported. Cross-document history traversal reloads the URL as GET; it does not restore a back-forward cache, history state or a submitted form body. Cookies, localStorage, IndexedDB, permissions and per-origin sessionStorage persist across document navigation within the run.
 
+### Google Search
+
+Search form submission and immediate startup redirects are supported. In the latest live check, Google redirected the search to its unusual-traffic verification page; reference Firefox on the same network received the same check. Search results remain unverified while that check blocks access.
+
+The viewer cannot complete the CAPTCHA in this flow: nested frame documents are not displayed, and reCAPTCHA initialization also exposes an unresolved message-transfer compatibility error. Restart the service after updating the driver to use the startup-redirect fix.
+
 ### Media and replay quota
 
 HTTP media commands drive native browser video/audio and MediaSource/SourceBuffer objects, returning playback state, events and promise results. Media resource bytes come through the API process with the page's origin and cookies. Normal browser autoplay and codec restrictions apply.
