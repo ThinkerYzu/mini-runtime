@@ -2,6 +2,7 @@
 
 Optional real-browser check, from a Firefox tree under xvfb-run:
 VIEWER_BROWSER=1 FIREFOX_BIN=... ./mach python .../bench/test_http_viewer.py
+VIEWER_TRANSPORT=poll (or ws) loads the browser viewer with that ?transport= instead of the default.
 """
 import base64
 import functools
@@ -9,7 +10,10 @@ import http.server
 import json
 import os
 from pathlib import Path
+import hashlib
 import selectors
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -20,9 +24,235 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
+import http_viewer
 from http_viewer import Service, Viewer
 
 HERE = Path(__file__).resolve().parent
+TRANSPORT = os.environ.get("VIEWER_TRANSPORT")
+
+
+def page_url(url):
+    """The viewer's URL with VIEWER_TRANSPORT's ?transport=, when set"""
+    return url + "&transport=" + TRANSPORT if TRANSPORT else url
+
+
+class Socket:
+    """A WebSocket client of the viewer service, for the protocol checks: `status` is the
+    handshake's HTTP status; frames are masked unless told otherwise."""
+    def __init__(self, service, token=None, origin=None, rcvbuf=None):
+        host, port = urlsplit(service.origin).netloc.split(":")
+        self.sock = socket.socket()
+        if rcvbuf:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+        self.sock.settimeout(10)
+        self.sock.connect((host, int(port)))
+        key = base64.b64encode(os.urandom(16)).decode()
+        origin = service.origin if origin is None else origin
+        self.sock.sendall((f"GET /api/ws?token={service.token if token is None else token} HTTP/1.1\r\n"
+                           f"Host: {host}:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                           f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n" +
+                           (f"Origin: {origin}\r\n" if origin else "") + "\r\n").encode())
+        self.buf = b""
+        while b"\r\n\r\n" not in self.buf:
+            data = self.sock.recv(4096)
+            if not data:
+                break
+            self.buf += data
+        head, _, self.buf = self.buf.partition(b"\r\n\r\n")
+        lines = head.decode().split("\r\n")
+        self.status = int(lines[0].split()[1])
+        self.headers = dict(line.split(": ", 1) for line in lines[1:])
+        self.accept = base64.b64encode(hashlib.sha1((key + http_viewer.WS_GUID).encode()).digest()).decode()
+        self.next = 0
+
+    def frame(self, payload, opcode=1, mask=True):
+        n = len(payload)
+        head = bytes([0x80 | opcode]) + bytes([(0x80 if mask else 0) | (n if n < 126 else 126 if n < 65536 else 127)])
+        head += b"" if n < 126 else struct.pack("!H", n) if n < 65536 else struct.pack("!Q", n)
+        if not mask:
+            return head + payload
+        key = os.urandom(4)
+        return head + key + bytes(b ^ key[i % 4] for i, b in enumerate(payload))
+
+    def send(self, payload, opcode=1, mask=True):
+        self.sock.sendall(self.frame(payload, opcode, mask))
+
+    def exact(self, n):
+        while len(self.buf) < n:
+            data = self.sock.recv(65536)
+            if not data:
+                raise EOFError
+            self.buf += data
+        data, self.buf = self.buf[:n], self.buf[n:]
+        return data
+
+    def recv(self):
+        """The next frame: (opcode, payload)"""
+        head = self.exact(2)
+        n = head[1] & 0x7F
+        if n == 126:
+            n = struct.unpack("!H", self.exact(2))[0]
+        elif n == 127:
+            n = struct.unpack("!Q", self.exact(8))[0]
+        return head[0] & 0x0F, self.exact(n)
+
+    def request(self, op, body):
+        self.next += 1
+        self.send(json.dumps({"id": self.next, "op": op, "body": body}).encode())
+        return self.next
+
+    def answer(self, ident):
+        opcode, payload = self.recv()
+        assert opcode == 1, (opcode, payload)
+        answer = json.loads(payload)
+        assert answer["id"] == ident, answer
+        return answer
+
+    def call(self, op, body):
+        return self.answer(self.request(op, body))
+
+    def close(self):
+        self.sock.close()
+
+
+class WebSocketTransport(unittest.TestCase):
+    def setUp(self):
+        self.viewer = Viewer("demo", "https://example.test/", [800, 600])
+        self.service = Service("127.0.0.1:0", self.viewer).start()
+        self.sockets = []
+
+    def tearDown(self):
+        for ws in self.sockets:
+            ws.close()
+        self.service.close()
+
+    def open(self, **kw):
+        ws = Socket(self.service, **kw)
+        self.sockets.append(ws)
+        return ws
+
+    def attached(self, ws):
+        """Attach over `ws`, publish an empty snapshot and acknowledge it: the session"""
+        session = ws.call("attach", {"runtime": "demo", "viewport": [800, 600]})["ok"]["session"]
+        self.viewer.wait({"now": 0, "busy": True})
+        self.viewer.publish([["c", 0, []]], session)
+        seq = ws.call("poll", {"session": session, "after": 0})["ok"]["batches"][0]["seq"]
+        self.assertTrue(ws.call("input", {"session": session, "ack": seq, "events": []})["ok"]["ready"])
+        return session, seq
+
+    def test_handshake_access_policy(self):
+        for kw, code in (({"token": "wrong"}, 403), ({"origin": ""}, 403), ({"origin": "http://elsewhere.test"}, 403)):
+            self.assertEqual(self.open(**kw).status, code, kw)
+        ws = self.open()
+        self.assertEqual(ws.status, 101)
+        self.assertEqual(ws.headers["Sec-WebSocket-Accept"], ws.accept)
+        self.assertEqual(self.viewer.stats["ws_connections"], 1)
+        # a plain request to the endpoint, and an unknown runtime or op
+        with self.assertRaises(HTTPError) as error:
+            urlopen(Request(self.service.origin + "/api/ws?token=" + self.service.token, headers={"Origin": self.service.origin}))
+        self.assertEqual(error.exception.code, 400)
+        error.exception.close()
+        self.assertEqual(ws.call("attach", {"runtime": "other", "viewport": [800, 600]})["error"], "Unknown runtime")
+        self.assertEqual(ws.call("nonsense", {})["error"], "Not found")
+
+    def test_calls_match_http_semantics(self):
+        ws = self.open()
+        session, seq = self.attached(ws)
+        self.assertEqual(ws.call("input", {"session": session, "ack": seq, "events": [{"type": "click"}]})["ok"],
+                         {"ready": True, "inputPending": False})
+        self.assertEqual(len(self.viewer.wait({"now": 0, "busy": True})["ok"]["events"]), 1)
+        # stale sessions, navigation and the snapshot gate give the HTTP errors
+        self.assertIn("attach again", ws.call("input", {"session": "stale", "ack": 0, "events": []})["error"])
+        self.viewer.navigation_committed("https://example.test/next", 7)
+        self.assertRegex(ws.call("poll", {"session": session, "after": seq})["error"], "^Document replaced by a navigation")
+        replacement = ws.call("attach", {"runtime": "demo", "viewport": [800, 600]})["ok"]["session"]
+        self.assertIn("snapshot", ws.call("input", {"session": replacement, "ack": 0, "events": [{"type": "click"}]})["error"])
+        # the same Viewer through HTTP, on the same session
+        req = Request(self.service.origin + "/api/input", data=json.dumps({"session": replacement, "ack": 0}).encode(),
+                      headers={"X-Viewer-Token": self.service.token, "Content-Type": "application/json"})
+        with urlopen(req) as response:
+            self.assertEqual(json.load(response), {"ready": False, "inputPending": False})
+        stats = self.viewer.stats
+        self.assertEqual(stats["http_api_calls"], 1)
+        self.assertGreater(stats["http_api_bytes_in"], 0)
+        self.assertGreater(stats["http_api_bytes_out"], 0)
+        self.assertEqual(stats["ws_calls"], 8)
+        self.assertGreater(stats["ws_bytes_out"], stats["ws_calls"] * 10)
+
+    def test_one_poll_waits_while_other_calls_answer(self):
+        ws = self.open()
+        session, seq = self.attached(ws)
+        waiting = ws.request("poll", {"session": session, "after": seq})
+        second = ws.request("poll", {"session": session, "after": seq})
+        self.assertEqual(ws.answer(second)["error"], "A poll is already waiting")
+        started = time.monotonic()
+        self.assertTrue(ws.call("input", {"session": session, "ack": seq, "events": []})["ok"]["ready"])
+        self.assertLess(time.monotonic() - started, 0.5, "input waited for the poll")
+        self.viewer.publish([["d", 1, "x"]])
+        batches = ws.answer(waiting)["ok"]["batches"]
+        self.assertEqual([b["seq"] for b in batches], [seq + 1])
+
+    def test_frames(self):
+        ws = self.open()
+        ws.send(b"hello", opcode=9)
+        self.assertEqual(ws.recv(), (10, b"hello"))
+        # a message in two fragments
+        call = json.dumps({"id": 5, "op": "nonsense", "body": {}}).encode()
+        ws.sock.sendall(ws.frame(call[:7], opcode=1)[:1].replace(b"\x81", b"\x01") + ws.frame(call[:7])[1:])
+        ws.send(call[7:], opcode=0)
+        self.assertEqual(ws.answer(5)["error"], "Not found")
+        for opcode, payload, mask, code in ((2, b"binary", True, 1003), (1, b"{}", False, 1002), (1, b"not json", True, 1007),
+                                            (1, json.dumps({"id": 1, "op": "input", "body": {"pad": "x" * (2 << 20)}}).encode(), True, 1009)):
+            ws = self.open()
+            ws.send(payload, opcode, mask)
+            self.assertEqual(ws.recv(), (8, struct.pack("!H", code)), opcode)
+            with self.assertRaises(EOFError):
+                ws.recv()
+        ws = self.open()
+        ws.send(b"", opcode=8)
+        self.assertEqual(ws.recv(), (8, struct.pack("!H", 1000)))
+
+    def test_slow_reader_is_not_buffered(self):
+        """A browser that stops reading stops the service reading its calls, and is closed"""
+        old = http_viewer.WS_TIMEOUT
+        http_viewer.WS_TIMEOUT = 1
+        try:
+            ws = self.open(rcvbuf=4096)
+            session, seq = self.attached(ws)
+            self.viewer.publish([["d", 1, "x" * (4 << 20)]])
+            ws.request("poll", {"session": session, "after": seq})
+            ws.sock.setblocking(False)
+            sent = 0
+            try:
+                for _ in range(20000):
+                    ws.sock.send(ws.frame(json.dumps({"id": 1, "op": "input", "body": {"session": session, "ack": seq}}).encode()))
+                    sent += 1
+            except (BlockingIOError, ConnectionResetError, BrokenPipeError):
+                pass  # (the service may already have timed the socket out)
+            time.sleep(0.3)
+            answered = self.viewer.stats["ws_calls"]
+            self.assertLess(answered, sent, "the service kept reading calls it could not answer")
+            end = time.monotonic() + 5
+            while self.service.sockets and time.monotonic() < end:
+                time.sleep(0.05)
+            self.assertFalse(self.service.sockets, "a stalled socket stayed open")
+            self.assertLessEqual(self.viewer.stats["ws_calls"], answered + 1)
+            self.assertEqual(self.viewer.session, session)  # the lease still holds the session
+        finally:
+            http_viewer.WS_TIMEOUT = old
+
+    def test_connection_loss_keeps_the_session(self):
+        ws = self.open()
+        session, seq = self.attached(ws)
+        waiting = ws.request("poll", {"session": session, "after": seq})
+        self.service.drop_sockets()
+        with self.assertRaises((EOFError, OSError)):
+            ws.answer(waiting)
+        again = self.open()
+        self.assertTrue(again.call("input", {"session": session, "ack": seq, "events": [{"type": "click"}]})["ok"]["ready"])
+        self.assertEqual(self.viewer.stats["attachments"], 1)
+        self.assertEqual(self.viewer.stats["ws_connections"], 2)
+
 
 
 class Protocol(unittest.TestCase):
@@ -94,7 +324,7 @@ class Protocol(unittest.TestCase):
         try:
             browser.start_session()
             browser.set_context("content")
-            browser.navigate(service.url)
+            browser.navigate(page_url(service.url))
             until(lambda: v.session is not None)
             session = v.session
             v.wait({"now": 0, "busy": True})
@@ -144,13 +374,13 @@ class Protocol(unittest.TestCase):
             while time.monotonic() < end:
                 if check(): return
                 time.sleep(0.03)
-            self.fail("browser did not recover from local input burst")
+            self.fail(f"browser did not recover from local input burst; status: {status()}, queued: {len(v.events)}")
         def status():
             return browser.execute_script('return document.getElementById("status").textContent')
         try:
             browser.start_session()
             browser.set_context("content")
-            browser.navigate(service.url)
+            browser.navigate(page_url(service.url))
             until(lambda: v.session is not None)
             session = v.session
             v.wait({"now": 0, "busy": True})
@@ -164,24 +394,35 @@ class Protocol(unittest.TestCase):
             until(lambda: status().startswith("Connected"))
             # Hold one successful response while the next local batch fills.
             # The old response must not resume capture before that batch drains.
+            # The service holds the answer, so this works on either transport; the
+            # page records its state when it sends the next input call.
+            held, release, original = threading.Event(), threading.Event(), v.input
+            def holding(*args, **kw):
+                result = original(*args, **kw)
+                if not held.is_set():
+                    held.set()
+                    release.wait(10)
+                return result
+            v.input = holding
             browser.execute_script("""
-                const w = window.wrappedJSObject, original = w.fetch;
-                w.__heldOnce = false; w.__nextInput = null;
-                w.fetch = async function(path, options) {
-                    const input = path === "/api/input";
-                    if (input && w.__heldOnce && w.__release === null && !w.__nextInput)
+                const w = window.wrappedJSObject, fetch = w.fetch, send = w.WebSocket.prototype.send;
+                w.__released = false; w.__nextInput = null;
+                const record = body => {
+                    if (w.__released && !w.__nextInput)
                         w.__nextInput = {pointer: document.getElementById("page").style.pointerEvents,
-                            status: document.getElementById("status").textContent,
-                            count: JSON.parse(options.body).events.length};
-                    const response = await original(path, options);
-                    if (input && !w.__heldOnce) {
-                        w.__heldOnce = true;
-                        await new Promise(resolve => { w.__release = resolve; });
-                    }
-                    return response;
+                            status: document.getElementById("status").textContent, count: body.events.length};
+                };
+                w.fetch = function(path, options) {
+                    if (path === "/api/input") record(JSON.parse(options.body));
+                    return fetch(path, options);
+                };
+                w.WebSocket.prototype.send = function(data) {
+                    const call = JSON.parse(data);
+                    if (call.op === "input") record(call.body);
+                    return send.call(this, data);
                 };
             """)
-            until(lambda: browser.execute_script('return !!window.wrappedJSObject.__release'))
+            self.assertTrue(held.wait(5), "no input call was held; status: " + status())
             # Native pointer entry crosses 157 nested elements synchronously,
             # producing pointerenter and mouseenter before the send timer runs.
             browser.switch_to_frame(browser.find_element("id", "page"))
@@ -193,34 +434,119 @@ class Protocol(unittest.TestCase):
             browser.find_element("id", "field").send_keys("blocked")
             self.assertEqual(browser.execute_script('return document.getElementById("field").value'), "")
             browser.switch_to_frame()
-            browser.execute_script('const w = window.wrappedJSObject; w.__release(); w.__release = null;')
+            browser.execute_script('window.wrappedJSObject.__released = true;')
+            release.set()
             until(lambda: browser.execute_script('return !!window.wrappedJSObject.__nextInput'))
             observed = browser.execute_script('return window.wrappedJSObject.__nextInput')
             self.assertEqual(observed, {"pointer": "none", "status": "Processing input…", "count": 256})
             self.assertNotIn("queue full", status().lower())
             self.assertEqual(v.session, session)
+            # Drain as a runtime would. While the pointer rests over the nested
+            # content, each resume can make Firefox send the enter burst again.
+            def draining(into):
+                stop = threading.Event()
+                def drain():
+                    while not stop.is_set():
+                        into.extend(v.wait({"now": 0, "busy": False})["ok"]["events"])
+                thread = threading.Thread(target=drain, daemon=True)
+                thread.start()
+                def end():
+                    stop.set()
+                    thread.join()
+                return end
             accepted = []
-            for _ in range(20):
-                accepted.extend(v.wait({"now": 0, "busy": True})["ok"]["events"])
-                time.sleep(0.1)
+            stop = draining(accepted)
             until(lambda: status().startswith("Connected"))
+            stop()
+            with v.lock:
+                accepted.extend(v.events)
+                self.assertEqual(len(accepted), v.stats["events"])
             tasks = [e["task"] for e in accepted]
             self.assertGreaterEqual(len(tasks), 256)
             self.assertEqual(tasks, sorted(set(tasks)))
-            self.assertEqual(len(accepted), v.stats["events"])
             self.assertEqual(v.stats["attachments"], 1)
             v.navigation_started("https://example.test/all")
             v.navigation_committed("https://example.test/all", 42)
             until(lambda: v.session is not None and v.session != session)
             replacement = v.session
             v.wait({"now": 0, "busy": True})
+            later = []
+            stop = draining(later)
             v.publish([["c", 0, [html]]], replacement)
             until(lambda: status().startswith("Connected"))
             self.assertIn("/all", status())
             browser.switch_to_frame(browser.find_element("id", "page"))
             browser.find_element("id", "field").send_keys("z")
-            until(lambda: any(e.get("value", [None])[0] == "z" for e in v.events))
+            until(lambda: any(e.get("value", [None])[0] == "z" for e in later))
+            stop()
             self.assertEqual(v.stats["attachments"], 2)
+        finally:
+            firefox_exit.close(browser)
+            service.close()
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 to drive Firefox")
+    def test_browser_websocket_loss_and_fallback(self):
+        """The socket's loss ends the session in the page and Connect opens a new one; a socket that
+        cannot open falls back to long polling, unless ?transport=ws (DESIGN "WebSocket transport")"""
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        v = Viewer("demo", "https://example.test/", [800, 600])
+        service = Service("127.0.0.1:0", v).start()
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        def until(check, what):
+            end = time.monotonic() + 10
+            while time.monotonic() < end:
+                if check(): return
+                time.sleep(0.03)
+            self.fail(what + "; status: " + status())
+        def status():
+            return browser.execute_script('return document.getElementById("status").textContent')
+        html = {"i": 1, "n": "html", "a": [], "c": [
+            {"i": 2, "n": "head", "a": [], "c": []},
+            {"i": 3, "n": "body", "a": [], "c": [{"i": 4, "n": "input", "a": [["id", "field"]], "c": []}]}]}
+        def connected(old):
+            until(lambda: v.session is not None and v.session != old, "no new attachment")
+            session = v.session
+            v.wait({"now": 0, "busy": True})
+            v.publish([["c", 0, [html]]], session)
+            until(lambda: status().startswith("Connected"), "not connected")
+            return session
+        def typed(text):
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", "field").send_keys(text)
+            browser.switch_to_frame()
+            until(lambda: any(e.get("value", [None])[0] == text for e in v.wait({"now": 0, "busy": True})["ok"]["events"]), "typing not delivered")
+            browser.execute_script('document.getElementById("page").contentDocument.getElementById("field").value = ""')
+        try:
+            browser.start_session()
+            browser.set_context("content")
+            browser.navigate(service.url)
+            first = connected(None)
+            self.assertEqual(v.stats["ws_connections"], 1)
+            http_calls = v.stats["http_api_calls"]  # the runtime list only
+            typed("a")
+            service.drop_sockets()
+            until(lambda: status() == "Viewer connection lost. Click Connect to reattach.", "loss not shown")
+            self.assertEqual(v.session, first)  # the service still holds it for the lease
+            browser.find_element("id", "attach").click()
+            connected(first)
+            self.assertEqual(v.stats["ws_connections"], 2)
+            self.assertEqual(v.stats["http_api_calls"], http_calls)
+            typed("b")
+            # the socket refused: auto falls back to long polling, ws does not
+            service.server.RequestHandlerClass.websocket = lambda self: self.reply(404, {"error": "Not found"})
+            before = v.session
+            browser.navigate(service.url)
+            polled = connected(before)
+            self.assertEqual(v.stats["ws_connections"], 2)
+            calls = v.stats["http_api_calls"]
+            typed("c")
+            self.assertGreater(v.stats["http_api_calls"], calls)
+            attachments = v.stats["attachments"]
+            browser.navigate(service.url + "&transport=ws")
+            until(lambda: status() == "WebSocket unavailable. Click Connect to reattach.", "ws mode fell back")
+            self.assertEqual(v.stats["attachments"], attachments)
         finally:
             firefox_exit.close(browser)
             service.close()
@@ -760,7 +1086,7 @@ class Runtime(unittest.TestCase):
             self.assertTrue(selector.select(15), "service did not start")
             line = self.proc.stdout.readline()
             self.assertTrue(line.startswith("VIEWER_URL "), line + (self.root / "driver.log").read_text())
-            self.viewer_url = line.split()[1]
+            self.viewer_url = page_url(line.split()[1])
         finally:
             selector.close()
         parsed = urlsplit(self.viewer_url)

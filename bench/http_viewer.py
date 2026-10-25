@@ -6,6 +6,7 @@ applies it. Overrun requests another snapshot rather than retaining history.
 """
 import base64
 from collections import deque
+import hashlib
 from webgl_dummy import DummyWebGL
 import hmac
 import http.server
@@ -16,6 +17,8 @@ from pathlib import Path
 import re
 import secrets
 import signal
+import socket
+import struct
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -32,6 +35,10 @@ MAX_RESOURCES = 4096
 MAX_RESOURCE_BYTES = 64 * 1024 * 1024
 MAX_RESOURCE_ONE = 32 * 1024 * 1024
 MAX_STREAMS = 8
+# The WebSocket transport (DESIGN "WebSocket transport"): RFC 6455's handshake GUID, and the seconds
+# a socket may send nothing, or an answer may wait to be written, before the socket is closed
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+WS_TIMEOUT = 15
 
 
 def after_notice(viewer):
@@ -97,7 +104,9 @@ class Viewer:
         self.polled_notice = 0
         self.polled_navigating = None
         self.stats = {"media_resources": 0, "media_resource_requests": 0, "media_resource_bytes": 0, "media_resource_chunks": 0, "media_resource_cancels": 0, "media_ops": 0, "media_replays": 0, "media_bytes": 0, "media_events": 0, "media_queries": 0, "media_resets": 0, "webgl_jobs": 0, "webgl_timeouts": 0, "webgl_dummy": 0, "webgl_native": 0, "webgl_replays": 0, "webgl_overflows": 0, "attachments": 0, "snapshots": 0, "resyncs": 0, "events": 0,
-                      "navigations": 0, "navigation_failures": 0, "navigation_refusals": 0, "navigation_input_dropped": 0}
+                      "navigations": 0, "navigation_failures": 0, "navigation_refusals": 0, "navigation_input_dropped": 0,
+                      "http_api_calls": 0, "http_api_bytes_in": 0, "http_api_bytes_out": 0,
+                      "ws_connections": 0, "ws_calls": 0, "ws_bytes_in": 0, "ws_bytes_out": 0}
 
     def _detach(self):
         self._media_reset()
@@ -582,6 +591,18 @@ class Viewer:
             self.lock.notify_all()
 
 
+class NotFound(Exception):
+    """An unknown API op or runtime (HTTP 404)"""
+
+
+class SocketClosed(Exception):
+    """The WebSocket ended: a close frame, a protocol error or a lost connection. `code` is the
+    close status to send back, or None when nothing can be sent."""
+    def __init__(self, code=None):
+        super().__init__(code)
+        self.code = code
+
+
 def media_range(header):
     """A request's single byte range: (start, end or None), (None, suffix length), or None for the
     whole resource (no header, or one this does not serve: several ranges, another unit)."""
@@ -609,7 +630,41 @@ class Service:
         viewer.resource_base = self.origin
         self.url = f"{self.origin}/?token={self.token}"
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        # the open WebSockets' connections, ended by drop_sockets and close
+        self.sockets = set()
+        self.sockets_lock = threading.Lock()
         self.old_sigint = self.old_sigterm = None
+
+    def call(self, op, req):
+        """One API op for either transport: its result. Raises NotFound for an unknown op or
+        runtime, and ValueError, KeyError or TypeError for a refused call (HTTP 409)."""
+        viewer = self.viewer
+        if op == "attach":
+            if req.get("runtime") != viewer.name:
+                raise NotFound("Unknown runtime")
+            return viewer.attach(req["viewport"])
+        if op == "poll":
+            after = req.get("after", 0)
+            if type(after) is not int:
+                raise ValueError("after must be an integer")
+            return viewer.poll(req.get("session", ""), after)
+        if op == "media-type":
+            return viewer.media_type_reply(req["session"], req["id"], req["reply"])
+        if op == "media-events":
+            return viewer.media_input(req["session"], req["epoch"], req["events"])
+        if op == "webgl":
+            return viewer.webgl_reply(req["session"], req["id"], req["reply"])
+        if op == "webgl-lost":
+            return viewer.webgl_lost(req["session"], req["ids"])
+        if op == "input":
+            return viewer.input(req["session"], req["ack"], req.get("events", []), req.get("viewport"), req.get("visible"))
+        if op == "detach":
+            viewer.detach(req["session"])
+            return {}
+        if op == "stop":
+            viewer.stop()
+            return {}
+        raise NotFound("Not found")
 
     def handler(self):
         service = self
@@ -617,6 +672,19 @@ class Service:
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass  # Do not log bearer tokens or viewer input.
+
+            def flush_headers(self):
+                if getattr(self, "counted", False):
+                    service.viewer.stats["http_api_bytes_out"] += sum(map(len, getattr(self, "_headers_buffer", [])))
+                super().flush_headers()
+
+            def count_request(self, body=0):
+                """Count an HTTP API call: its request line, headers and body (DESIGN "WebSocket
+                transport", counters); its answer is counted as it is written."""
+                self.counted = True
+                stats = service.viewer.stats
+                stats["http_api_calls"] += 1
+                stats["http_api_bytes_in"] += len(self.raw_requestline) + body + 2 + sum(len(k) + len(v) + 4 for k, v in self.headers.items())
 
             def reply(self, code, data, content_type="application/json"):
                 body = json.dumps(data).encode() if content_type == "application/json" else data
@@ -633,6 +701,8 @@ class Service:
                 self.send_header("Content-Security-Policy", policy)
                 self.end_headers()
                 self.wfile.write(body)
+                if getattr(self, "counted", False):
+                    service.viewer.stats["http_api_bytes_out"] += len(body)
 
             def permitted(self, api=False):
                 if self.headers.get("Host") != urlsplit(service.origin).netloc:
@@ -771,6 +841,165 @@ class Service:
                     viewer.stats["media_resource_bytes"] += len(data)
                     at += len(data)
 
+            def websocket(self):
+                """GET /api/ws (DESIGN "WebSocket transport"): check the handshake, then answer
+                the browser's calls until the socket ends. Polls wait in their own thread, one at a
+                time; every other call is answered here, so an answer that cannot be written stops
+                this thread reading."""
+                stats = service.viewer.stats
+                query = parse_qs(urlsplit(self.path).query)
+                key = self.headers.get("Sec-WebSocket-Key", "")
+                if self.headers.get("Host") != urlsplit(service.origin).netloc:
+                    self.reply(403, {"error": "Unexpected Host"})
+                    return
+                if self.headers.get("Origin") != service.origin:
+                    self.reply(403, {"error": "Unexpected Origin"})
+                    return
+                if not hmac.compare_digest(query.get("token", [""])[0], service.token):
+                    self.reply(403, {"error": "Invalid viewer token"})
+                    return
+                if (self.headers.get("Upgrade", "").lower() != "websocket" or
+                        "upgrade" not in self.headers.get("Connection", "").lower().replace(" ", "").split(",") or
+                        self.headers.get("Sec-WebSocket-Version") != "13" or not key):
+                    self.reply(400, {"error": "Expected a WebSocket handshake"})
+                    return
+                accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+                handshake = (f"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                             f"Sec-WebSocket-Accept: {accept}\r\n\r\n").encode()
+                self.close_connection = True
+                self.connection.settimeout(WS_TIMEOUT)
+                # (answers are small frames written back to back by two threads: without this,
+                # Nagle's algorithm holds the second one for the browser's delayed ACK, ~40 ms)
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                sending = threading.Lock()
+                # set once an answer could not be written: nothing more is read or answered
+                ended = threading.Event()
+                stats["ws_connections"] += 1
+                stats["ws_bytes_in"] += len(self.raw_requestline) + 2 + sum(len(k) + len(v) + 4 for k, v in self.headers.items())
+
+                def send(opcode, payload):
+                    n = len(payload)
+                    head = bytes([0x80 | opcode]) + (bytes([n]) if n < 126 else struct.pack("!BH", 126, n) if n < 65536 else struct.pack("!BQ", 127, n))
+                    with sending:
+                        try:
+                            self.connection.sendall(head + payload)
+                        except OSError:
+                            # (a timed-out write may have sent part of the frame: end the socket)
+                            ended.set()
+                            try:
+                                self.connection.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
+                            raise
+                        stats["ws_bytes_out"] += len(head) + n
+
+                def answer(ident, op, body):
+                    try:
+                        if not isinstance(body, dict):
+                            raise TypeError("request must be an object")
+                        out = {"id": ident, "ok": service.call(op, body)}
+                    except (NotFound, ValueError, KeyError, TypeError) as e:
+                        out = {"id": ident, "error": str(e)}
+                    try:
+                        send(1, json.dumps(out).encode())
+                    except OSError:
+                        pass  # the reader sees the socket end
+
+                polling = threading.Event()
+
+                def poll(ident, body):
+                    try:
+                        answer(ident, "poll", body)
+                    finally:
+                        polling.clear()
+
+                with service.sockets_lock:
+                    service.sockets.add(self.connection)
+                try:
+                    with sending:
+                        self.connection.sendall(handshake)
+                        stats["ws_bytes_out"] += len(handshake)
+                    while True:
+                        opcode, payload = self.ws_read(send)
+                        if ended.is_set():
+                            break
+                        stats["ws_calls"] += 1
+                        try:
+                            call = json.loads(payload)
+                            ident, op, body = call["id"], call["op"], call.get("body", {})
+                            if type(ident) is not int or not isinstance(op, str):
+                                raise TypeError
+                        except (ValueError, KeyError, TypeError):
+                            raise SocketClosed(1007)
+                        limit = MAX_GL if op == "webgl" else MAX_BODY
+                        if len(payload) > limit:
+                            raise SocketClosed(1009)
+                        if op == "poll":
+                            if polling.is_set():
+                                send(1, json.dumps({"id": ident, "error": "A poll is already waiting"}).encode())
+                                continue
+                            polling.set()
+                            threading.Thread(target=poll, args=(ident, body), daemon=True).start()
+                        else:
+                            answer(ident, op, body)
+                except SocketClosed as e:
+                    if e.code is not None:
+                        try:
+                            send(8, struct.pack("!H", e.code))
+                        except OSError:
+                            pass
+                except (OSError, ValueError):
+                    pass  # a lost or timed-out connection, or a file closed under the reader
+                finally:
+                    with service.sockets_lock:
+                        service.sockets.discard(self.connection)
+
+            def ws_read(self, send):
+                """The browser's next text message, as bytes; answers pings, and raises SocketClosed
+                for a close frame, a binary message, an unmasked or oversized frame, or a lost
+                connection. Fragmented messages are joined, up to MAX_GL."""
+                stats = service.viewer.stats
+                message = None
+                while True:
+                    head = self.rfile.read(2)
+                    if len(head) < 2:
+                        raise SocketClosed()
+                    fin, opcode, masked, n = head[0] & 0x80, head[0] & 0x0F, head[1] & 0x80, head[1] & 0x7F
+                    if head[0] & 0x70 or not masked:
+                        raise SocketClosed(1002)
+                    extra = 0
+                    if n == 126:
+                        extra, n = 2, struct.unpack("!H", self.ws_exact(2))[0]
+                    elif n == 127:
+                        extra, n = 8, struct.unpack("!Q", self.ws_exact(8))[0]
+                    if opcode >= 8 and (not fin or n > 125):
+                        raise SocketClosed(1002)
+                    if n + len(message or b"") > MAX_GL:
+                        raise SocketClosed(1009)
+                    mask = self.ws_exact(4)
+                    data = self.ws_exact(n)
+                    stats["ws_bytes_in"] += 2 + extra + 4 + n
+                    if n:
+                        data = (int.from_bytes(data, "big") ^ int.from_bytes((mask * (n // 4 + 1))[:n], "big")).to_bytes(n, "big")
+                    if opcode == 8:
+                        raise SocketClosed(1000)
+                    if opcode == 9:
+                        send(10, data)
+                        continue
+                    if opcode == 10:
+                        continue
+                    if opcode == 2 or (opcode == 1) == (message is not None) or opcode not in (0, 1):
+                        raise SocketClosed(1003 if opcode == 2 else 1002)
+                    message = (message or b"") + data
+                    if fin:
+                        return 1, message
+
+            def ws_exact(self, n):
+                data = self.rfile.read(n)
+                if len(data) < n:
+                    raise SocketClosed()
+                return data
+
             def do_GET(self):
                 path = urlsplit(self.path).path
                 if path.startswith("/media/"):
@@ -783,6 +1012,11 @@ class Service:
                     except (BrokenPipeError, ConnectionResetError):
                         pass
                     return
+                if path == "/api/ws":
+                    self.websocket()
+                    return
+                if path.startswith("/api/"):
+                    self.count_request()
                 if not self.permitted(api=path.startswith("/api/")):
                     return
                 try:
@@ -802,7 +1036,7 @@ class Service:
                         self.reply(200, [{"id": service.viewer.name, "url": service.viewer.page_url, "pid": service.viewer.runtime_pid}])
                     elif path == "/api/poll":
                         q = parse_qs(urlsplit(self.path).query)
-                        self.reply(200, service.viewer.poll(q.get("session", [""])[0], int(q.get("after", ["0"])[0])))
+                        self.reply(200, service.call("poll", {"session": q.get("session", [""])[0], "after": int(q.get("after", ["0"])[0])}))
                     else:
                         self.reply(404, {"error": "Not found"})
                 except (ValueError, KeyError) as e:
@@ -811,10 +1045,14 @@ class Service:
                     pass
 
             def do_POST(self):
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = 0
+                self.count_request(max(length, 0))
                 if not self.permitted(api=True):
                     return
                 try:
-                    length = int(self.headers.get("Content-Length", "0"))
                     limit = MAX_GL if urlsplit(self.path).path == "/api/webgl" else MAX_BODY
                     if not 0 < length <= limit:
                         self.reply(413, {"error": "Invalid request size"})
@@ -823,31 +1061,11 @@ class Service:
                     if not isinstance(req, dict):
                         raise ValueError("request must be an object")
                     path = urlsplit(self.path).path
-                    if path == "/api/attach":
-                        if req.get("runtime") != service.viewer.name:
-                            self.reply(404, {"error": "Unknown runtime"})
-                            return
-                        result = service.viewer.attach(req["viewport"])
-                    elif path == "/api/media-type":
-                        result = service.viewer.media_type_reply(req["session"], req["id"], req["reply"])
-                    elif path == "/api/media-events":
-                        result = service.viewer.media_input(req["session"], req["epoch"], req["events"])
-                    elif path == "/api/webgl":
-                        result = service.viewer.webgl_reply(req["session"], req["id"], req["reply"])
-                    elif path == "/api/webgl-lost":
-                        result = service.viewer.webgl_lost(req["session"], req["ids"])
-                    elif path == "/api/input":
-                        result = service.viewer.input(req["session"], req["ack"], req.get("events", []), req.get("viewport"), req.get("visible"))
-                    elif path == "/api/detach":
-                        service.viewer.detach(req["session"])
-                        result = {}
-                    elif path == "/api/stop":
-                        service.viewer.stop()
-                        result = {}
-                    else:
-                        self.reply(404, {"error": "Not found"})
-                        return
-                    self.reply(200, result)
+                    if not path.startswith("/api/") or path == "/api/poll":
+                        raise NotFound("Not found")
+                    self.reply(200, service.call(path[len("/api/"):], req))
+                except NotFound as e:
+                    self.reply(404, {"error": str(e)})
                 except (ValueError, KeyError, TypeError) as e:
                     self.reply(409, {"error": str(e)})
                 except (BrokenPipeError, ConnectionResetError):
@@ -862,8 +1080,18 @@ class Service:
             self.old_sigterm = signal.signal(signal.SIGTERM, lambda *_: self.viewer.stop())
         return self
 
+    def drop_sockets(self):
+        """End every open WebSocket's connection without a close frame, as a lost network does."""
+        with self.sockets_lock:
+            for conn in list(self.sockets):
+                try:
+                    conn.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
     def close(self):
         self.viewer.stop()
+        self.drop_sockets()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()

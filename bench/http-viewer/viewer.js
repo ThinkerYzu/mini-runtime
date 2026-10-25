@@ -42,12 +42,56 @@ let navigating = null, notice = "", noticeSeq = 0;
 const NAVIGATED = /^Document replaced by a navigation/;
 const resourceDone = new WeakSet(), resourceWatched = new WeakSet();
 const viewport = () => [Math.max(1, frame.clientWidth), Math.max(1, frame.clientHeight)];
-const api = async (path, body) => {
+// The service's API (DESIGN "WebSocket transport"): every call but the runtime list goes over one
+// WebSocket. ?transport=auto (the default) falls back to HTTP long polling, until the page is reloaded,
+// when the socket cannot open; ws never polls; poll never opens a socket.
+const transport = new URL(location.href).searchParams.get("transport") || "auto";
+const MAX_CALLS = 16, MAX_UNSENT = 16 * 1024 * 1024;
+let polling = transport === "poll", socketOpen = null, calls = new Map(), callId = 0;
+function openSocket() {
+  if (socketOpen) return socketOpen;
+  return socketOpen = new Promise((resolve, reject) => {
+    const ws = new WebSocket("ws://" + location.host + "/api/ws?token=" + encodeURIComponent(token));
+    let opened = false;
+    ws.onopen = () => { opened = true; resolve(ws); };
+    ws.onmessage = e => {
+      const answer = JSON.parse(e.data), call = calls.get(answer.id);
+      if (!call) return;
+      calls.delete(answer.id);
+      if ("error" in answer) call.reject(new Error(answer.error)); else call.resolve(answer.ok);
+    };
+    // (an error is always followed by close)
+    ws.onclose = () => {
+      socketOpen = null;
+      const lost = calls; calls = new Map();
+      for (const call of lost.values()) call.reject(new Error("Viewer connection lost"));
+      if (!opened) reject(new Error("WebSocket unavailable"));
+    };
+  });
+}
+async function http(path, body) {
+  if (path === "poll") { path = "poll?session=" + encodeURIComponent(body.session) + "&after=" + body.after; body = undefined; }
   const response = await fetch("/api/" + path, { headers: {"X-Viewer-Token": token, "Content-Type": "application/json"},
     ...(body === undefined ? {} : {method: "POST", body: JSON.stringify(body)}) });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || response.status);
   return result;
+}
+const api = async (path, body) => {
+  if (polling || path === "runtimes") return http(path, body);
+  let ws;
+  try { ws = await openSocket(); }
+  catch (e) {
+    if (transport === "ws") throw e;
+    polling = true;
+    return http(path, body);
+  }
+  if (calls.size >= MAX_CALLS || ws.bufferedAmount > MAX_UNSENT) throw new Error("Viewer connection congested");
+  return new Promise((resolve, reject) => {
+    const id = ++callId;
+    calls.set(id, {resolve, reject});
+    ws.send(JSON.stringify({id, op: path, body: body === undefined ? {} : body}));
+  });
 };
 let media, mediaEpoch = null, mediaEvents = [], mediaPosting = false;
 function newMedia(epoch) {
@@ -405,7 +449,7 @@ async function attach() {
     status.textContent = "Synchronizing…";
     current = session;
     while (session === current) {
-      const reply = await api("poll?session=" + encodeURIComponent(current) + "&after=" + after);
+      const reply = await api("poll", {session: current, after});
       if (session !== current) break;
       if (reply.stopped) { disconnected("Runtime stopped"); break; }
       if (reply.mediaEpoch !== mediaEpoch) newMedia(reply.mediaEpoch);

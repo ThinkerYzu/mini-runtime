@@ -29,7 +29,7 @@ Input records identify runtime nodes and are processed in order. Accepted events
 
 Session ids and backend epochs reject stale input and media replies. A bounded update journal prevents a slow viewer from accumulating unlimited DOM updates; overflow causes a new snapshot. Media and WebGL have separate replay journals because their browser objects cannot be reconstructed from DOM alone.
 
-The service uses HTTP long polling for updates and JSON POSTs for input/lifecycle. It accepts IPv4 loopback connections, validates Host and Origin, and requires a random token. The token authorizes input and stop as well as viewing.
+The viewer's calls (updates, input, lifecycle and media/WebGL replies) go over one WebSocket as request/answer pairs, falling back to HTTP long polling and JSON POSTs when the socket cannot open ([transport options](viewer.md#listener-and-access)). Both transports call the same viewer state, so gating, ordering and backpressure rules do not depend on the transport. The service accepts IPv4 loopback connections, validates Host and Origin, and requires a random token. The token authorizes input and stop as well as viewing.
 
 ## Document navigation
 

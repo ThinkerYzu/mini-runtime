@@ -21,7 +21,7 @@ python3 bench/test_http_viewer.py
 
 The launcher suite covers URL validation, launch from another working directory, inherited benchmark-setting isolation, native profile persistence/isolation, profile locking and clean termination. It uses local HTTP and Python `-S` without a browser or recording.
 
-The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 39 cases: 26 run without a browser and 13 require `VIEWER_BROWSER=1`. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
+The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 51 cases: 33 run without a browser and 18 require `VIEWER_BROWSER=1`. Browser cases load the viewer with its default transport (WebSocket, falling back to long polling); `VIEWER_TRANSPORT=poll` or `ws` runs them on one transport only. Run the browser cases on both `poll` and the default. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
 
 ```sh
 VIEWER_BROWSER=1 FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python \
@@ -50,6 +50,29 @@ This local fixture checks redirect ownership independently of Google's traffic v
 | `Runtime.test_browser_navigation_controls` | Back/Forward boundaries, branching, same/full-document traversal, cancellation and readiness. |
 | `Runtime.test_browser_media` | Native media playback and MSE reconstruction on reconnect. |
 | `Runtime.test_browser_webgl` | Shader drawing and replay on reconnect. |
+| `WebSocketTransport` | No browser required: handshake token/Origin checks, the same answers and errors as HTTP, one waiting poll per socket, framing and close codes, a reader that stops reading is not buffered for and is closed, and a lost socket keeps the session. |
+| `Protocol.test_browser_websocket_loss_and_fallback` | A dropped socket shows the loss and Connect reattaches on a new one; a refused socket falls back to long polling, or fails with `transport=ws`. |
+
+<a id="transport-comparison"></a>
+
+### Transport comparison
+
+`bench/viewer_transport_compare.py` runs the same idle and active workloads on both transports in Firefox, with a stand-in runtime and no site (`TRIAL_S` seconds, `TRIALS` runs each; it prints a table and writes JSON to its argument):
+
+```sh
+FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python bench/viewer_transport_compare.py /tmp/compare.json
+```
+
+Medians of three 20-second runs, Firefox 160 under Xvfb (2026-10-25). Active is a 200-byte DOM change at 20 Hz plus ten keys a second; latency is a keydown's capture to its echo's DOM change in the viewer, 600 samples each.
+
+| Workload, transport | API calls/s | API bytes/s | Service CPU s | Service switches | Firefox CPU s | Firefox switches | Latency median, p95 ms |
+|---|---|---|---|---|---|---|---|
+| idle, poll | 3.0 | 2,944 | 0.057 | 840 | 0.69 | 13,877 | |
+| idle, WebSocket | 3.0 | 559 | 0.036 | 711 | 0.43 | 9,183 | |
+| active, poll | 62.5 | 85,591 | 0.663 | 9,800 | 4.6 | 84,650 | 6, 53 |
+| active, WebSocket | 70.4 | 38,227 | 0.380 | 8,337 | 3.41 | 66,791 | 15, 31 |
+
+The socket carries the same calls with about a fifth of the bytes when idle and under half when active (no per-call headers), and less service CPU. Firefox's CPU varies widely between runs (active WebSocket 1.4 to 3.4 s, poll 4.1 to 5.8 s), so treat it as lower but not by a fixed factor. Latency is mixed: the median is higher on the socket and the p95 lower; the cause of the higher median is not established (tracked separately). Before `TCP_NODELAY` was set on the socket the median was 51 ms: two threads write small answers back to back, and Nagle's algorithm held the second for the browser's delayed ACK. The calls per second are the viewer's own pattern (a poll at most every second, input each poll and every 30 ms with input waiting), not changed by the transport.
 
 `bench/http_viewer.py` owns transport; `bench/http-viewer/viewer.js` adapts the browser; `mrt-js/glue/bridge.js` and `mrt-js/src/bin/realsite.rs` own runtime mirroring and input. See [viewer operation](viewer.md) for supported behavior and [architecture](architecture.md) for process responsibilities.
 

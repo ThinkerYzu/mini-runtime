@@ -144,5 +144,15 @@ Chat/Calls styles are mirrored, including shadow-root adopted sheets. Chat still
 
 ### Listener and access
 
-The listener accepts IPv4 loopback addresses only. Its random URL token authorizes attachment, input and explicit stop (`POST /api/stop`); requests validate Host and Origin. Transport uses HTTP long polling and JSON POSTs, with one active viewer per service and no external Python server package.
+The listener accepts IPv4 loopback addresses only. Its random URL token authorizes attachment, input and explicit stop (`POST /api/stop`); requests validate Host and Origin. One active viewer is served per service, with no external Python server package.
+
+The viewer page sends its calls (attach, updates, input, media and WebGL replies, detach) over one WebSocket, `/api/ws`. The token is in that URL's query because a browser cannot set headers on a WebSocket; the Origin header must be the service's own. Page files, `/media/` resources, the runtime list and the page-close detach stay plain HTTP. Add `transport=` to the viewer URL to choose:
+
+| `transport=` | Behavior |
+|---|---|
+| `auto` (default) | WebSocket; if it cannot open, HTTP long polling and JSON POSTs until the page is reloaded |
+| `ws` | WebSocket only; a socket that cannot open shows "WebSocket unavailable" |
+| `poll` | HTTP long polling and JSON POSTs only |
+
+Both transports carry the same calls with the same rules (snapshot gating, ordered input and its backpressure, session replacement, navigation, media and WebGL). A WebSocket lost after opening shows "Viewer connection lost. Click Connect to reattach."; the runtime keeps running and Connect opens a new socket. The report's `viewer` section counts each transport's calls and bytes (`http_api_*`, `ws_*`). The measured difference is in [testing](testing.md#transport-comparison).
 
