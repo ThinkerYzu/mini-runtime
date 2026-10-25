@@ -29,9 +29,9 @@ Standalone and HTTP viewer modes require `API_PROCESS=all`, which is their defau
 | WebGL | Real OpenGL ES contexts execute in the API process, including while detached. The viewer replays a bounded command journal to display the result. Native calls do not depend on viewer attachment; detached execution is not a black-pixel dummy in this mode. |
 | Media | Plain standalone mode has no playback decoder and reports negative media capabilities. HTTP viewer mode uses the attached browser's codecs, media elements and MediaSource backend. Capabilities are negative while detached; backend changes invalidate runtime caches. |
 
-## Demo service
+## Local demo service
 
-First serve the demonstration page in another terminal:
+The [README quick start](../README.md#quick-start) opens live Wikipedia. For a synthetic local page, first serve the demonstration page in another terminal:
 
 ```sh
 python3 -m http.server 8000 --bind 127.0.0.1 --directory bench/http-viewer

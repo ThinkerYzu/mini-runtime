@@ -6,7 +6,7 @@ The project explores how much state and memory a page needs when its execution i
 
 The browser displays a sandboxed copy of the page; the page's scripts execute in the runtime. The standalone service starts no Firefox process and needs no browser automation connection. Firefox is used once to record browser environment values during initial setup, and optionally to automate tests.
 
-This is an experimental implementation, with partial web compatibility. It supports local demos and selected live-site flows, rather than every website or browser feature.
+This is an experimental implementation, with partial web compatibility. It supports selected live-site flows and local demos, rather than every website or browser feature.
 
 ## What you can try
 
@@ -36,21 +36,11 @@ Outputs are `mrt-js/target/release/realsite` and `mrt-api/target/release/mrt-api
 
 See [build setup](docs/build.md) for prerequisites and other build options.
 
-### 2. Serve the included demo
-
-In a second terminal, from this repository's root:
-
-```sh
-python3 -m http.server 8000 --bind 127.0.0.1 --directory bench/http-viewer
-```
-
-Leave this server running. The source page is `http://localhost:8000/demo.html`.
-
-### 3. Record the browser environment once
+### 2. Record the browser environment once
 
 The runtime needs a recording of browser identity, exposed interfaces and viewport values. It cannot generate one in standalone mode. If this checkout already has a suitable recording in `bench/realsites-env/`, skip this step.
 
-In the first terminal, create a normal Python environment with the pinned browser-automation dependencies and record against fresh local context pages:
+From the repository root, create a normal Python environment with the pinned browser-automation dependencies and record against fresh local context pages:
 
 ```sh
 python3 -m venv .venv
@@ -59,28 +49,28 @@ export FIREFOX_BIN=/absolute/path/to/firefox
 xvfb-run -a .venv/bin/python bench/record_env.py \
   --output bench/realsites-env/local.json
 export API_ENV=bench/realsites-env/local.json
-mkdir -p bench/realsites-mini-demo-profile
+mkdir -p bench/realsites-mini-wikipedia-profile
 ```
 
 Omit xvfb-run on a desktop display. This starts an installed Firefox in a fresh temporary profile and writes all three supported secure/isolated context entries. It does not require mach or Firefox source. The output path must be new. Subsequent standalone runs use only ordinary Python and the saved recording. See [environment setup](docs/build.md#recording-the-browser-environment).
 
-### 4. Start the standalone viewer
+### 3. Open Wikipedia in the standalone HTTP viewer
 
-From the repository root in the first terminal:
+From the repository root:
 
 ```sh
-VIEWER_HTTP=127.0.0.1:8765 ONLY=demo \
-  EXTRA_SITES='{"demo":"http://localhost:8000/demo.html"}' \
-  REALSITES_PROFILE=bench/realsites-mini-demo-profile \
-  MINI_DIR=realsites-mini-viewer MINI_OUT=mini_realsites_viewer.json \
+VIEWER_HTTP=127.0.0.1:8765 ONLY=wikipedia \
+  EXTRA_SITES='{"wikipedia":"https://en.wikipedia.org/wiki/Main_Page"}' \
+  REALSITES_PROFILE=bench/realsites-mini-wikipedia-profile \
+  MINI_DIR=realsites-mini-wikipedia MINI_OUT=mini_realsites_wikipedia.json \
   python3 bench/mini_realsites.py
 ```
 
-Open the complete printed **`VIEWER_URL`**, including its access token, in your browser. Click **Count a click**, type a draft and scroll. Close the viewer tab, then open the same URL again: the count, draft and scroll position should remain. The demo's **Runtime starts** value should still be `1`.
+Open the complete printed **`VIEWER_URL`**, including its access token, in your browser. Wikipedia runs in the standalone runtime; the browser displays its HTTP viewer. Follow an article link, scroll, and use the viewer toolbar's **Back** and **Forward** buttons. Close the viewer tab and open the same URL again to reconnect to the current page.
 
 The driver selects the latest matching recording in `bench/realsites-env/`. Set `API_ENV=/absolute/path/to/recording.json` to choose one explicitly. If port 8765 is busy, use another port or `VIEWER_HTTP=127.0.0.1:0` for an automatically selected port. Each service hosts one runtime and one active viewer; opening another viewer replaces the previous attachment.
 
-Press Ctrl+C in the service terminal to stop the runtime and write the report. Logs and captured page files are under `bench/realsites-mini-viewer/`; the report is `bench/mini_realsites_viewer.json`. Stop the demo HTTP server separately with Ctrl+C.
+Press Ctrl+C in the service terminal to stop the runtime and write the report. Logs and captured page files are under `bench/realsites-mini-wikipedia/`; the report is `bench/mini_realsites_wikipedia.json`. See the [local demo](docs/viewer.md#local-demo-service) for a synthetic page with click counters and draft text.
 
 ## Open another page
 
