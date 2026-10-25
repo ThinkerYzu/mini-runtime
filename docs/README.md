@@ -4,6 +4,7 @@ Start with the [project README](../README.md) for an introduction and the live W
 
 | Guide | Read it for |
 |---|---|
+| [Wikipedia demo and credits](assets/README.md#wikipedia-session-demo) | Recorded browsing, search, viewer-tab closure and continuation of the same session. |
 | [Publication hygiene](publication.md) | Local recordings, source allowlist, credential checks and retained attribution. |
 | [SDK contract and release checks](sdk-build-plan.md) | Source-independent consumer builds, local SDK production, integrity and acceptance. |
 | [Build setup](build.md) | Automatic pinned source setup, optional SDKs, prerequisites, optional comparison recordings and troubleshooting. |

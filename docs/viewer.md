@@ -71,6 +71,8 @@ Page scripts execute in the runtime. The viewer renders a sandboxed copy with pa
 
 ### Wikipedia interactions
 
+Watch the [Wikipedia session demo](assets/README.md#wikipedia-session-demo) for browsing and search, closing the viewer tab, and reopening the same viewer URL with the unfinished search preserved. Keep the service running while the tab is closed; stopping it ends the live session.
+
 From the [quick start](../README.md#quick-start), search for **Quicksort**, open its animated sorting image, and click the top-right **X**. Closing the enlarged image returns to the article while keeping the same runtime. Repeated image open/close cycles are validated.
 
 Wikipedia search stays visible when its search widget initializes and supports typing and suggestions. Initial replacement of the static search field can require a second click before typing. More generally, page-requested focus changes do not yet reach the viewer.

@@ -4,7 +4,18 @@
 
 Recorded on 2026-10-24 using mini-runtime `a98e9d3` and Firefox 157.0.1 as the viewer. The looping GIF shows browsing Wikipedia, searching for Quicksort, leaving an unfinished “Merge” search, closing the viewer tab, reopening the same viewer URL, and continuing to Merge sort. The standalone service stays running throughout.
 
-The recording checks that the runtime process, article URL, search text and scroll position survive reconnection. This is a real screen recording at 1.25× playback, reduced to 960 × 750 at 8 fps, with captions and an opaque mask over the private address bar. The [GIF](wikipedia-session-v2.gif) includes extra frames that hold step 4 (the unfinished search) for 4.38 seconds, plus the earlier one-second pauses before tab closure and before reopening. These pauses use normal frame durations so playback remains consistent across viewers. Raw footage, profiles, access tokens and diagnostic outputs stay outside the repository.
+The recording checks that the runtime process, article URL, search text and scroll position survive reconnection. The [published GIF](wikipedia-session-v2.gif) is a real screen recording at 1.25× playback, with captions and an opaque mask over the private address bar.
+
+| Playback detail | Current asset |
+|---|---|
+| Duration | 34.51 seconds, looping |
+| Dimensions | 960 × 750 |
+| Frames | 276, approximately 8 fps |
+| Step 4: unfinished search | 4.38 seconds; measured at 4.39 seconds in Firefox playback |
+| Other added pauses | One second before tab closure and one before reopening |
+| File size | 5,645,610 bytes |
+
+Pauses use additional frames with normal frame durations. When replacing the demo, use a new versioned filename and update the README image link and publication allowlist so cached previews fetch the new asset. Raw footage, profiles, access tokens and diagnostic outputs stay outside the repository.
 
 Wikipedia page content is by Wikipedia contributors: [Main Page](https://en.wikipedia.org/w/index.php?title=Main_Page&oldid=1380977360), [Quicksort](https://en.wikipedia.org/w/index.php?title=Quicksort&oldid=1380361759), and [Merge sort](https://en.wikipedia.org/w/index.php?title=Merge_sort&oldid=1369367310). Wikipedia text and the adapted demo presentation are available under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Embedded media retain their source terms; the links below provide author and license details. This asset-specific notice does not select a license for the runtime source.
 
