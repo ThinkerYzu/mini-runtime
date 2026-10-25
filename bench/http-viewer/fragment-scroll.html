@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fragment scrolling</title>
+<style>
+body { margin: 0; height: 4000px; }
+nav { position: fixed; top: 0; left: 0; background: white; z-index: 2; }
+.target { position: absolute; left: 0; height: 30px; }
+</style>
+<nav>
+<a id="encoded" href="#caf%C3%A9">Encoded</a>
+<a id="named" href="#legacy">Named</a>
+<a id="literal" href="#raw%20name">Literal</a>
+<a id="missing" href="#missing">Missing</a>
+<a id="top" href="#ToP">Top</a>
+<a id="empty" href="#">Empty</a>
+<a id="cancel" href="#initial">Cancelled</a>
+<button id="reset">Reset</button>
+<button id="assign">Assign</button>
+<button id="replace">Replace</button>
+<button id="push">Push state</button>
+<button id="back">Back</button>
+<button id="forward">Forward</button>
+<button id="manual">Manual restoration</button>
+<button id="report">Report</button>
+<output id="state"></output>
+</nav>
+<div id="initial" class="target" style="top:1200px">Initial</div>
+<div id="café" class="target" style="top:1600px">Encoded ID</div>
+<a name="legacy" class="target" style="top:2000px">Legacy named anchor</a>
+<div id="raw%20name" class="target" style="top:2400px">Literal percent ID</div>
+<div id="raw name" class="target" style="top:2800px">Decoded ID</div>
+<script>
+let hashes = 0;
+function report() {
+  document.getElementById('state').textContent = JSON.stringify({y:scrollY, hash:location.hash, length:history.length, hashes});
+}
+addEventListener('hashchange', () => { hashes++; report(); });
+addEventListener('popstate', report);
+addEventListener('scroll', report);
+addEventListener('load', report);
+document.getElementById('cancel').onclick = e => e.preventDefault();
+document.getElementById('reset').onclick = () => scrollTo(0, 300);
+document.getElementById('assign').onclick = () => { location.hash = 'legacy'; };
+document.getElementById('replace').onclick = () => location.replace('#initial');
+document.getElementById('push').onclick = () => { history.pushState(null, '', '#caf%C3%A9'); report(); };
+document.getElementById('back').onclick = () => history.back();
+document.getElementById('forward').onclick = () => history.forward();
+document.getElementById('manual').onclick = () => { history.scrollRestoration = 'manual'; };
+document.getElementById('report').onclick = report;
+</script>

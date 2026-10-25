@@ -11,7 +11,7 @@ This is an experimental implementation, with partial web compatibility. It suppo
 ## What you can try
 
 - Click, type and scroll, then close and reopen the viewer without restarting the current document.
-- Follow links and forms, and use the viewer toolbar's **Back** and **Forward** buttons.
+- Follow links and forms, jump to page anchors, and use the viewer toolbar's **Back** and **Forward** buttons.
 - Play video/audio through the attached browser, including supported MediaSource video streams.
 - Display WebGL drawing, with native graphics execution continuing while the viewer is detached.
 - Disconnect the viewer so the runtime can discard rebuildable style/layout data while retaining the page's DOM and JavaScript state.

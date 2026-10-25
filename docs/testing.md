@@ -21,7 +21,7 @@ python3 bench/test_http_viewer.py
 
 The launcher suite covers URL validation, launch from another working directory, inherited benchmark-setting isolation, native profile persistence/isolation, profile locking and clean termination. It uses local HTTP and Python `-S` without a browser or recording.
 
-The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 37 cases: 25 run without a browser and 12 require `VIEWER_BROWSER=1`. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
+The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 39 cases: 26 run without a browser and 13 require `VIEWER_BROWSER=1`. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
 
 ```sh
 VIEWER_BROWSER=1 FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python \
@@ -43,6 +43,8 @@ This local fixture checks redirect ownership independently of Google's traffic v
 | `Runtime.test_browser_svg_search` | Lazy replacement of a search field, SVG namespace detection, typing and value preservation after reconnect. |
 | `Runtime.test_browser_document_input` | Controlled textarea input and consecutive submissions. |
 | `Runtime.test_browser_slow_fetch` | Slow binary fetch/XHR, responsive input, cookies, errors, abort/reuse and reconnect. |
+| `Runtime.test_fragment_scroll` | No browser required: initial fragments, ID/name lookup, encoded/literal targets, repeat clicks, top/empty/missing targets, cancellation, history restoration and manual mode. |
+| `Runtime.test_browser_fragment_scroll` | Reference Firefox comparison, actual viewer link clicks, target scrolling and reconnect preservation. |
 | `Runtime.test_navigation_startup_redirects` | No browser required: immediate redirect chains, replace history, session storage, referrers, activation headers, failed successors and process cleanup. |
 | `Runtime.test_browser_navigation` | Links, forms, cross-origin navigation, refusal/failure and reconnect. |
 | `Runtime.test_browser_navigation_controls` | Back/Forward boundaries, branching, same/full-document traversal, cancellation and readiness. |

@@ -541,6 +541,8 @@ class Runtime(unittest.TestCase):
             page = "media-demo.html"
         if self._testMethodName.startswith(("test_navigation", "test_browser_navigation")):
             page = "nav-start"
+        if self._testMethodName in ("test_fragment_scroll", "test_browser_fragment_scroll"):
+            page = "fragment-scroll.html#initial"
         resources = self._testMethodName in ("test_media_resources", "test_browser_media_resources")
         if resources:
             page = "media-origin.html"
@@ -1419,6 +1421,96 @@ class Runtime(unittest.TestCase):
 
     def requests_for(self, step):
         return [r for r in self.nav_requests if f"step={step}" in r["path"]]
+
+    def test_fragment_scroll(self):
+        pid = self.call("runtimes")[0]["pid"]
+        session, batches = self.snapshot()
+        self.assertEqual([op[3] for b in batches for op in b["ops"] if op[0] == "scroll"], [1200])
+        task = 0
+
+        def state():
+            return json.loads(self.text(self.document()[2]["state"]))
+
+        def click(name):
+            nonlocal task
+            session, seq, elements = self.document()
+            task += 1
+            self.send_input(session, seq, elements[name], task=task)
+
+        def at(y):
+            self.until(lambda: state()["y"] == y)
+
+        click("encoded"); at(1600)
+        self.assertEqual(state(), {"y": 1600, "hash": "#caf%C3%A9", "length": 2, "hashes": 1})
+        click("reset"); at(300)
+        click("encoded"); at(1600)
+        self.assertEqual((state()["length"], state()["hashes"]), (2, 1))
+        click("named"); at(2000)
+        click("literal"); at(2400)
+        click("missing")
+        self.until(lambda: state()["hash"] == "#missing")
+        self.assertEqual(state()["y"], 2400)
+        click("cancel"); click("report")
+        self.assertEqual(state()["hash"], "#missing")
+        click("top"); at(0)
+        click("assign"); at(2000)
+        click("replace"); at(1200)
+        self.assertEqual(state()["length"], 7)
+        click("reset"); at(300)
+        click("back"); at(0)
+        click("forward"); at(300)
+        click("push"); click("report")
+        self.until(lambda: state()["hash"] == "#caf%C3%A9")
+        self.assertEqual(state()["y"], 300, "pushState must not scroll to a fragment")
+        click("assign"); at(2000)
+        click("empty"); at(0)
+        click("manual"); click("back"); click("report")
+        self.until(lambda: state()["hash"] == "#legacy")
+        self.assertEqual(state()["y"], 0, "manual restoration must leave scroll unchanged")
+        self.assertEqual(self.call("runtimes")[0]["pid"], pid)
+        self.call("stop", {}); self.proc.wait(timeout=10)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual(result["js_errors"], 0, result)
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_fragment_scroll(self):
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        browser.start_session()
+        try:
+            browser.set_context("content")
+            # Establish the same target positions in an ordinary reference document.
+            browser.navigate(f"http://localhost:{self.server.server_port}/fragment-scroll.html#initial")
+            self.until(lambda: browser.execute_script('return scrollY') == 1200)
+            for name, y in (("encoded", 1600), ("reset", 300), ("encoded", 1600), ("named", 2000), ("literal", 2400)):
+                browser.find_element("id", name).click()
+                self.until(lambda: browser.execute_script('return scrollY') == y)
+
+            def at(y):
+                self.until(lambda: browser.execute_script('return scrollY') == y)
+                browser.switch_to_frame()
+                self.until(lambda: browser.execute_script('return document.getElementById("status").textContent.startsWith("Connected")'))
+                browser.switch_to_frame(browser.find_element("id", "page"))
+
+            for turn in range(2):
+                browser.navigate(self.viewer_url)
+                self.until(lambda: browser.execute_script('return document.getElementById("status").textContent.startsWith("Connected")'))
+                browser.switch_to_frame(browser.find_element("id", "page"))
+                at(1200 if turn == 0 else 2000)
+                if turn == 0:
+                    browser.find_element("id", "encoded").click()
+                    at(1600)
+                    browser.find_element("id", "reset").click()
+                    at(300)
+                    browser.find_element("id", "encoded").click()
+                    at(1600)
+                    browser.find_element("id", "named").click()
+                    at(2000)
+                browser.switch_to_frame()
+        finally:
+            firefox_exit.close(browser)
 
     def test_navigation(self):
         port = self.server.server_port

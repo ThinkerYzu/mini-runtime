@@ -157,7 +157,7 @@
       const href = base === undefined ? String(input) : resolve(input, base instanceof URL ? base.href : resolve(String(base), "about:blank"));
       const m = URL_RE.exec(href.trim());
       if (!m) throw new TypeError("Invalid URL: " + href);
-      [, this.protocol, this._user, this.hostname, this.port, this._path, this._search, this.hash] = m;
+      [, this.protocol, this._user, this.hostname, this.port, this._path, this._search, this._hash] = m;
       this.protocol = this.protocol.toLowerCase();
       this.hostname = (this.hostname || "").toLowerCase();
       // the URL Standard's host parser: a bracketed host is an IPv6 address; any other host has no
@@ -176,7 +176,7 @@
       this._user = this._user || "";
       this._path = this.hostname ? removeDots(this._path || "/") : this._path;
       this._search = this._search && this._search !== "?" ? this._search : "";
-      this.hash = this.hash && this.hash !== "#" ? this.hash : "";
+      this.hash = this._hash || "";
     }
     get host() { return this.hostname + (this.port ? ":" + this.port : ""); }
     // the URL Standard's origin: a blob: URL's is its path's, when that is an http(s) URL; a special
@@ -189,6 +189,14 @@
     }
     get pathname() { return this._path; }
     set pathname(p) { this._path = p.startsWith("/") ? p : "/" + p; }
+    // An empty fragment serializes as a trailing #, although URL.hash reads as "".
+    get hash() { return this._hash === "#" ? "" : this._hash; }
+    set hash(h) {
+      h = String(h);
+      if (!h) { this._hash = ""; return; }
+      const fragment = (h.startsWith("#") ? h.slice(1) : h).toWellFormed();
+      this._hash = "#" + Array.from(fragment, c => /[\u0000-\u0020"<>`\u007f-\uffff]/.test(c) || c.codePointAt(0) > 0xffff ? encodeURIComponent(c) : c).join("");
+    }
     get search() { return this._search; }
     set search(s) { s = String(s); this._search = s && s !== "?" ? (s.startsWith("?") ? s : "?" + s) : ""; delete this._params; }
     get searchParams() {
@@ -204,7 +212,7 @@
     _setUserinfo(user, password) { this._user = user + (password ? ":" + password : ""); }
     get href() {
       const auth = this._user ? this._user + "@" : "";
-      return this.protocol + (this.hostname ? "//" + auth + this.host : "") + this._path + this._search + this.hash;
+      return this.protocol + (this.hostname ? "//" + auth + this.host : "") + this._path + this._search + this._hash;
     }
     set href(v) { Object.assign(this, new URL(v)); }
     toString() { return this.href; }
@@ -330,6 +338,7 @@
   }
   function fireLoad() {
     if (loadFired || !loadArmed || onloadBlockCount !== 0) return;
+    scrollInitialFragment();
     loadFired = true;
     global.__mrt.setReadyState("complete");
     global.__mrt.fireWindowLoad();
@@ -4970,6 +4979,9 @@
   // viewer") starts with the tab's entries from the driver, those of other documents marked
   // `other`: going to one of them is a navigation that loads its URL again (navigateTo `traverse`).
   const historyState = { entries: null, index: 0, scrollRestoration: "auto" };
+  const saveHistoryScroll = () => {
+    historyEntries()[historyState.index].scroll = [rootScroll.x, rootScroll.y];
+  };
   const historyEntries = () => {
     if (historyState.entries) return historyState.entries;
     const given = !isFrameWindow && env.navigation && env.navigation.history;
@@ -5002,10 +5014,15 @@
         const entries = historyEntries();
         if (to >= entries.length || entries[to].other) return;
         const from = entries[historyState.index];
+        saveHistoryScroll();
         historyState.index = to;
         pageURL = new URL(entries[to].url);
         // (the runtime's events have no isTrusted, GAPS B72; these are the browser's)
         global.dispatchEvent(Object.assign(new PopStateEvent("popstate", { state: entries[to].state }), { isTrusted: true }));
+        if (historyState.scrollRestoration === "auto") {
+          if (entries[to].scroll) pageScrollTo(...entries[to].scroll);
+          else scrollToFragment(pageURL);
+        }
         const a = new URL(from.url), b = new URL(entries[to].url);
         a.hash = b.hash = "";
         if (a.href === b.href && from.url !== entries[to].url) {
@@ -5019,6 +5036,7 @@
       const entries = historyEntries();
       const entry = { url: pageURL.href, state: null };
       setEntry(entry, state, u);
+      saveHistoryScroll();
       entries.splice(historyState.index + 1, entries.length, entry);
       historyState.index = entries.length - 1;
     },
@@ -5095,16 +5113,49 @@
       referrerPolicy: opts.referrerPolicy || "", user: !!opts.user || navigation.input > 0 };
     if (!navigation.queued) { navigation.queued = true; global.__mrt.queueTask(startNavigation); }
   }
-  // The fragment navigation (nsDocShell::ScrollToAnchor's path): a history entry added or replaced,
-  // the URL changed and, when the fragment changed, hashchange in a task. (No scroll to the target.)
+  // nsDocShell::ScrollToAnchor and nsContentUtils::GetTargetElement: try the literal fragment,
+  // then UTF-8 percent-decoding, with an ID taking precedence over a legacy HTML named anchor.
+  // Use the root-scroll transport shared with scrollIntoView, including reconnect snapshots.
+  function scrollToFragment(url) {
+    if (isWorker || isFrameWindow || !url.href.includes("#")) return false;
+    const raw = url.href.slice(url.href.indexOf("#") + 1);
+    if (!raw) { pageScrollTo(0, 0); return true; }
+    const decoded = raw.replace(/(?:%[0-9a-f]{2})+/gi, part =>
+      new TextDecoder().decode(new Uint8Array(part.slice(1).split("%").map(v => parseInt(v, 16)))));
+    for (const name of raw === decoded ? [raw] : [raw, decoded]) {
+      const target = document.getElementById(name) || [...document.getElementsByTagName("a")].find(el =>
+        el.namespaceURI === "http://www.w3.org/1999/xhtml" && el.getAttribute("name") === name);
+      if (target) {
+        // Invoke our implementation directly, rather than a page's override of scrollIntoView.
+        if (__mrtBorderBox(target) !== null) {
+          const r = target.getBoundingClientRect(), v = viewportSize();
+          let x = rootScroll.x;
+          if (r.left < 0) x += r.left;
+          else if (r.right > v.width) x += r.right - v.width;
+          pageScrollTo(x, rootScroll.y + r.top, n => Math.ceil(n - 0.5));
+        }
+        return true;
+      }
+      if (/^top$/i.test(name)) { pageScrollTo(0, 0); return true; }
+    }
+    return false;
+  }
+  let initialFragmentScrolled = false;
+  function scrollInitialFragment() {
+    if (!initialFragmentScrolled && rootScroll.seq === 0) initialFragmentScrolled = scrollToFragment(pageURL);
+  }
+  // The fragment navigation: history and URL update synchronously, followed by the target scroll
+  // and, when the fragment changed, hashchange in a task. Repeated links still scroll.
   function navigateFragment(url, replace) {
     const entries = historyEntries(), old = pageURL.href;
+    saveHistoryScroll();
     if (replace) entries[historyState.index] = { url: url.href, state: null };
     else {
       entries.splice(historyState.index + 1, entries.length, { url: url.href, state: null });
       historyState.index = entries.length - 1;
     }
     pageURL = url;
+    scrollToFragment(url);
     if (old !== url.href) {
       global.__mrt.queueTask(() => {
         global.dispatchEvent(Object.assign(new HashChangeEvent("hashchange", { oldURL: old, newURL: url.href }), { isTrusted: true }));
@@ -8971,6 +9022,7 @@
     // load, the driver's next step)
     domContentLoaded() {
       fireParsedLinkEvents();
+      scrollInitialFragment();
       document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
       const deferred = deferredLinkEvents;
       deferredLinkEvents = [];
