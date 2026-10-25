@@ -41,7 +41,7 @@ After the engine build, the command selects the existing `MRT_ENGINE_SOURCE=1` i
 - Rust 1.93.0 (tested), Cargo, a current Clang C++20 compiler with GNU libstdc++ ABI for the engine build, Git, make, ar, pkg-config and Python 3 with venv support. SDK-only consumer compilation also works with GCC 15.2. Mozilla may require additional compiler/linker development tools; missing prerequisites fail explicitly.
 - Brotli development headers/libraries (`brotlienc`, `brotlidec`), EGL/OpenGL ES development libraries (`libEGL`, `libGLESv2`), Fontconfig and fonts. Mesa llvmpipe is the tested software renderer.
 - Engine runtime requirements are recorded in `sdk.json`: glibc >= 2.18, GLIBCXX >= 3.4.21, CXXABI >= 1.3, and the listed system SONAMEs. The application and other system libraries may require newer versions. Clean consumer acceptance was run on Ubuntu 26.04; the manual CI job targets Ubuntu 24.04.
-- An installed Firefox executable for one-time environment recording and optional viewer tests. Xvfb is useful without a display. Neither recording nor viewing requires browser source.
+- Optional for comparison recordings and automated browser tests: an installed Firefox executable, the pinned Python automation dependencies and Xvfb without a display. The standalone viewer needs none of these.
 
 Typical Debian/Ubuntu development packages: `build-essential clang lld llvm python3 python3-venv git pkg-config libbrotli-dev libegl1-mesa-dev libgles2-mesa-dev fontconfig fonts-dejavu-core xvfb`. Rust is installed separately. Clean isolation tests additionally use `bubblewrap` and `binutils`.
 
@@ -80,6 +80,8 @@ Parser and HarfBuzz objects are built automatically. Parser compiler failures st
 
 ## Recording the browser environment
 
+This is optional for compatibility comparisons with Firefox. Normal standalone viewing uses the built-in mini-runtime desktop environment and needs no recording or Firefox installation. Explicit `API_ENV` selects a comparison recording; unset it to return to defaults. Standalone mode does not discover local recordings automatically.
+
 Create a normal Python virtual environment for recording and browser tests:
 
 ```sh
@@ -95,7 +97,7 @@ Omit `xvfb-run -a` on a desktop display. The complete Python dependency set is v
 
 The output path is explicit and must not already exist. `--port` selects another Marionette port if an automation session is already using 2828. These are browser/profile-specific values, not a universal compatibility preset. Record your own environment and keep it private. Use an ordinary empty profile for the demo; the service's `REALSITES_PROFILE` can point to an empty directory. Login-site profile seeding remains optional and local.
 
-Subsequent standalone execution uses only Python's standard library, the binaries, and this recording. It starts no Firefox and imports no Marionette. Missing context entries fail explicitly. The historical harness can still record environment values from a site's actual profile, using this virtual environment rather than `mach python`.
+When API_ENV is set, standalone execution uses Python's standard library, the binaries, and this recording. It starts no Firefox and imports no Marionette. Missing context entries fail explicitly. The historical harness can still record environment values from a site's actual profile, using this virtual environment rather than `mach python`.
 
 Continue with [the demo](../README.md#2-serve-the-included-demo).
 
@@ -138,6 +140,6 @@ See [SDK production and release checks](sdk-build-plan.md) and [testing](testing
 | Undefined MOZ_Z_ symbols | Run Cargo inside mrt-js so its prefix configuration is loaded. |
 | C++ compilation failure | Use the declared C++20 GNU-ABI toolchain and complete pinned SDK; the first compiler error is now fatal. |
 | Missing EGL/GLES, Brotli or fonts | Install their development/runtime packages and check `fc-match serif`. |
-| No environment recording or context entry | Run record_env.py, then set API_ENV to its absolute output path. |
+| Explicit environment recording is invalid or lacks a context | Unset API_ENV to use the built-in defaults, or make a complete comparison recording with record_env.py. |
 | Marionette import or port failure | Use the pinned virtual environment; select an unused `--port`. |
 | Port busy or stale viewer code | Choose another VIEWER_HTTP port, or restart the intended service with the new executable. |

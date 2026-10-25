@@ -7,12 +7,14 @@ Start with the [README quick start](../README.md#quick-start). This guide descri
 For a finite run without a viewer:
 
 ```sh
-NO_FIREFOX=1 API_ENV=/path/to/recorded-env.json \
+NO_FIREFOX=1 \
   ONLY=example EXTRA_SITES='{"example":"http://localhost:8000/page.html"}' \
   MINI_OUT=mini_realsites_standalone.json python3 bench/mini_realsites.py
 ```
 
-Serve the selected source URL first. `API_ENV` is a browser environment recording made by the Firefox bridge harness, containing `entries` and `viewport`. If omitted, the driver selects the latest matching recording in `bench/realsites-env/`. Every secure/isolated context the page uses needs a matching entry. Standalone mode never starts a browser to supply missing entries or refresh an expired login.
+Serve a local source URL first; live sites need no local source server. By default, standalone mode uses a built-in mini-runtime desktop environment with a 1280x720 initial viewport, fixed navigator/screen values, English language preferences and no touch input. The HTTP viewer updates the runtime viewport on attachment. No installed Firefox, automation packages or recording is required. The profile covers insecure, secure and secure-plus-isolated contexts, while the page URL and response headers determine the actual context.
+
+For Firefox compatibility comparisons, explicitly set `API_ENV=/path/to/recorded-env.json` to use a recording containing `entries` and `viewport`. Invalid recordings or missing contexts fail without fallback. Unset `API_ENV` to use defaults; standalone mode never selects recordings automatically. See [optional environment recording](build.md#recording-the-browser-environment).
 
 `REALSITES_PROFILE=/path/to/profile` selects the Firefox profile used to seed native stores. Cookies, localStorage, saved permissions and supported IndexedDB databases are copied into partitioned API stores. The profile is read without starting Firefox; subsequent API writes do not update it. A fresh harness run recreates its stores, while navigation and API-process restarts within that run retain persisted data. Use distinct `MINI_DIR` and `MINI_OUT` values for runs whose artifacts you want to keep.
 
@@ -40,7 +42,7 @@ python3 -m http.server 8000 --bind 127.0.0.1 --directory bench/http-viewer
 Then start the viewer service from the repository root:
 
 ```sh
-VIEWER_HTTP=127.0.0.1:8765 API_ENV=/path/to/recorded-env.json \
+VIEWER_HTTP=127.0.0.1:8765 \
   ONLY=demo EXTRA_SITES='{"demo":"http://localhost:8000/demo.html"}' \
   MINI_DIR=realsites-mini-viewer MINI_OUT=mini_realsites_viewer.json \
   python3 bench/mini_realsites.py
@@ -70,7 +72,7 @@ Reconnect reconstructs logical MSE sources/buffers from retained commands and re
 
 ```sh
 VIEWER_MEDIA_REPLAY_UNLIMITED=1 VIEWER_HTTP=127.0.0.1:8765 \
-  API_ENV=/path/to/recorded-env.json ONLY=x \
+  ONLY=x \
   MINI_DIR=realsites-mini-x-unlimited MINI_OUT=mini_realsites_x_unlimited.json \
   python3 bench/mini_realsites.py
 ```
@@ -81,10 +83,10 @@ For the media fixture, serve `bench` instead of `bench/http-viewer` and use `htt
 
 ### Try X
 
-With a recorded environment and a profile whose X login is current:
+With a profile whose X login is current:
 
 ```sh
-VIEWER_HTTP=127.0.0.1:8765 API_ENV=/path/to/recorded-env.json \
+VIEWER_HTTP=127.0.0.1:8765 \
   REALSITES_PROFILE=/path/to/firefox-profile ONLY=x \
   MINI_DIR=realsites-mini-x-viewer MINI_OUT=mini_realsites_x_viewer.json \
   REALSITE_ARGS=--console python3 bench/mini_realsites.py

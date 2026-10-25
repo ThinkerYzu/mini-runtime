@@ -62,8 +62,8 @@ VIEWER_MEDIA_REPLAY_UNLIMITED=1  disable HTTP MSE replay byte/command retention 
                     Startup option; absent or any value other than 1 keeps the bounded default.
 NO_FIREFOX=1       run with mrt-api only: no Firefox, Marionette, display or ./mach needed. Defaults to
                     API_PROCESS=all; incompatible with interactive/rendered/phone runs and API_ENV_CHECK.
-                    API_ENV=/path/to/env.json selects an existing browser environment recording (otherwise the
-                    latest matching file in realsites-env). Missing context recordings and Firefox-only requests
+                    API_ENV=/path/to/env.json selects an optional comparison environment recording (otherwise the
+                    built-in desktop profile is used). Missing explicit context recordings and Firefox-only requests
                     fail explicitly; unsupported_ops lists the latter. REALSITES_PROFILE seeds stores as usual.
 API_PROCESS=crypto,storage,cookie,fetch  the op kinds sent to an API process of our own, bench/../mrt-api
                     (SPEC decision 27, DESIGN "Phase 6"), not to the bridge tab: a comma list, or `all` for every kind it
@@ -89,7 +89,7 @@ HEAP_SCAN=1         at the report, the runtime's resident anonymous memory split
 Every request the runtime makes through the bridge is listed in realsites-mini/<site>-requests.jsonl
 (method, URL, status or error), to diff against the proxy's log of a Firefox run.
 """
-import json, os, shlex, shutil, subprocess, sys, threading, time
+import functools, json, os, shlex, shutil, subprocess, sys, threading, time
 import firefox_exit
 VIEWER_HTTP = os.environ.get("VIEWER_HTTP")
 NO_FIREFOX = os.environ.get("NO_FIREFOX") == "1" or bool(VIEWER_HTTP)
@@ -1033,20 +1033,23 @@ if NO_FIREFOX and (not TABLESS or set(API_KINDS) != API_ROUTED):
 
 
 def standalone_env_file():
-    """Use an existing recording; this mode must never open Firefox to make one."""
-    path = os.environ.get("API_ENV")
-    if not path:
-        suffix = "-replay.json" if replay.MODE else ".json"
-        files = os.listdir(API_ENV_DIR) if os.path.isdir(API_ENV_DIR) else []
-        candidates = sorted(os.path.join(API_ENV_DIR, f) for f in files
-                            if f.endswith(suffix) and (replay.MODE or not f.endswith("-replay.json")))
-        path = candidates[-1] if candidates else None
-    if not path:
-        raise ValueError("NO_FIREFOX=1 needs an existing browser environment recording: set API_ENV=/path/to/env.json")
+    """Explicit comparison recording only; an unset API_ENV selects the native defaults."""
+    if "API_ENV" not in os.environ:
+        return None
+    path = os.environ["API_ENV"]
     data = load_env(path)
-    if not data.get("entries") or len(data.get("viewport", [])) != 2:
+    viewport = data.get("viewport") if isinstance(data, dict) else None
+    if (not isinstance(data, dict) or not isinstance(data.get("entries"), dict) or not data["entries"]
+            or not isinstance(viewport, list) or len(viewport) != 2
+            or any(type(n) not in (int, float) or not 0 < n < float("inf") for n in viewport)):
         raise ValueError(f"NO_FIREFOX=1: invalid environment recording {path}; expected entries and viewport")
     return os.path.abspath(path)
+
+
+@functools.cache
+def default_environment():
+    """One native source of truth for the driver's viewport, network headers and context checks."""
+    return json.loads(subprocess.check_output([API_BIN, "--default-env"], text=True))
 
 
 def env_file(m, replayed):
@@ -1064,6 +1067,8 @@ def env_key(secure, isolated):
 
 
 def load_env(path):
+    if path is None:
+        return default_environment()
     try:
         return json.load(open(path))
     except (OSError, ValueError):
@@ -2150,7 +2155,7 @@ def run(name, url):
                     m.navigate("about:blank")
         if env_path and not load_env(env_path)["entries"]:
             record_page_env()
-        recorded = next(iter(load_env(env_path)["entries"].values())) if env_path else None
+        recorded = next(iter(load_env(env_path)["entries"].values())) if NO_FIREFOX or env_path else None
         api = ApiProcesses(name, api_net_env(m, proxy, recorded) if "fetch" in API_ROUTED else None)
         if env_path:
             api.net_env["API_ENV"] = env_path

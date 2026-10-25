@@ -114,7 +114,7 @@ impl Net {
             .build();
         Net {
             agent: config.new_agent(),
-            user_agent: var("API_UA").unwrap_or_else(|| "Mozilla/5.0".into()),
+            user_agent: var("API_UA").unwrap_or_else(|| crate::env::DEFAULT_UA.into()),
             accept_language: var("API_ACCEPT_LANGUAGE").unwrap_or_else(|| "en-US,en;q=0.9".into()),
             preflights: Vec::new(),
         }

@@ -493,7 +493,9 @@ class Runtime(unittest.TestCase):
                     self.send_response(200); self.send_header("Content-Length", "20"); self.end_headers()
                     self.wfile.write(b"short"); self.close_connection = True
                     return
-                if self.path == "/scroll-restore.css" and "Firefox" in self.headers.get("User-Agent", ""):
+                # Hold only the viewer browser's CSS, not the runtime's Firefox-compatible UA.
+                ua = self.headers.get("User-Agent", "")
+                if self.path == "/scroll-restore.css" and "Firefox" in ua and "MiniRuntime/" not in ua:
                     runtime.css_requested.set()
                     runtime.css_release.wait(8)
                     self.send_response(200)
@@ -534,10 +536,6 @@ class Runtime(unittest.TestCase):
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=str(source)))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
-        entry = {"navigator": {"userAgent": "mrt-test", "languages": ["en-US"], "platform": "Linux"},
-                 "names": {k: [] for k in ("window", "Document", "HTMLElement", "Element", "Node", "Navigator")}, "screen": {"width": 800, "height": 600}}
-        recording = self.root / "env.json"
-        recording.write_text(json.dumps({"viewport": [800, 600], "entries": {"secure=1,isolated=0": entry}}))
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("MRT_", "API_", "REALSITE", "REPLAY", "BRIDGE_", "MINI_"))
                and k not in ("VIEWER_HTTP", "VIEWER_MEDIA_REPLAY_UNLIMITED", "NO_FIREFOX", "INTERACTIVE", "INTERACTIVE_S", "RENDER", "HEAP_SCAN", "DISPLAY", "WAYLAND_DISPLAY")}
@@ -545,7 +543,7 @@ class Runtime(unittest.TestCase):
         for key in ("REALSITE_BIN", "API_BIN"):
             if os.environ.get(key):
                 env[key] = os.environ[key]
-        env.update(VIEWER_HTTP="127.0.0.1:0", API_ENV=str(recording), FIREFOX_BIN="/nonexistent/firefox", ONLY="demo",
+        env.update(VIEWER_HTTP="127.0.0.1:0", FIREFOX_BIN="/nonexistent/firefox", ONLY="demo",
                    EXTRA_SITES=json.dumps({"demo": f"http://localhost:{self.server.server_port}/{page}"}),
                    REALSITES_PROFILE=str(self.root / "empty-profile"), MINI_OUT=str(self.root / "result.json"),
                    MINI_DIR=str(self.root / "logs"), REALSITE_ARGS="--console")

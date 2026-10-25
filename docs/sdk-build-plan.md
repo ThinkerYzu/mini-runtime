@@ -4,7 +4,7 @@
 
 ## Goal and scope
 
-For the optional SDK path, clone this repository, obtain its pinned SDK, build realsite and mrt-api, record a browser environment with an installed Firefox, then run the standalone HTTP viewer. Consumer inputs are this source, the SDK, locked public Rust dependencies and declared system libraries. Maintainers use compatible Firefox source to produce the SDK. SpiderMonkey remains the JavaScript engine.
+For the optional SDK path, clone this repository, obtain its pinned SDK, build realsite and mrt-api, then run the standalone HTTP viewer with its built-in desktop environment. An installed Firefox and environment recording are optional comparison tools. Consumer inputs are this source, the SDK, locked public Rust dependencies and declared system libraries. Maintainers use compatible Firefox source to produce the SDK. SpiderMonkey remains the JavaScript engine.
 
 Version 1 supports native Linux x86_64, glibc and GNU libstdc++ ABI. Android, cross builds and arbitrary system libmozjs versions are outside this SDK. A prebuilt application bundle is a separate deliverable.
 
@@ -17,7 +17,7 @@ Version 1 supports native Linux x86_64, glibc and GNU libstdc++ ABI. Android, cr
 | Compression | Exact public libz-rs-sys/zlib-rs 0.6.8 dependencies, retaining the upstream Raptor Lake workaround. Vendored zlib/zconf/mozzconf headers preserve MOZ_Z_ symbol names. See [provenance and upstream checksums](../vendor/zlib-PROVENANCE.md). |
 | Other Rust inputs | Locked registry crates and mrt-api's exact public mp4parse Git revision, including its submodules. No Firefox-tree Cargo paths remain. |
 | C++ compiler | Explicit CXX or system c++; no .mozbuild fallback. C++20 GNU C++ ABI, GCC 15.2 tested. |
-| Browser recording | Ordinary Python, complete pinned [automation dependencies](../tools/sdk/requirements-browser.txt), an installed Firefox, and synthetic local context pages. No mach required. |
+| Optional comparison recording | Ordinary Python, complete pinned [automation dependencies](../tools/sdk/requirements-browser.txt), an installed Firefox, and synthetic local context pages. No mach required. |
 
 The tokenizer/tree builder, Stylo and HarfBuzz remain vendored as before.
 
@@ -67,11 +67,11 @@ Produce verifies the existing pin by default. When deliberately introducing anot
 
 The current SDK pin describes an existing development engine build. Its recorded producer revision contains two local Gecko-only commits and cannot be fetched from Mozilla; the public source bootstrap uses the pinned public ancestor instead. Correct the legacy candidate source URL/provenance as part of the controlled binary release, without treating the local producer hash as downloadable. Its metadata is public, but libmozjs contains diagnostic source paths and debug information from that producer. Keep this candidate local. A future controlled producer should build in a neutral directory, remap C++ and Rust source/debug paths, retain exact corresponding source/build inputs, and strip only appropriate debug sections before generating and reviewing a new pin. Rebuilding the engine can change bytes and therefore requires an explicit pin update.
 
-## First-run environment recording
+## Optional comparison environment recording
 
-[record_env.py](../bench/record_env.py) serves synthetic insecure, secure and isolated-context pages on loopback, using Firefox's local DNS preference only in a fresh temporary profile. It saves all three feasible context entries and the viewport to an explicit new JSON path. It uses the same [capture code](../bench/browser_env.js) as the bridge. No profile, cookie jar, permission data, page capture or environment dump is shipped with the SDK.
+Standalone runs use a built-in desktop environment and do not require Firefox or a recording. For compatibility comparisons, [record_env.py](../bench/record_env.py) serves synthetic insecure, secure and isolated-context pages on loopback, using Firefox's local DNS preference only in a fresh temporary profile. It saves all three feasible context entries and the viewport to an explicit new JSON path. It uses the same [capture code](../bench/browser_env.js) as the bridge. No profile, cookie jar, permission data, page capture or environment dump is shipped with the SDK.
 
-[Build setup](build.md#recording-the-browser-environment) gives the ordinary-Python commands. Recording may launch Firefox once. Later standalone service execution uses ordinary Python with no Firefox or Marionette import. An ordinary browser displays the viewer. Missing environment/context data fails explicitly; it does not launch automation to fill it in.
+[Build setup](build.md#recording-the-browser-environment) gives the ordinary-Python commands. This optional recording step launches Firefox once. Standalone service execution uses ordinary Python with no Firefox or Marionette import. Explicit API_ENV selects the comparison profile; an unset API_ENV uses runtime defaults. An ordinary browser displays the viewer. Missing environment/context data fails explicitly; it does not launch automation to fill it in.
 
 ## Acceptance criteria
 

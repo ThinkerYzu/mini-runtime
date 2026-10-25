@@ -17,7 +17,7 @@ flowchart LR
 
 `bench/mini_realsites.py` loads the page, launches runtimes and API processes, routes requests, controls navigation and collects reports. `bench/http_viewer.py` serves the viewer and manages its active session. A service selects one top-level runtime; embedded contexts can require additional runtime/API processes.
 
-`mrt-api` handles supported browser APIs without a privileged Firefox tab: HTTP requests, WebSockets, cookies, storage, cryptography, environment answers, image metadata, permissions and native WebGL. Stores are partitioned by site and top-level site. Original page URLs and origins govern API requests; attaching a viewer does not change that origin.
+`mrt-api` handles supported browser APIs without a privileged Firefox tab: HTTP requests, WebSockets, cookies, storage, cryptography, environment answers, image metadata, permissions and native WebGL. Stores are partitioned by site and top-level site. Original page URLs and origins govern API requests; attaching a viewer does not change that origin. The native process supplies a built-in desktop environment, also exported through `mrt-api --default-env` for the driver's initial viewport and network identity. Explicit `API_ENV` selects an optional comparison recording.
 
 The browser adapter rebuilds a sandboxed document from runtime snapshots and incremental changes. Page scripts do not execute there. The browser supplies painting, user input and media playback. Native WebGL runs in the API process; the viewer replays commands to display graphics. The displayed document still has the service's origin, so browser resource behavior is not identical to loading the original site directly.
 
@@ -49,4 +49,4 @@ The system still uses a browser to display a page. Memory comparisons must accou
 
 `NO_FIREFOX=1` runs finite standalone measurements without an attached viewer. HTTP viewer mode keeps the runtime on its real clock until the service is stopped. Both route all supported services to the native API process.
 
-Firefox bridge mode starts a Marionette-controlled Firefox and forwards selected calls to a privileged browser tab. It is used for reference comparisons and services unavailable natively. Recording browser identity/environment once is distinct from keeping that bridge running during standalone use.
+Firefox bridge mode starts a Marionette-controlled Firefox and forwards selected calls to a privileged browser tab. It is used for reference comparisons and services unavailable natively. Standalone use supplies its own desktop environment by default. An explicit API_ENV recording is optional for comparisons and does not keep a bridge running.

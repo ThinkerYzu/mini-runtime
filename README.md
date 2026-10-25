@@ -4,7 +4,7 @@ mini-runtime runs a web page outside a full browser and lets you interact with i
 
 The project explores how much state and memory a page needs when its execution is separated from the browser that displays it. The runtime uses Firefox's SpiderMonkey JavaScript engine and HTML parser, Stylo for CSS, and its own DOM and layout integration. A native API process supplies network access, cookies, storage, cryptography and WebGL. A Python driver connects these components and serves the viewer.
 
-The browser displays a sandboxed copy of the page; the page's scripts execute in the runtime. The standalone service starts no Firefox process and needs no browser automation connection. Firefox is used once to record browser environment values during initial setup, and optionally to automate tests.
+The browser displays a sandboxed copy of the page; the page's scripts execute in the runtime. The standalone service starts no Firefox process and needs no browser automation connection. An installed Firefox is optional for compatibility comparisons and automated browser tests.
 
 This is an experimental implementation, with partial web compatibility. It supports selected live-site flows and local demos, rather than every website or browser feature.
 
@@ -22,7 +22,7 @@ Loading another document creates a new runtime for that document. Closing the vi
 
 The default build targets Linux x86_64. Install Rust, a current Clang/C++20 toolchain, Python 3, Git, make/ar/pkg-config, Brotli development libraries, EGL/OpenGL ES development libraries, Fontconfig and fonts. The build script downloads pinned Mozilla source and builds SpiderMonkey and the two runtime binaries. The first run needs internet access, several gigabytes of disk space and time to compile the engine.
 
-An installed Firefox executable is used once for browser environment recording; an ordinary browser displays the viewer.
+An ordinary browser displays the viewer. No Firefox installation or browser environment recording is required.
 
 ### 1. Build the two binaries
 
@@ -36,29 +36,12 @@ Outputs are `mrt-js/target/release/realsite` and `mrt-api/target/release/mrt-api
 
 See [build setup](docs/build.md) for prerequisites and other build options.
 
-### 2. Record the browser environment once
-
-The runtime needs a recording of browser identity, exposed interfaces and viewport values. It cannot generate one in standalone mode. If this checkout already has a suitable recording in `bench/realsites-env/`, skip this step.
-
-From the repository root, create a normal Python environment with the pinned browser-automation dependencies and record against fresh local context pages:
-
-```sh
-python3 -m venv .venv
-.venv/bin/pip install -r tools/sdk/requirements-browser.txt
-export FIREFOX_BIN=/absolute/path/to/firefox
-xvfb-run -a .venv/bin/python bench/record_env.py \
-  --output bench/realsites-env/local.json
-export API_ENV=bench/realsites-env/local.json
-mkdir -p bench/realsites-mini-wikipedia-profile
-```
-
-Omit xvfb-run on a desktop display. This starts an installed Firefox in a fresh temporary profile and writes all three supported secure/isolated context entries. It does not require mach or Firefox source. The output path must be new. Subsequent standalone runs use only ordinary Python and the saved recording. See [environment setup](docs/build.md#recording-the-browser-environment).
-
-### 3. Open Wikipedia in the standalone HTTP viewer
+### 2. Open Wikipedia in the standalone HTTP viewer
 
 From the repository root:
 
 ```sh
+mkdir -p bench/realsites-mini-wikipedia-profile
 VIEWER_HTTP=127.0.0.1:8765 ONLY=wikipedia \
   EXTRA_SITES='{"wikipedia":"https://en.wikipedia.org/wiki/Main_Page"}' \
   REALSITES_PROFILE=bench/realsites-mini-wikipedia-profile \
@@ -68,7 +51,7 @@ VIEWER_HTTP=127.0.0.1:8765 ONLY=wikipedia \
 
 Open the complete printed **`VIEWER_URL`**, including its access token, in your browser. Wikipedia runs in the standalone runtime; the browser displays its HTTP viewer. Follow an article link, scroll, and use the viewer toolbar's **Back** and **Forward** buttons. Close the viewer tab and open the same URL again to reconnect to the current page.
 
-The driver selects the latest matching recording in `bench/realsites-env/`. Set `API_ENV=/absolute/path/to/recording.json` to choose one explicitly. If port 8765 is busy, use another port or `VIEWER_HTTP=127.0.0.1:0` for an automatically selected port. Each service hosts one runtime and one active viewer; opening another viewer replaces the previous attachment.
+The runtime supplies its own default desktop environment. If port 8765 is busy, use another port or `VIEWER_HTTP=127.0.0.1:0` for an automatically selected port. Each service hosts one runtime and one active viewer; opening another viewer replaces the previous attachment.
 
 Press Ctrl+C in the service terminal to stop the runtime and write the report. Logs and captured page files are under `bench/realsites-mini-wikipedia/`; the report is `bench/mini_realsites_wikipedia.json`. See the [local demo](docs/viewer.md#local-demo-service) for a synthetic page with click counters and draft text.
 
@@ -77,13 +60,12 @@ Press Ctrl+C in the service terminal to stop the runtime and write the report. L
 Choose a name and URL with `ONLY` and `EXTRA_SITES`:
 
 ```sh
-VIEWER_HTTP=127.0.0.1:8765 API_ENV=/absolute/path/to/recording.json \
-  ONLY=page EXTRA_SITES='{"page":"https://example.com/"}' \
+VIEWER_HTTP=127.0.0.1:8765 ONLY=page EXTRA_SITES='{"page":"https://example.com/"}' \
   MINI_DIR=realsites-mini-page MINI_OUT=mini_realsites_page.json \
   python3 bench/mini_realsites.py
 ```
 
-The recording must include the destination's secure/isolated context. For a site requiring login, set `REALSITES_PROFILE=/path/to/firefox-profile` to seed cookies and supported storage from a profile where you have logged in. The API stores are separate copies; they do not update that browser profile. Stores survive navigation within the run, but a fresh service run recreates them. Choose different output names to preserve earlier run artifacts.
+For a site requiring login, set `REALSITES_PROFILE=/path/to/firefox-profile` to seed cookies and supported storage from a profile where you have logged in. The API stores are separate copies; they do not update that browser profile. Stores survive navigation within the run, but a fresh service run recreates them. Choose different output names to preserve earlier run artifacts.
 
 Use **Back** and **Forward** in the viewer toolbar to navigate runtime history. The browser's own history buttons operate the viewer service page. Controls stay disabled while synchronization or navigation is pending, and when no corresponding history entry exists.
 
@@ -114,7 +96,7 @@ python3 bench/test_http_viewer.py
 The viewer command skips its optional real-browser tests by default. [Testing](docs/testing.md) explains how to run the full suite.
 
 - [Documentation index](docs/README.md): guides for users and contributors.
-- [Build setup](docs/build.md): SDK, dependencies, environment recording and troubleshooting.
+- [Build setup](docs/build.md): dependencies, optional build inputs and comparison recordings, and troubleshooting.
 - [Architecture](docs/architecture.md): processes, mirroring, navigation and hibernation.
 - [Source layout](docs/source-layout.md): crates, adapters and where to change code.
 - [Viewer operation](docs/viewer.md): configuration, services, media and known limits.

@@ -3,7 +3,7 @@
     python3 bench/test_no_firefox.py
 
 Runs with Python -S (no Marionette/site packages), no display, a nonexistent Firefox
-binary and an empty profile. All traffic goes to a local HTTP server.
+binary, no environment recording and an empty profile. All traffic goes to a local HTTP server.
 """
 import functools
 import http.server
@@ -32,6 +32,14 @@ class NoFirefox(unittest.TestCase):
                  "screen": {"width": 800, "height": 600}}
         cls.recording = cls.root / "env.json"
         cls.recording.write_text(json.dumps({"viewport": [800, 600], "entries": {"secure=1,isolated=0": entry}}))
+        environment = """<!doctype html><script src="request-info.js"></script><script>
+console.log("ENVIRONMENT " + JSON.stringify({ua: navigator.userAgent, language: navigator.language,
+  languages: navigator.languages, request: window.requestIdentity, viewport: [innerWidth, innerHeight],
+  screen: [screen.width, screen.height], touch: "ontouchstart" in document.documentElement,
+  secure: isSecureContext, isolated: crossOriginIsolated}));
+</script>"""
+        cls.root.joinpath("environment.html").write_text(environment)
+        cls.root.joinpath("environment-isolated.html").write_text(environment)
         cls.root.joinpath("network.html").write_text('''<!doctype html><script src="source.js"></script>
 <script>
 (async () => {
@@ -69,6 +77,24 @@ console.log("WEBGL " + JSON.stringify([Array.from(px), gl.getShaderParameter(s, 
         cls.root.joinpath("permissions-storage-worker.js").write_bytes((HERE / "bridge-cases/permissions-storage-worker.js").read_bytes())
 
         class Quiet(http.server.SimpleHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/request-info.js":
+                    body = ("window.requestIdentity = " + json.dumps({
+                        "ua": self.headers.get("User-Agent"), "language": self.headers.get("Accept-Language")}) + ";").encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/javascript")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    super().do_GET()
+
+            def end_headers(self):
+                if self.path == "/environment-isolated.html":
+                    self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+                    self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+                super().end_headers()
+
             def log_message(self, *args):
                 pass
 
@@ -101,7 +127,7 @@ console.log("WEBGL " + JSON.stringify([Array.from(px), gl.getShaderParameter(s, 
         for key in ("REALSITE_BIN", "API_BIN"):
             if os.environ.get(key):
                 env[key] = os.environ[key]
-        env.update(NO_FIREFOX="1", FIREFOX_BIN="/nonexistent/firefox", API_ENV=str(self.recording),
+        env.update(NO_FIREFOX="1", FIREFOX_BIN="/nonexistent/firefox",
                    REALSITES_PROFILE=str(self.root / "empty-profile"), ONLY=case,
                    EXTRA_SITES=json.dumps({case: url}), MINI_OUT=str(out), MINI_DIR=str(self.root / "logs"),
                    REALSITE_ARGS="--console", WALL_LIMIT="30")
@@ -230,6 +256,44 @@ console.log("WEBGL " + JSON.stringify([Array.from(px), gl.getShaderParameter(s, 
         log = (self.root / "logs" / "websocket.log").read_text()
         lines = next(json.loads(line.split("CASELOG ", 1)[1]) for line in log.splitlines() if "CASELOG " in line)
         self.assertIn("done", lines)
+
+    def environment_output(self, case, **overrides):
+        result, data = self.run_page(case, **overrides)
+        self.assert_standalone(result, data)
+        log = (self.root / "logs" / (case + ".log")).read_text()
+        return next(json.loads(line.split("ENVIRONMENT ", 1)[1]) for line in log.splitlines() if "ENVIRONMENT " in line)
+
+    def test_default_environment_without_recording(self):
+        for host, case, secure, isolated in (("localhost", "environment", True, False),
+                                             ("127.0.0.1", "environment", True, False),
+                                             ("localhost", "environment-isolated", True, True)):
+            with self.subTest(secure=secure, isolated=isolated):
+                url = f"http://{host}:{self.server.server_port}/{case}.html"
+                env = self.environment_output(case, EXTRA_SITES=json.dumps({case: url}))
+                self.assertIn("MiniRuntime/", env["ua"])
+                self.assertEqual(env["request"], {"ua": env["ua"], "language": "en-US,en;q=0.9"})
+                self.assertEqual(env["language"], "en-US")
+                self.assertEqual(env["languages"], ["en-US", "en"])
+                self.assertEqual(env["viewport"], [1280, 720])
+                self.assertEqual(env["screen"], [1280, 720])
+                self.assertFalse(env["touch"])
+                self.assertEqual(env["secure"], secure)
+                self.assertEqual(env["isolated"], isolated)
+
+    def test_explicit_environment_override(self):
+        env = self.environment_output("environment", API_ENV=str(self.recording))
+        self.assertEqual(env["ua"], "mrt-test")
+        self.assertEqual(env["viewport"], [800, 600])
+        self.assertEqual(env["request"], {"ua": "mrt-test", "language": "en-US"})
+
+    def test_malformed_environment_fails(self):
+        recording = self.root / "invalid-env.json"
+        for contents in ("{broken", "[]", '{"entries": [], "viewport": [800, 600]}'):
+            with self.subTest(contents=contents):
+                recording.write_text(contents)
+                result, data = self.run_page("network", API_ENV=str(recording))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("invalid environment recording", data["error"])
 
     def test_missing_context_fails(self):
         recording = self.root / "insecure-only.json"

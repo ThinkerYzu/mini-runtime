@@ -8,7 +8,7 @@ The Rust image-metadata case that reads binary files from `bench/bridge-cases/` 
 (cd mrt-api && cargo test --release image::tests::sizes_from_headers_as_gecko_metadata_decode -- --ignored)
 ```
 
-The viewer/API integration commands below are explicit fixture-based checks. Keep their checked-in synthetic HTML, JS, action JSON, image and media assets; they generate temporary environment recordings, profiles and result files themselves. Historical benchmark JSON, screenshots and traffic recordings are not inputs to those suites.
+The viewer/API integration commands below are explicit fixture-based checks. Keep their checked-in synthetic HTML, JS, action JSON, image and media assets; they use the built-in desktop environment and generate temporary profiles and result files; override tests supply synthetic comparison recordings. Historical benchmark JSON, screenshots and traffic recordings are not inputs to those suites.
 
 Build both release binaries first, then run from this repository's root:
 
@@ -18,7 +18,7 @@ python3 bench/test_no_firefox.py
 python3 bench/test_http_viewer.py
 ```
 
-The standalone suite has 14 checks. The viewer suite has 35 cases: 24 run without a browser and 11 require `VIEWER_BROWSER=1`. The local fixtures create their own environment recordings and HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
+The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 35 cases: 24 run without a browser and 11 require `VIEWER_BROWSER=1`. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
 
 ```sh
 VIEWER_BROWSER=1 FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python \

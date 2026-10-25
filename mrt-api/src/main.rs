@@ -10,7 +10,7 @@
 // the test profile in API_PROFILE (store.rs). fetch, XHR and script sources go to the network
 // (fetch.rs), through API_PROXY when the run is a replay, and so do WebSockets (ws.rs) and the
 // media element resources an HTTP viewer loads through the driver (`media`, fetch.rs, GAPS B172).
-// The browser's identity (env.rs) is a recording of the test profile's Firefox. The page's WebGL
+// Browser identity (env.rs) uses standalone defaults or an explicit API_ENV comparison profile. The page's WebGL
 // contexts are real OpenGL ES contexts here (webgl.rs, GAPS B169).
 //
 // `mrt-api --site URL...` prints each URL's site (Services.eTLD.getSite's form, store.rs site_of),
@@ -63,6 +63,10 @@ fn main() {
         for u in &args[1..] {
             println!("{}", url::Url::parse(u).map(|u| store::site_of(&u)).unwrap_or_default());
         }
+        return;
+    }
+    if args.as_slice() == ["--default-env"] {
+        println!("{}", env::defaults());
         return;
     }
     // the crypto keys of each partition (a site, under one top-level site); the cookie jars and

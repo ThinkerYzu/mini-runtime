@@ -21,7 +21,7 @@ Read the [layout translation conventions](../mrt-layout/CONVENTIONS.md) before e
 
 | Path | Responsibility |
 |---|---|
-| `bench/mini_realsites.py` | Top-level driver: document loading, process/API routing, environment recordings, navigation and reports. |
+| `bench/mini_realsites.py` | Top-level driver: document loading, process/API routing, default or comparison environments, navigation and reports. |
 | `bench/http_viewer.py` | HTTP listener, authenticated sessions, snapshot/update queues, input and lifecycle transport. |
 | `bench/http-viewer/index.html` | Viewer toolbar and sandbox frame. |
 | `bench/http-viewer/viewer.js` | DOM/CSS mirroring, editable input, readiness, reconnect, navigation controls and browser backend coordination. |
@@ -48,7 +48,7 @@ The viewer runs inside an ordinary browser. The Python process is the service; `
 
 The default source/bootstrap command is `tools/build.py`; `tools/engine/source.json` pins Mozilla source and the cache-local build helper, and `tools/engine/test_build.py` checks source lifecycle behavior. The default Git-ignored `firefox-source/` at repository root is a checkout or symlink, fetched when absent. Engine objects/tools live in the separate cache. The optional engine SDK is managed under `tools/sdk/`.
 
-Generated runtime output is kept under each crate's `target/`; parser objects go under Cargo build output directories. Environment recordings go under `bench/realsites-env/`. The driver writes captured documents, request logs and API logs below `bench/<MINI_DIR>/`, and reports to `bench/<MINI_OUT>`. Generated state is not the source of a test fixture.
+Generated runtime output is kept under each crate's `target/`; parser objects go under Cargo build output directories. Optional environment recordings go under `bench/realsites-env/`. The driver writes captured documents, request logs and API logs below `bench/<MINI_DIR>/`, and reports to `bench/<MINI_OUT>`. Generated state is not the source of a test fixture.
 
 ## Common changes
 
