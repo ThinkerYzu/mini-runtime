@@ -2332,7 +2332,8 @@
   // load or an alternate link without a title leaves `sheet` null
   const loadedLinks = share("loadedLinks", () => new WeakSet());
   const isSheetOwner = el => el.tagName === "STYLE" || (el.tagName === "LINK" && loadedLinks.has(el));
-  const inDocument = n => { for (; n; n = n.parentNode) if (n === document) return true; return false; };
+  // Inert documents also own sheets, e.g. CSS parsed in createHTMLDocument.
+  const inDocument = n => { const doc = n.ownerDocument; for (; n; n = n.parentNode) if (n === doc) return true; return false; };
   // (a new object each time the element got a new sheet: CSSOM.generation)
   if (!isWorker) reflect("sheet", function () {
     if (!isSheetOwner(this)) return undefined;

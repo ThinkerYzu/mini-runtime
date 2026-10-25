@@ -7,7 +7,9 @@ const select = document.getElementById("runtime"), connect = document.getElement
 const back = document.getElementById("back"), forward = document.getElementById("forward");
 let historyState = null, historyPending = null;
 function connectedStatus() {
-  if (session && ready && !navigating)
+  if (session && inputPending && !restoring && !navigating)
+    status.title = status.textContent = "Processing input…";
+  else if (session && ready && !navigating)
     status.title = status.textContent = "Connected · " + pageURL + (failures ? " · some CSS rules unavailable" : "") + (notice ? " · " + notice : "");
 }
 function historyControls() {
@@ -29,7 +31,7 @@ function historyCommand(delta) {
 back.onclick = () => historyCommand(-1);
 forward.onclick = () => historyCommand(1);
 let session = null, after = 0, ready = false, events = [], posting = false, task = 0;
-let syncedViewport = null;
+let syncedViewport = null, inputPending = false;
 let nodes = new Map(), ids = new WeakMap(), rules = new Map(), watched = new WeakSet();
 let scrollSeq = 0, scrollEcho = null, pageURL = "", failures = 0;
 let restoring = null, restoreFrame = false;
@@ -85,7 +87,7 @@ function failed(e, current) {
 }
 function disconnected(message) {
   gpu?.dispose(); media?.dispose(); mediaEvents = [];
-  session = null; ready = false; events = []; restoring = null; scrollEcho = null;
+  session = null; ready = false; inputPending = false; events = []; restoring = null; scrollEcho = null;
   disconnect.disabled = true; connect.disabled = false; frame.style.pointerEvents = "none";
   historyState = null; historyPending = null; historyControls();
   status.textContent = message;
@@ -103,6 +105,7 @@ async function send() {
       viewport: size, visible: !document.hidden});
     if (session === current) {
       const now = viewport();
+      inputPending = !!result.inputPending;
       ready = result.ready && !restoring && now[0] === size[0] && now[1] === size[1];
       if (ready) syncedViewport = size;
       frame.style.pointerEvents = ready ? "auto" : "none";
@@ -339,6 +342,7 @@ function capture(e) {
   if (!e.isTrusted || target === null) return;
   // Keep the viewer on the service URL. Page scripts make navigation decisions in the runtime.
   if (e.type === "submit" || (e.type === "click" && path.some(n => ["a", "area"].includes(n.localName) || (n.localName === "button" && n.form)))) e.preventDefault();
+  if (inputPending && ["keydown", "keypress", "beforeinput"].includes(e.type)) e.preventDefault();
   if (!ready || !session) return;
   if ((e.type === "scroll" || e.type === "scrollend") && target !== 0) return;
   const doc = frame.contentDocument, win = frame.contentWindow;
@@ -381,7 +385,7 @@ function watch(root) {
 }
 async function attach() {
   if (session) await api("detach", {session}).catch(() => {});
-  ready = false; events = []; after = 0; syncedViewport = null; restoring = null; scrollEcho = null;
+  ready = false; inputPending = false; events = []; after = 0; syncedViewport = null; restoring = null; scrollEcho = null;
   navigating = null; notice = ""; noticeSeq = 0;
   historyState = null; historyPending = null; historyControls();
   let current = null;

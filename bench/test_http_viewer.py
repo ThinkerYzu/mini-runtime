@@ -50,6 +50,87 @@ class Protocol(unittest.TestCase):
         self.assertTrue(v.wait({"now": 0, "busy": True})["ok"]["hidden"])
         self.assertFalse(v.snapshot_needed)
 
+    def test_input_backpressure_preserves_order_and_resumes(self):
+        v = Viewer("demo", "https://example.test/", [800, 600])
+        session = v.attach([800, 600])["session"]
+        v.wait({"now": 0, "busy": True})
+        v.publish([["c", 0, []]], session)
+        events = [{"type": "click", "task": i} for i in range(1024)]
+        self.assertTrue(v.input(session, 1, events[:256])["ready"])
+        self.assertTrue(v.input(session, 1, events[256:511])["ready"])
+        result = v.input(session, 1, events[511:767])
+        self.assertFalse(result["ready"])
+        self.assertTrue(result["inputPending"])
+        # Worst case: crossing the threshold, then another full batch captured
+        # before the pause response arrived. Both fit without dropping input.
+        self.assertFalse(v.input(session, 1, events[767:1023])["ready"])
+        self.assertFalse(v.input(session, 1, [])["ready"])
+        self.assertEqual(len(v.events), 1023)
+        v.input(session, 1, events[1023:])  # direct clients still obey the hard cap
+        with self.assertRaisesRegex(ValueError, "input queue full"):
+            v.input(session, 1, [{"type": "click"}])
+        self.assertEqual(v.wait({"now": 0, "busy": True})["ok"]["events"], events)
+        self.assertEqual(v.input(session, 1, []), {"ready": True, "inputPending": False})
+        self.assertEqual(v.session, session)
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 to drive Firefox")
+    def test_browser_input_backpressure(self):
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        v = Viewer("demo", "https://example.test/", [800, 600])
+        service = Service("127.0.0.1:0", v).start()
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        def until(check):
+            end = time.monotonic() + 10
+            while time.monotonic() < end:
+                if check(): return
+                time.sleep(0.03)
+            self.fail("browser did not reach expected input state")
+        def status():
+            return browser.execute_script('return document.getElementById("status").textContent')
+        def value():
+            return browser.execute_script('return document.getElementById("field").value')
+        try:
+            browser.start_session()
+            browser.set_context("content")
+            browser.navigate(service.url)
+            until(lambda: v.session is not None)
+            session = v.session
+            v.wait({"now": 0, "busy": True})
+            field = {"i": 4, "n": "input", "a": [["id", "field"]], "c": []}
+            html = {"i": 1, "n": "html", "a": [], "c": [
+                {"i": 2, "n": "head", "a": [], "c": []},
+                {"i": 3, "n": "body", "a": [], "c": [field]}]}
+            v.publish([["c", 0, [html]]], session)
+            until(lambda: status().startswith("Connected"))
+            # No runtime waits drain input during these native edits.
+            while len(v.events) < 511:
+                v.input(session, 1, [{"type": "test-padding"}] * min(256, 511 - len(v.events)))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", "field").send_keys("a")
+            browser.switch_to_frame()
+            until(lambda: status() == "Processing input…")
+            self.assertEqual(browser.execute_script('return document.getElementById("page").style.pointerEvents'), "none")
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            field = browser.find_element("id", "field")
+            before = value()
+            field.send_keys("blocked")
+            self.assertEqual(value(), before, "native typing escaped the input pause")
+            browser.switch_to_frame()
+            accepted = list(v.events)
+            self.assertLessEqual(len(accepted), 1024)
+            self.assertEqual(v.wait({"now": 0, "busy": True})["ok"]["events"], accepted)
+            until(lambda: status().startswith("Connected"))
+            self.assertEqual(v.session, session)
+            self.assertEqual(v.stats["attachments"], 1)
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", "field").send_keys("z")
+            until(lambda: any(e.get("value", [None])[0] == before + "z" for e in v.events))
+        finally:
+            firefox_exit.close(browser)
+            service.close()
+
     def test_navigation_state_and_commit(self):
         viewer = Viewer("demo", "https://a.test/", [800, 600])
         session = viewer.attach([800, 600])["session"]

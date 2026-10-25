@@ -65,7 +65,7 @@ Open the complete printed `VIEWER_URL`, including its token, in an ordinary brow
 
 Click, type and scroll in the viewer. Close its tab or use Disconnect, then open the same URL again: the current document's runtime, JavaScript state, form state and scroll position survive. Each attachment replaces the previous active viewer. A disconnected viewer's lease expires within five seconds; the runtime hibernates under its existing timer rules and wakes on attachment.
 
-Snapshots include DOM/shadow trees, adopted stylesheets, CSSOM edits, form state and scroll position, followed by incremental updates. Input waits for snapshot, viewport and scroll synchronization. Accepted input runs before a replacement snapshot, including its handlers and microtasks. Slow viewers resynchronize after the bounded update journal overflows (128 batches or 8 MiB).
+Snapshots include DOM/shadow trees, adopted stylesheets, CSSOM edits, form state and scroll position, followed by incremental updates. Input waits for snapshot, viewport and scroll synchronization. Accepted input runs before a replacement snapshot, including its handlers and microtasks. Slow viewers resynchronize after the bounded update journal overflows (128 batches or 8 MiB). If page execution falls behind, the viewer shows **Processing input** and pauses new input before its queue fills. It resumes automatically after queued input reaches the runtime, preserving the connection and accepted events.
 
 Page scripts execute in the runtime. The viewer renders a sandboxed copy with page scripts disabled. Its document keeps the service's origin; it never acquires the source site's privileges. Linked images and styles load using the viewer browser's resource policies and cookies, separately from the API process. Nested frame documents and 2D canvas pixels are not mirrored.
 
@@ -98,6 +98,8 @@ Use the toolbar's **Back** and **Forward** buttons to traverse runtime history. 
 Failures or refused destinations keep the current document and show a reason on the status line. New windows, downloads, non-HTML destinations, nested-frame navigation and a browser-style leave-page prompt remain unsupported. Cross-document history traversal reloads the URL as GET; it does not restore a back-forward cache, history state or a submitted form body. Cookies, localStorage, IndexedDB, permissions and per-origin sessionStorage persist across document navigation within the run.
 
 A document can temporarily have no root element, for example after `document.open()`. The viewer stays connected in this state, supports reconnect and toolbar Back, and displays content if the document is recreated later. Pages that rely on parser-time `document.write`, including enable-javascript.com, can still render blank because that API is incomplete; they should no longer leave the viewer stuck at **Synchronizing**. Restart the launcher after rebuilding to use the fix.
+
+Google Images previews also require stylesheets in temporary HTML documents. This is supported locally, along with queue backpressure for busy page handlers. Restart an existing service to load these changes.
 
 ### Google Search
 

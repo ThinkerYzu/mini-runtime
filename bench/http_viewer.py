@@ -302,7 +302,11 @@ class Viewer:
             self.events.extend(events)
             self.stats["events"] += len(events)
             self.lock.notify_all()
-            return {"ready": self.ready}
+            # Allow for this batch crossing the pause threshold plus the one captured
+            # while its reply was in flight (both at most 256 records).
+            # Snapshot readiness stays true so that already-captured input is accepted.
+            pending = len(self.events) >= 512
+            return {"ready": self.ready and not pending, "inputPending": pending}
 
     def media_type(self, req, timeout=5):
         kind = req.get("type", "")

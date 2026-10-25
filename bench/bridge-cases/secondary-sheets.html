@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8"><title>Secondary document stylesheets</title><script>
+window.__log = [];
+const log = (...args) => window.__log.push(args.join(" "));
+// Google Images parses CSS in a temporary document without a browsing context.
+const scratch = document.implementation.createHTMLDocument("");
+const scratchStyle = scratch.createElement("style");
+log("secondary detached", scratchStyle.sheet === null);
+scratch.head.appendChild(scratchStyle);
+const scratchSheet = scratchStyle.sheet;
+log("secondary sheet", scratch.defaultView === null, scratchSheet instanceof CSSStyleSheet,
+  scratchSheet.ownerNode === scratchStyle, scratchSheet === scratchStyle.sheet);
+scratchSheet.insertRule(".preview { color: red; }", 0);
+log("secondary rule", scratchSheet.cssRules.length, scratchSheet.cssRules[0] instanceof CSSStyleRule,
+  scratchSheet.cssRules[0].cssText);
+scratchStyle.remove();
+log("secondary removed", scratchStyle.sheet === null, scratchSheet.cssRules.length);
+scratch.head.appendChild(scratchStyle);
+log("secondary reinserted", scratchStyle.sheet !== scratchSheet, scratchStyle.sheet.cssRules.length);
+
+</script>
