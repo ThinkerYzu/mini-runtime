@@ -97,6 +97,8 @@ Use the toolbar's **Back** and **Forward** buttons to traverse runtime history. 
 
 Failures or refused destinations keep the current document and show a reason on the status line. New windows, downloads, non-HTML destinations, nested-frame navigation and a browser-style leave-page prompt remain unsupported. Cross-document history traversal reloads the URL as GET; it does not restore a back-forward cache, history state or a submitted form body. Cookies, localStorage, IndexedDB, permissions and per-origin sessionStorage persist across document navigation within the run.
 
+A document can temporarily have no root element, for example after `document.open()`. The viewer stays connected in this state, supports reconnect and toolbar Back, and displays content if the document is recreated later. Pages that rely on parser-time `document.write`, including enable-javascript.com, can still render blank because that API is incomplete; they should no longer leave the viewer stuck at **Synchronizing**. Restart the launcher after rebuilding to use the fix.
+
 ### Google Search
 
 To open Google from the repository root:

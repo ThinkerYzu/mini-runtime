@@ -581,7 +581,7 @@ fn take_input(page: &mut Page, reply: &str, hib: &mut Hibernation, upkeep: &mut 
     // Queue accepted input before snapshot/visibility bookkeeping so the old
     // node map survives until those tasks complete; snapshots defer to them.
     page.eval(&format!("__mrt.inputEvents((({reply}).ok || {{}}).events || [])"), "driver");
-    page.eval(&format!("{{ const v = ({reply}).ok || {{}}; if (v.mediaBackend) __mrt.viewerMedia(v.mediaBackend); if (v.webgl) __mrt.webglViewer?.(v.webgl); if ('mirror' in v) __mrt.viewerMirror(v.mirror); if (v.snapshot) {{ void document.documentElement.offsetWidth; __mrt.mirrorSnapshot(v.snapshot); }} }}"), "driver");
+    page.eval(&format!("{{ const v = ({reply}).ok || {{}}; if (v.mediaBackend) __mrt.viewerMedia(v.mediaBackend); if (v.webgl) __mrt.webglViewer?.(v.webgl); if ('mirror' in v) __mrt.viewerMirror(v.mirror); if (v.snapshot) {{ void document.documentElement?.offsetWidth; __mrt.mirrorSnapshot(v.snapshot); }} }}"), "driver");
     // the tab's media events and answers (task 753cc): not input, so they wake nothing
     page.eval(&format!("__mrt.mediaEvents((({reply}).ok || {{}}).media || [])"), "driver");
     page.eval_number(&format!("(({reply}).ok || {{}}).stop ? 1 : 0"), "driver") == 1.0

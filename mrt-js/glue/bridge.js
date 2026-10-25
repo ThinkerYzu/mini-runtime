@@ -8455,7 +8455,8 @@
     if (!force && now - mirror.last < 100) return 0;
     mirror.last = now;
     const ops = [];
-    if (!mirror.sent.has(document)) mirror.sent.set(document, { i: 0, k: "" });
+    // Even an empty document must replace the viewer's old children in a fresh snapshot.
+    if (!mirror.sent.has(document)) mirror.sent.set(document, { i: 0, k: null });
     mirror.byId = new Map([[0, document]]);
     mirrorChildren(document, mirror.sent.get(document), ops);
     if (pageURL.href !== mirror.href) { mirror.href = pageURL.href; ops.push(["u", pageURL.href]); }

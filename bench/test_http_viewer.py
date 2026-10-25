@@ -438,6 +438,14 @@ class Runtime(unittest.TestCase):
                         "location.replace(" + json.dumps(target) + ");" +
                         "let count=0;document.getElementById('increment').onclick=()=>{document.getElementById('count').textContent=String(++count)};" +
                         "</script>").encode())
+                elif url.path == "/nav-empty":
+                    script = "document.open();"
+                    if query.get("recover"):
+                        document = ('<!doctype html><button id="recovered">Recovered</button><output id="count">0</output>'
+                                    '<script>let n=0;document.getElementById("recovered").onclick=()=>'
+                                    '{document.getElementById("count").textContent=String(++n)};</script>')
+                        script += "setTimeout(()=>{document.write(" + json.dumps(document).replace("</script>", "<\\/script>") + ");document.close();},2500);"
+                    send(200, ("<!doctype html><script>" + script + "</script>").encode())
                 elif url.path == "/nav-redirect":
                     send(302, extra=[("Location", query["to"][0])])
                 elif url.path == "/nav-nocontent":
@@ -1809,6 +1817,54 @@ class Runtime(unittest.TestCase):
         self.assertFalse(result["unsupported_ops"], result)
         self.assertEqual(result["bridge_tab"], {"made": False})
         self.assertEqual(result["viewer"]["navigations"], 7, result["navigations"])
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_navigation_empty_document(self):
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        browser.start_session()
+
+        def shown(condition):
+            browser.switch_to_frame()
+            self.until(lambda: browser.execute_script(
+                'const f=document.getElementById("page"),d=f.contentDocument;return '
+                'document.getElementById("status").textContent.startsWith("Connected") && '
+                'f.style.pointerEvents === "auto" && (' + condition + ')'), 10)
+
+        def click(element):
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", element).click()
+            browser.switch_to_frame()
+
+        try:
+            browser.set_context("content")
+            browser.navigate(self.viewer_url)
+            shown('!!d.getElementById("empty-document")')
+            click("empty-document")
+            shown('!d.documentElement && !document.getElementById("back").disabled')
+            pid = self.call("runtimes")[0]["pid"]
+            # Reconnect while the document remains empty, then recover through outer history UI.
+            browser.navigate(self.viewer_url)
+            shown('!d.documentElement && !document.getElementById("back").disabled')
+            self.assertEqual(self.call("runtimes")[0]["pid"], pid)
+            browser.find_element("id", "back").click()
+            shown('!!d.getElementById("recover-document")')
+            click("recover-document")
+            shown('!d.documentElement && !document.getElementById("back").disabled')
+            shown('!!d.getElementById("recovered")')
+            click("recovered")
+            shown('d.getElementById("count").textContent === "1"')
+            browser.find_element("id", "back").click()
+            shown('!!d.getElementById("empty-document")')
+        finally:
+            firefox_exit.close(browser)
+        self.call("stop", {}); self.proc.wait(timeout=10)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual(self.proc.returncode, 0, result)
+        self.assertFalse(result["unsupported_ops"], result)
+        self.assertEqual(result["viewer"]["navigations"], 4, result)
 
     @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_navigation_controls(self):

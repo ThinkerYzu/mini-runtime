@@ -157,8 +157,8 @@ function restoreScroll() {
   const doc = frame.contentDocument, win = frame.contentWindow;
   // Layout must include every DOM/CSSOM operation, before applying the offset.
   const root = doc.scrollingElement || doc.documentElement;
-  const maxX = Math.max(0, root.scrollWidth - win.innerWidth);
-  const maxY = Math.max(0, root.scrollHeight - win.innerHeight);
+  const maxX = Math.max(0, (root?.scrollWidth || 0) - win.innerWidth);
+  const maxY = Math.max(0, (root?.scrollHeight || 0) - win.innerHeight);
   const x = Math.min(state.x, maxX), y = Math.min(state.y, maxY);
   scrollEcho = [x, y];
   win.scrollTo({left: x, top: y, behavior: "instant"});
