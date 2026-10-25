@@ -1,0 +1,53 @@
+<!doctype html><meta charset="utf-8"><title>CSSStyleRule declarations</title>
+<style id="sheet">.probe { width: 10px; color: red; } @media all { .probe { height: 11px; } }</style>
+<div class="probe">Probe</div><div class="adopt">Adopted</div>
+<button id="advance">Advance</button><output id="stage">0</output>
+<script>
+window.__log = [];
+const log = (...args) => __log.push(args.join(" "));
+const sheet = document.getElementById("sheet").sheet;
+const rule = sheet.cssRules[0], style = rule.style;
+log("interface", style instanceof CSSStyleDeclaration, style instanceof CSSStyleProperties,
+  style === rule.style, style.parentRule === rule);
+log("initial", style.cssText, style.length, style.item(0), style[0], style.getPropertyValue("color"));
+style.viewTransitionName = "preview";
+style.setProperty("color", "blue", "important");
+style.width = "25px";
+log("edited", style.viewTransitionName, style.color, style.getPropertyPriority("color"),
+  getComputedStyle(document.querySelector(".probe")).width, rule.cssText);
+style.width = "nonsense";
+style.setProperty("color", "green", "invalid");
+log("invalid", style.width, style.color);
+log("removed", style.removeProperty("color"), style.color, style.getPropertyPriority("color"));
+sheet.insertRule(".before {}", 0);
+style.width = "29px";
+log("shifted", sheet.cssRules[1] === rule, rule.style === style, style.width,
+  getComputedStyle(document.querySelector(".probe")).width);
+sheet.deleteRule(0);
+style.width = "30px";
+log("sibling removed", sheet.cssRules[0] === rule, style.width);
+const nested = sheet.cssRules[1].cssRules[0];
+nested.style.height = "33px";
+log("nested", nested.style.parentRule === nested, nested.cssText, sheet.cssRules[1].cssText,
+  getComputedStyle(document.querySelector(".probe")).height);
+style.cssText = "width: 31px; --custom: yes; opacity: 0.5";
+log("cssText", style.cssText, style.length, style.getPropertyValue("--custom"), rule.cssText);
+style.setProperty("--unicode", "雪 😀");
+log("unicode", style.getPropertyValue("--unicode"));
+rule.style = "width: 32px";
+log("forwarded", rule.style === style, style.width);
+const adopted = new CSSStyleSheet();
+adopted.replaceSync(".adopt { opacity: 0.2 }");
+document.adoptedStyleSheets = [adopted];
+adopted.cssRules[0].style.opacity = "0.7";
+log("adopted", adopted.cssRules[0].style.opacity, getComputedStyle(document.querySelector(".adopt")).opacity);
+log("done");
+let stage = 0;
+document.getElementById("advance").addEventListener("click", () => {
+  stage++;
+  style.width = (32 + stage) + "px";
+  nested.style.height = (33 + stage) + "px";
+  adopted.cssRules[0].style.opacity = stage % 2 ? "0.8" : "0.4";
+  document.getElementById("stage").textContent = String(stage);
+});
+</script>

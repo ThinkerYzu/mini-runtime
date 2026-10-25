@@ -199,6 +199,17 @@ pub enum RuleOp {
     Insert(u32, String),
     /// `deleteRule(index)` that succeeded.
     Delete(u32),
+    /// A declaration edit on a style rule, addressed after the preceding edits.
+    Declaration(Box<DeclarationOp>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeclarationOp {
+    pub path: Vec<u32>,
+    pub kind: u8,
+    pub name: String,
+    pub value: String,
+    pub important: bool,
 }
 
 /// A constructed style sheet: the text it was last given (`replace`, `replaceSync`), the changes
@@ -1358,6 +1369,15 @@ impl Dom {
                         out.push(1);
                         u32s(out, *i);
                     }
+                    RuleOp::Declaration(edit) => {
+                        out.push(2);
+                        u32s(out, edit.path.len() as u32);
+                        for i in &edit.path { u32s(out, *i); }
+                        out.push(edit.kind);
+                        string(out, &edit.name);
+                        string(out, &edit.value);
+                        out.push(u8::from(edit.important));
+                    }
                 }
             }
         };
@@ -1646,11 +1666,15 @@ impl Dom {
 
 /// The heap bytes of a list of RuleOps.
 fn ops_bytes(ops: &Vec<RuleOp>) -> usize {
-    ops.capacity() * size_of::<RuleOp>() + ops.iter().map(|op| if let RuleOp::Insert(_, t) = op { t.capacity() } else { 0 }).sum::<usize>()
+    ops.capacity() * size_of::<RuleOp>() + ops.iter().map(|op| match op {
+        RuleOp::Insert(_, t) => t.capacity(),
+        RuleOp::Delete(_) => 0,
+        RuleOp::Declaration(e) => size_of::<DeclarationOp>() + e.path.capacity() * size_of::<u32>() + e.name.capacity() + e.value.capacity(),
+    }).sum::<usize>()
 }
 
 /// The first bytes of a saved DOM (`Dom::to_bytes`): a name and a format version.
-const SAVE_MAGIC: &[u8; 8] = b"MRTDOM05";
+const SAVE_MAGIC: &[u8; 8] = b"MRTDOM06";
 
 struct Reader<'a> {
     b: &'a [u8],
@@ -1678,6 +1702,15 @@ impl<'a> Reader<'a> {
                     RuleOp::Insert(i, self.string()?)
                 }
                 1 => RuleOp::Delete(self.u32()?),
+                2 => {
+                    let n = self.u32()? as usize;
+                    if n > 1024 { return None; }
+                    let path = (0..n).map(|_| self.u32()).collect::<Option<Vec<_>>>()?;
+                    let kind = self.take(1)?[0];
+                    if path.is_empty() || !matches!(kind, 2 | 3 | 7) { return None; }
+                    RuleOp::Declaration(Box::new(DeclarationOp { path, kind,
+                        name: self.string()?, value: self.string()?, important: self.take(1)?[0] != 0 }))
+                }
                 _ => return None,
             });
         }
@@ -1980,6 +2013,21 @@ mod tests {
         assert!(Dom::from_bytes(&bad.to_bytes()).is_none());
         d.set_adopted_sheets(root, &[]);
         assert!(d.adopted_sheets(root).is_empty());
+    }
+
+    #[test]
+    fn save_and_restore_rule_declarations() {
+        let mut dom = Dom::parse("<!doctype html><style id=s>p { color: red }</style>");
+        let style = by_id(&dom, "s");
+        let op = RuleOp::Declaration(Box::new(DeclarationOp {
+            path: vec![1, 0], kind: 2, name: "color".into(), value: "blue".into(), important: true,
+        }));
+        dom.push_owner_sheet_op(style, None, op.clone());
+        let constructed = dom.new_constructed_sheet("@media all { p {} }");
+        dom.push_constructed_sheet_op(constructed, op.clone());
+        let restored = Dom::from_bytes(&dom.to_bytes()).expect("restores declaration operations");
+        assert_eq!(restored.owner_sheet(style).unwrap().ops, vec![op.clone()]);
+        assert_eq!(restored.constructed_sheets[constructed as usize].ops, vec![op]);
     }
 
     #[test]

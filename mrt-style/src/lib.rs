@@ -1388,6 +1388,7 @@ fn sheet_key_text(css: &str, ops: &[mrt_dom::RuleOp]) -> std::sync::Arc<str> {
         match op {
             mrt_dom::RuleOp::Insert(i, rule) => key.push_str(&format!("\u{0}I{i}:{rule}")),
             mrt_dom::RuleOp::Delete(i) => key.push_str(&format!("\u{0}D{i}")),
+            mrt_dom::RuleOp::Declaration(edit) => key.push_str(&format!("\u{0}E{edit:?}")),
         }
     }
     key.into()

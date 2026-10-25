@@ -2038,9 +2038,9 @@
   // rules a sheet starts with are parsed into cssRules, and a rule a script inserts is parsed at the
   // call (a SyntaxError as Gecko's) and reaches the style. What a script does to the sheet of a
   // <style> or <link> is page state in the arena (SPEC decision 13): its rules once changed, and
-  // `disabled`. The rule objects are for reading: their setters, CSSGroupingRule's insertRule and
-  // deleteRule, and CSSStyleRule's `style` are not built (GAPS B117).
-  const CSSOM = { generation: 0, rules: 1, insert: 2, remove: 3, setDisabled: 4, disabled: 5, replace: 6, create: 7 };
+  // `disabled`. CSSStyleRule.style edits reach the same parsed rules and arena operation log.
+  // Other rule setters and CSSGroupingRule mutation remain GAPS B117.
+  const CSSOM = { generation: 0, rules: 1, insert: 2, remove: 3, setDisabled: 4, disabled: 5, replace: 6, create: 7, declaration: 8 };
   // how many times script changed the rules of each <style> or <link>'s sheet, for the bridge tab's
   // copy of the document (mirrorFlush), which takes the rules again when the count moves
   const cssomEdits = new WeakMap();
@@ -2137,7 +2137,42 @@
   class CSSConditionRule extends CSSGroupingRule {
     get conditionText() { return this._d.x !== undefined ? this._d.x : this._d.m || ""; }
   }
+  const updateRuleData = (rule, data) => {
+    rule._d = data;
+    if (rule._kids) rule._kids.forEach((child, i) => updateRuleData(child, data.r[i]));
+  };
+  function ruleDeclaration(rule) {
+    const call = (kind, name = "", value = "", important = false) => {
+      if (name.includes("\0")) return "";
+      const sheet = rule._sheet, target = sheet._live(), path = [];
+      for (let r = rule; r; r = r._parent) {
+        const siblings = r._parent ? childRules(r._parent) : sheet._ruleObjects();
+        path.unshift(siblings.indexOf(r));
+      }
+      const result = cssomCall(CSSOM.declaration, target, "path=" + path.join(",") + "&name=" + encodeURIComponent(name.toWellFormed()) + "&value=" + encodeURIComponent(value.toWellFormed()), kind + (important ? 16 : 0));
+      if ([2, 3, 7].includes(kind)) {
+        const data = JSON.parse(__mrtCssom(CSSOM.rules, target));
+        sheet._ruleObjects().forEach((r, i) => updateRuleData(r, data[i]));
+        noteSheetEdit(sheet._owner, sheet);
+      }
+      return result;
+    };
+    return global.__mrt.makeDeclaration({
+      parentRule: rule,
+      get: name => call(0, name), priority: name => call(1, name),
+      set(name, value, priority) {
+        if (value === "") { call(3, name); return; }
+        if (priority !== "" && priority.toLowerCase() !== "important") return;
+        call(2, name, value, priority !== "");
+      },
+      remove: name => call(3, name), text: () => call(4),
+      length: () => Number(call(5)), item: index => call(6, "", String(index)),
+      setText: text => call(7, "", text),
+    });
+  }
   class CSSStyleRule extends CSSGroupingRule {
+    get style() { return this._style || (this._style = ruleDeclaration(this)); }
+    set style(text) { this.style.cssText = text; }
     get selectorText() { return this._d.s; }
     set selectorText(v) { stub("CSSStyleRule.selectorText"); }
   }

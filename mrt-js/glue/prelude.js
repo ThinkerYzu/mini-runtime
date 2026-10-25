@@ -784,7 +784,7 @@
       backend.set(String(property), value === null ? "" : String(value), priority === null ? "" : String(priority));
     },
     removeProperty(property) { return backendOf(this, "removeProperty").remove(String(property)); },
-    get parentRule() { backendOf(this, "parentRule"); return null; },
+    get parentRule() { return backendOf(this, "parentRule").parentRule || null; },
   });
   const CSSStyleProperties = defineInterface("CSSStyleProperties", CSSStyleDeclaration, {});
   // The property accessors, GetPropertyValue and SetPropertyValue by property id as the generated
@@ -2791,6 +2791,7 @@
   // ---- what the driver calls ----
 
   define(global, "__mrt", {
+    makeDeclaration,
     url: { URL_RE, removeDots, resolve },
     trustedTypes,
     // an approximated API was used (bridge.js counts them in its report)

@@ -99,7 +99,7 @@ Failures or refused destinations keep the current document and show a reason on 
 
 A document can temporarily have no root element, for example after `document.open()`. The viewer stays connected in this state, supports reconnect and toolbar Back, and displays content if the document is recreated later. Pages that rely on parser-time `document.write`, including enable-javascript.com, can still render blank because that API is incomplete; they should no longer leave the viewer stuck at **Synchronizing**. Restart the launcher after rebuilding to use the fix.
 
-Google Images previews also require stylesheets in temporary HTML documents. This is supported locally, along with queue backpressure for busy page handlers. Restart an existing service to load these changes.
+Google Images previews also require stylesheets in temporary HTML documents. This is supported locally, along with queue backpressure for busy page handlers. Live CSS rule declaration edits used to switch an already-open preview are also supported. Restart an existing service to load these changes.
 
 ### Google Search
 

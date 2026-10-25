@@ -618,6 +618,8 @@ class Runtime(unittest.TestCase):
             page = "slow-fetch.html"
         if self._testMethodName == "test_browser_svg_search":
             source, page = HERE / "bridge-cases", "svg-element.html"
+        if self._testMethodName == "test_browser_rule_style":
+            source, page = HERE / "bridge-cases", "rule-style.html"
         if self._testMethodName == "test_browser_document_input":
             source, page = HERE / "bridge-cases", "document-input.html"
         if self._testMethodName in ("test_browser_delayed_scroll", "test_input_before_reconnect_snapshot"):
@@ -955,6 +957,39 @@ class Runtime(unittest.TestCase):
         self.assertEqual(result["js_errors"], 0, result)
         self.assertFalse(result["unsupported_ops"], result)
         self.assertEqual(result["bridge_tab"], {"made": False})
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 to drive Firefox")
+    def test_browser_rule_style(self):
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        browser.start_session()
+        def shown(step):
+            return browser.execute_script('''const p=getComputedStyle(document.querySelector('.probe'));
+                return [document.getElementById('stage').textContent,p.width,p.height,
+                        getComputedStyle(document.querySelector('.adopt')).opacity];''') == [
+                            str(step), str(32 + step) + "px", str(33 + step) + "px",
+                            "0.7" if step == 0 else ("0.8" if step % 2 else "0.4")]
+        try:
+            browser.set_context("content")
+            browser.navigate(self.viewer_url)
+            self.until(lambda: browser.execute_script('return document.getElementById("status").textContent.startsWith("Connected")'))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            self.until(lambda: shown(0))
+            for step in range(1, 7):
+                browser.find_element("id", "advance").click()
+                self.until(lambda: shown(step))
+                if step == 3:
+                    browser.switch_to_frame()
+                    browser.find_element("id", "detach").click()
+                    browser.find_element("id", "attach").click()
+                    self.until(lambda: browser.execute_script('return document.getElementById("status").textContent.startsWith("Connected")'))
+                    browser.switch_to_frame(browser.find_element("id", "page"))
+                    self.until(lambda: shown(step))
+            self.assertEqual(browser.execute_script('return window.__log || null'), None, "page scripts ran in the viewer")
+        finally:
+            firefox_exit.close(browser)
 
     @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_svg_search(self):

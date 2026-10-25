@@ -81,6 +81,7 @@ from a local server, and the two logs it writes to `window.__log` are diffed. Th
                 tables, generated content, frames, shadow trees
   inner-text    innerText and outerText (Gecko's GetInnerText over the frames, GAPS B15): whitespace,
                 visibility, blocks and <p>, <br>, tables, form controls, not rendered, the setters
+  rule-style    live CSSStyleRule declarations, nested and adopted sheets, identity and invalid setters
   secondary-sheets  CSS parsing in a createHTMLDocument document, sheet lifetime and retained rules
   insert-rule   style sheets' CSSOM (Stylo's rules, GAPS B15): a sheet's own rules, insertRule and its
                 errors, deleteRule, addRule, disabled, a new sheet when the owner changes, a link's

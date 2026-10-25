@@ -220,6 +220,58 @@ pub fn parse_with_ops(
     contents
 }
 
+/// Decode the bridge's form-encoded declaration request without embedded NULs in
+/// the JS/C++ string transport. Property values can contain arbitrary Unicode.
+pub fn declaration_request(text: &str, flags: u8) -> Option<mrt_dom::DeclarationOp> {
+    let fields: std::collections::HashMap<_, _> = url::form_urlencoded::parse(text.as_bytes()).collect();
+    let path = fields.get("path")?.split(',').map(str::parse::<u32>).collect::<Result<Vec<_>, _>>().ok()?;
+    Some(mrt_dom::DeclarationOp { path, kind: flags & 15, name: fields.get("name")?.to_string(),
+        value: fields.get("value")?.to_string(), important: flags & 16 != 0 })
+}
+
+// CSSStyleRule.style edits operate on the parsed block, avoiding serialization and
+// reparsing of unrelated declarations (notably shorthand values containing var()).
+fn rule_declaration(contents: &StylesheetContents, lock: &SharedRwLock, edit: &mrt_dom::DeclarationOp) -> Result<String, &'static str> {
+    let declarations = {
+        let guard = lock.read();
+        let mut path = edit.path.iter();
+        let mut rule = contents.rules.read_with(&guard).0.get(*path.next().ok_or("IndexSizeError")? as usize).cloned().ok_or("IndexSizeError")?;
+        for index in path { rule = rule.children(&guard).get(*index as usize).cloned().ok_or("IndexSizeError")?; }
+        let CssRule::Style(rule) = rule else { return Err("InvalidStateError") };
+        let block = rule.read_with(&guard).block.clone();
+        block
+    };
+    let mut guard = lock.write();
+    let decls = declarations.write_with(&mut guard);
+    let id = PropertyId::parse_enabled_for_all_content(&edit.name).ok();
+    let mut result = String::new();
+    match edit.kind {
+        0 => if let Some(id) = id { decls.property_value_to_css(&id, &mut result).unwrap(); },
+        1 => if let Some(id) = id { if decls.property_priority(&id) == Importance::Important { result.push_str("important"); } },
+        2 => if let Some(id) = id {
+            if id.non_custom_id().is_none_or(|id| id.allowed_in_rule(CssRuleType::Style.into())) {
+                let mut source = SourcePropertyDeclaration::default();
+                if parse_one_declaration_into(&mut source, id, &edit.value, Origin::Author, &contents.url_data, None,
+                    ParsingMode::DEFAULT, contents.quirks_mode, CssRuleType::Style).is_ok() {
+                    let importance = if edit.important { Importance::Important } else { Importance::Normal };
+                    let mut updates = Default::default();
+                    if decls.prepare_for_update(&source, importance, &mut updates) { decls.update(source.drain(), importance, &mut updates); }
+                }
+            }
+        },
+        3 => if let Some(id) = id {
+            decls.property_value_to_css(&id, &mut result).unwrap();
+            if let Some(index) = decls.first_declaration_to_remove(&id) { decls.remove_property(&id, index); }
+        },
+        4 => result = to_text(decls),
+        5 => result = decls.declarations().len().to_string(),
+        6 => result = edit.value.parse::<usize>().ok().and_then(|i| decls.declarations().get(i)).map(|d| d.id().name().into_owned()).unwrap_or_default(),
+        7 => *decls = parse_style_attribute(&edit.value, &contents.url_data, None, contents.quirks_mode, CssRuleType::Style),
+        _ => return Err("InvalidStateError"),
+    }
+    Ok(result)
+}
+
 /// One RuleOp on `contents`: the new rule's JSON for an insert, "" for a delete, or the DOMException's
 /// name.
 fn apply_op(contents: &StylesheetContents, lock: &SharedRwLock, op: &mrt_dom::RuleOp, allow: AllowImportRules) -> Result<String, &'static str> {
@@ -237,6 +289,7 @@ fn apply_op(contents: &StylesheetContents, lock: &SharedRwLock, op: &mrt_dom::Ru
             contents.rules.write_with(&mut guard).0.insert(index, parsed);
             Ok(json)
         }
+        mrt_dom::RuleOp::Declaration(edit) => rule_declaration(contents, lock, edit),
         mrt_dom::RuleOp::Delete(index) => {
             let mut guard = lock.write();
             let rules: &mut CssRules = contents.rules.write_with(&mut guard);
@@ -253,6 +306,10 @@ impl CssomSheet {
         let lock = SharedRwLock::new();
         let contents = parse_with_ops(css, ops, url_data(), &lock, None, quirks_mode, constructed);
         CssomSheet { lock, contents, constructed }
+    }
+
+    pub fn declaration(&mut self, edit: &mrt_dom::DeclarationOp) -> Result<String, &'static str> {
+        rule_declaration(&self.contents, &self.lock, edit)
     }
 
     /// The number of top-level rules (`cssRules.length`).
@@ -448,6 +505,23 @@ mod tests {
         let mut constructed = CssomSheet::parse("@import url(a.css); p {}", &[], 0, true);
         assert_eq!(constructed.len(), 1);
         assert_eq!(constructed.apply(&RuleOp::Insert(0, "@import url(a.css);".into())), Err("SyntaxError"));
+    }
+
+    #[test]
+    fn declaration_edits_replay_without_roundtripping_other_properties() {
+        let css = "h2 { font: var(--f); font-weight: bold } @media all { h2 { height: 10px } }";
+        let edit = |path, name: &str, value: &str| RuleOp::Declaration(Box::new(mrt_dom::DeclarationOp {
+            path, kind: 2, name: name.into(), value: value.into(), important: false,
+        }));
+        let ops = [edit(vec![0], "color", "blue"), edit(vec![1, 0], "height", "33px"),
+                   RuleOp::Insert(0, "p {}".into()), edit(vec![1], "width", "29px")];
+        let mut live = CssomSheet::parse(css, &[], 0, false);
+        for op in &ops { live.apply(op).unwrap(); }
+        let restored = CssomSheet::parse(css, &ops, 0, false);
+        assert_eq!(live.rules_json(), restored.rules_json());
+        assert!(live.rules_json().contains("font-style: ;"));
+        assert!(live.rules_json().contains("height: 33px"));
+        assert!(live.rules_json().contains("width: 29px"));
     }
 
     #[test]

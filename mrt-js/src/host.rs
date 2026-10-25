@@ -2142,7 +2142,8 @@ extern "C" fn mrt_dom_set_sheet(h: *mut c_void, id: u32, s: *const c_char, len: 
 /// from then on counted), 1 the rules as JSON (mrt_style::cssom's `rule_json`), 2 insertRule(`text`,
 /// `n`), the new rule's JSON, 3 deleteRule(`n`), "", 4 set `disabled` to `n`, "", 5 `disabled` ("1"
 /// or ""), 6 replaceSync(`text`) on a constructed sheet, "", 7 a new constructed sheet
-/// with media list `text`, disabled when `n` is 1, its id. A refused insertRule or deleteRule answers
+/// with media list `text`, disabled when `n` is 1, its id. 8 reads/edits a rule declaration using
+/// a form-encoded path/name/value and `n`'s operation/importance flags. A refused operation answers
 /// "!" and the DOMException's name. The result string goes to `out`.
 #[unsafe(no_mangle)]
 extern "C" fn mrt_cssom_op(h: *mut c_void, op: i32, owner: i32, id: u32, s: *const c_char, len: usize, n: f64, out: *mut *const c_char, out_len: *mut usize) {
@@ -2228,6 +2229,31 @@ extern "C" fn mrt_cssom_op(h: *mut c_void, op: i32, owner: i32, id: u32, s: *con
                 h.changed();
             }
             String::new()
+        }
+        8 => {
+            let kind = n as u8 & 15;
+            if let Some(edit) = mrt_style::cssom::declaration_request(text, n as u8) {
+                let kept = h.cssom.contains_key(&key);
+                let answer = h.cssom_sheet(key).declaration(&edit);
+                if !kept && !matches!(kind, 2 | 3 | 7) { h.cssom.remove(&key); }
+                match answer {
+                    Err(name) => format!("!{name}"),
+                    Ok(result) => {
+                        if matches!(kind, 2 | 3 | 7) {
+                            let op = mrt_style::mrt_dom::RuleOp::Declaration(Box::new(edit));
+                            match key {
+                                SheetKey::Owner(id) => {
+                                    let base = (h.dom.tag(id) == "link").then(|| h.link_sheets.get(&id).map_or("", |s| s).to_string());
+                                    h.dom.push_owner_sheet_op(id, base.as_deref(), op);
+                                }
+                                SheetKey::Constructed(id) => h.dom.push_constructed_sheet_op(id, op),
+                            }
+                            if applies(h) { h.changed(); }
+                        }
+                        result
+                    }
+                }
+            } else { "!IndexSizeError".into() }
         }
         7 => h.dom.new_constructed_sheet_with("", text, n != 0.0).to_string(),
         _ => String::new(),
