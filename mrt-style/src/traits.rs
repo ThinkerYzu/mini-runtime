@@ -298,6 +298,10 @@ impl Element for H<'_> {
         self.with(self.t().dom.assigned_slot(self.id))
     }
     fn has_id(&self, id: &AtomIdent, case_sensitivity: CaseSensitivity) -> bool {
+        if self.t().selector_only {
+            return self.attr(&local_name!("id"))
+                .is_some_and(|mine| case_sensitivity.eq_atom(&Atom::from(mine), id));
+        }
         self.t().id_atom(self.id).is_some_and(|mine| case_sensitivity.eq_atom(mine, id))
     }
     fn has_class(&self, name: &AtomIdent, case_sensitivity: CaseSensitivity) -> bool {

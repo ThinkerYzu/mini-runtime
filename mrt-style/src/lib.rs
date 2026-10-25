@@ -145,6 +145,8 @@ pub struct Tree {
     pub(crate) pres_hint_blocks: Mutex<HashMap<String, ServoArc<Locked<PropertyDeclarationBlock>>>>,
     /// Atom for each interned name of the DOM (tag names and attribute names), same index.
     name_atoms: Vec<LocalName>,
+    /// DOM selector calls read attributes directly and never allocate style side tables.
+    selector_only: bool,
     /// Atom for each namespace number the parser uses (0 none, 1 xmlns, 2 xml, 3 html, 4 xlink,
     /// 5 mathml, 6 svg).
     ns_atoms: [Namespace; 7],
@@ -363,10 +365,29 @@ impl Tree {
 
     /// As `with_guard`, for document `doc` of the DOM (a frame's): only its elements get slots.
     pub fn for_document(doc: NodeId, dom: Dom, guard: SharedRwLock) -> Tree {
+        let mut tree = Self::bare(doc, dom, guard, false);
+        tree.sync_tables();
+        // A finished style tree needs no spare capacity in its element tables.
+        tree.slots.shrink_to_fit();
+        tree.id_atoms.shrink_to_fit();
+        tree.style_attrs.shrink_to_fit();
+        tree
+    }
+
+    /// Selector matching needs names, attributes and tree links, not computed-style storage or
+    /// parsed inline declarations. In particular, matches/closest must not walk unrelated nodes.
+    fn for_selectors(doc: NodeId, dom: Dom) -> Tree {
+        let mut tree = Self::bare(doc, dom, SharedRwLock::new(), true);
+        tree.name_atoms = (0..tree.dom.names.len() as u32)
+            .map(|i| LocalName::from(tree.dom.names.get(i))).collect();
+        tree
+    }
+
+    fn bare(doc: NodeId, dom: Dom, guard: SharedRwLock, selector_only: bool) -> Tree {
         let ns_atoms = ["", "http://www.w3.org/2000/xmlns/", "http://www.w3.org/XML/1998/namespace", "http://www.w3.org/1999/xhtml", "http://www.w3.org/1999/xlink", "http://www.w3.org/1998/Math/MathML", "http://www.w3.org/2000/svg"]
             .map(Namespace::from);
         let url_data = UrlExtraData(ServoArc::new(url::Url::parse("data:text/css;charset=utf-8;base64,").unwrap()));
-        let mut tree = Tree {
+        Tree {
             dom,
             doc,
             slot_of: Vec::new(),
@@ -375,6 +396,7 @@ impl Tree {
             style_attrs: Vec::new(),
             pres_hint_blocks: Mutex::default(),
             name_atoms: Vec::new(),
+            selector_only,
             ns_atoms,
             guard,
             snapshots: SnapshotMap::new(),
@@ -382,14 +404,7 @@ impl Tree {
             style_blocks: HashMap::new(),
             slots_out_of_order: false,
             shadow_styles: HashMap::new(),
-        };
-        tree.sync_tables();
-        // The arrays grew by doubling; a finished DOM gets no more elements (the DOM arrays are trimmed
-        // the same way after parsing). Up to half of `slots` was spare: 0.27 MB on synthetic.
-        tree.slots.shrink_to_fit();
-        tree.id_atoms.shrink_to_fit();
-        tree.style_attrs.shrink_to_fit();
-        tree
+        }
     }
 
     /// Bring the side tables up to the DOM: a slot for each element made since the last call (a slot
@@ -470,13 +485,13 @@ impl Tree {
 
 /// `querySelector` (`max` 1) and `querySelectorAll` (`max` 0) below `root`, by Stylo's
 /// `dom_apis::query_selector`, which Firefox's `Servo_SelectorList_QueryFirst` and `QueryAll` call.
-/// The element side tables are built for the query and dropped after it (the DOM has no styles while
-/// script runs), so a query costs a pass over the whole DOM. `None` when the selector does not parse.
+/// Only name atoms are prepared; attributes and tree links come directly from the arena.
+/// `None` when the selector does not parse.
 pub fn query_selector(dom: Dom, root: NodeId, selector: &str, max: usize) -> (Dom, Option<Vec<NodeId>>) {
     ensure_prefs();
     use style::dom_apis::{self, MayUseInvalidation, QueryAll, QueryFirst};
     use style::selector_parser::SelectorParser;
-    let tree = Tree::new(dom);
+    let tree = Tree::for_selectors(dom.node_document(root), dom);
     let result = match SelectorParser::parse_author_origin_no_namespace(selector, &tree.url_data) {
         Err(_) => None,
         Ok(list) => {
@@ -499,12 +514,12 @@ pub fn query_selector(dom: Dom, root: NodeId, selector: &str, max: usize) -> (Do
 /// `element.matches(selector)` and `element.closest(selector)` (Gecko's Servo_SelectorList_Matches
 /// and Servo_SelectorList_Closest): with `closest` false, `element` if it matches and `NONE` if not;
 /// with `closest` true, the nearest inclusive ancestor element that matches, or `NONE`. `None` for a
-/// selector that does not parse. Like `query_selector`, it builds the side tables for each call.
+/// selector that does not parse. Like `query_selector`, it needs no style side tables.
 pub fn match_selector(dom: Dom, element: NodeId, selector: &str, closest: bool) -> (Dom, Option<NodeId>) {
     ensure_prefs();
     use style::dom_apis;
     use style::selector_parser::SelectorParser;
-    let tree = Tree::new(dom);
+    let tree = Tree::for_selectors(dom.node_document(element), dom);
     let quirks = quirks_of(tree.dom.document_mode(tree.dom.node_document(element)));
     let result = match SelectorParser::parse_author_origin_no_namespace(selector, &tree.url_data) {
         Err(_) => None,

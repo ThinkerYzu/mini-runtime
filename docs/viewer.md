@@ -79,6 +79,12 @@ Wikipedia search stays visible when its search widget initializes and supports t
 
 After rebuilding the runtime, stop the old service with Ctrl+C, rerun `python3 tools/view.py URL` and open the newly printed viewer URL. Disconnecting and reconnecting retains the running executable. A service restart keeps native profile stores but starts fresh live page state.
 
+### YouTube interactions
+
+Searching **work music** and opening the first video has been checked with advancing playback and a subsequent **focus music** search. Rebuild and restart the service to use the selector performance fix; reconnecting alone keeps the old runtime executable.
+
+Reattaching a playing YouTube page can still disconnect with **Stale media backend**. This is tracked separately from the search-to-video stall. Restarting the service starts a fresh live page.
+
 ### Navigation and history
 
 Links, forms, `location` assignments, reloads and history traversal can load another document. The driver loads it into a new runtime and switches the viewer after it is ready. Same-document history changes keep the runtime. The service URL and sandbox frame stay on the viewer service throughout.
