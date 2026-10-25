@@ -69,6 +69,8 @@ Snapshots include DOM/shadow trees, adopted stylesheets, CSSOM edits, form state
 
 Page scripts execute in the runtime. The viewer renders a sandboxed copy with page scripts disabled. Its document keeps the service's origin; it never acquires the source site's privileges. Linked images and styles load using the viewer browser's resource policies and cookies, separately from the API process. Nested frame documents and 2D canvas pixels are not mirrored.
 
+A page that replaces a focused input during initialization can require another click before typing, because page-requested focus changes do not yet reach the viewer. Wikipedia search stays visible after initialization and supports typing and suggestions.
+
 ### Navigation and history
 
 Links, forms, `location` assignments, reloads and history traversal can load another document. The driver loads it into a new runtime and switches the viewer after it is ready. Same-document history changes keep the runtime. The service URL and sandbox frame stay on the viewer service throughout.

@@ -518,6 +518,8 @@ class Runtime(unittest.TestCase):
             page = "shadow-adopted.html"
         if self._testMethodName == "test_browser_slow_fetch":
             page = "slow-fetch.html"
+        if self._testMethodName == "test_browser_svg_search":
+            source, page = HERE / "bridge-cases", "svg-element.html"
         if self._testMethodName == "test_browser_document_input":
             source, page = HERE / "bridge-cases", "document-input.html"
         if self._testMethodName in ("test_browser_delayed_scroll", "test_input_before_reconnect_snapshot"):
@@ -850,6 +852,41 @@ class Runtime(unittest.TestCase):
         result = json.loads((self.root / "result.json").read_text())["demo"]
         self.assertEqual(self.proc.returncode, 0, result)
         self.assertEqual(result["exit"], 0, result)
+        self.assertEqual(result["js_errors"], 0, result)
+        self.assertFalse(result["unsupported_ops"], result)
+        self.assertEqual(result["bridge_tab"], {"made": False})
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_svg_search(self):
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        browser.start_session()
+        try:
+            browser.set_context("content")
+            browser.navigate(self.viewer_url)
+            self.until(lambda: browser.execute_script('return document.getElementById("status").textContent.startsWith("Connected")'))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", "fallback").click()
+            self.until(lambda: browser.execute_script('return !!document.getElementById("search")'))
+            search = browser.find_element("id", "search")
+            self.assertTrue(search.is_displayed())
+            self.assertEqual(search.get_attribute("data-namespace"), "html")
+            search.click(); search.send_keys("Wikipedia")
+            self.until(lambda: browser.execute_script('return document.getElementById("echo").textContent === "Wikipedia"'))
+            browser.switch_to_frame()
+            browser.find_element("id", "detach").click()
+            browser.find_element("id", "attach").click()
+            self.until(lambda: browser.execute_script('return document.getElementById("status").textContent.startsWith("Connected")'))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            self.assertEqual(browser.find_element("id", "search").get_property("value"), "Wikipedia")
+        finally:
+            firefox_exit.close(browser)
+        self.call("stop", {})
+        self.proc.wait(timeout=10)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual(self.proc.returncode, 0, result)
         self.assertEqual(result["js_errors"], 0, result)
         self.assertFalse(result["unsupported_ops"], result)
         self.assertEqual(result["bridge_tab"], {"made": False})

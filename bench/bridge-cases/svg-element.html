@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SVG interface and lazy search mount</title>
+<svg id="parsed"><g id="group"></g><foreignObject><input id="inside"></foreignObject></svg>
+<div id="mount"><input id="fallback" type="search" aria-label="Search"></div>
+<output id="echo"></output>
+<script>
+window.__log = [];
+function check(name, value) { __log.push(name + ' ' + !!value); }
+check('SVGElement exposed', typeof SVGElement === 'function');
+if (typeof SVGElement === 'function') {
+  check('prototype parent', Object.getPrototypeOf(SVGElement.prototype) === Element.prototype);
+  check('prototype constructor', SVGElement.prototype.constructor === SVGElement);
+  for (const id of ['parsed', 'group']) {
+    const element = document.getElementById(id);
+    check(id + ' SVG', element instanceof SVGElement);
+    check(id + ' Element', element instanceof Element);
+    check(id + ' not HTML', !(element instanceof HTMLElement));
+  }
+  const made = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  check('created SVG', made instanceof SVGElement && !(made instanceof HTMLElement));
+  const holder = document.createElement('div'); holder.innerHTML = '<svg><g></g></svg>';
+  check('fragment SVG', holder.firstChild.firstChild instanceof SVGElement);
+  check('HTML not SVG', !(document.getElementById('inside') instanceof SVGElement));
+  check('HTML interface retained', document.getElementById('inside') instanceof HTMLInputElement);
+  try { new SVGElement(); check('constructor rejects', false); }
+  catch (e) { check('constructor rejects', e instanceof TypeError); }
+}
+// Wikipedia/Vue clears its static fallback before checking the mount namespace.
+// Defer as the site's dynamically loaded module does, then mirror a usable control.
+document.getElementById('fallback').addEventListener('focus', () => setTimeout(() => {
+  const mount = document.getElementById('mount');
+  mount.textContent = '';
+  const namespace = mount instanceof SVGElement ? 'svg' : 'html';
+  const field = document.createElement('input'); field.id = 'search'; field.type = 'search';
+  field.setAttribute('data-namespace', namespace);
+  field.addEventListener('input', () => { document.getElementById('echo').textContent = field.value; });
+  mount.appendChild(field);
+}, 0), {once: true});
+__log.push('done');
+</script>

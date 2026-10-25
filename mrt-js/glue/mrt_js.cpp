@@ -67,6 +67,7 @@ enum ProtoSlot {
   SLOT_NODE,
   SLOT_ELEMENT,
   SLOT_HTML_ELEMENT,
+  SLOT_SVG_ELEMENT,
   SLOT_CHARACTER_DATA,
   SLOT_TEXT,
   SLOT_COMMENT,
@@ -98,6 +99,7 @@ enum NodeLink { LINK_PARENT, LINK_FIRST, LINK_LAST, LINK_NEXT, LINK_PREV, LINK_H
 enum ShadowRootFlags { SR_CLOSED = 1, SR_CLONABLE = 2, SR_SERIALIZABLE = 4, SR_DELEGATES_FOCUS = 8, SR_MANUAL_SLOTS = 16,
                        SR_DECLARATIVE = 32 };
 static const int32_t NS_HTML = 3;
+static const int32_t NS_SVG = 6;
 
 // ---- custom elements: the data (dom/base/CustomElementRegistry.h) ----
 
@@ -550,8 +552,9 @@ static bool ArgUTF8(JSContext* cx, JS::HandleValue v, std::string& out) {
 
 // The prototype slot of an element's interface, by its tag as Gecko's NS_NewHTMLElement picks the
 // class (nsHTMLTagList.inc): HTMLElement for the tags without one of their own and for custom
-// element names, HTMLUnknownElement for any other unknown tag. Elements in other namespaces get
-// HTMLElement too (SVG and MathML interfaces are not made, GAPS B18).
+// element names, HTMLUnknownElement for any other unknown tag. SVG namespace reflectors inherit
+// SVGElement (SVGElement.webidl), enabling namespace checks during Vue mounting. SVG-specific
+// interfaces and the existing MathML fallback remain unimplemented (GAPS B18).
 static int ElementProtoSlot(uint32_t id) {
   static const std::unordered_map<std::string, int> tags = [] {
     std::unordered_map<std::string, int> m;
@@ -566,7 +569,9 @@ static int ElementProtoSlot(uint32_t id) {
   }();
   const char* s;
   size_t len;
-  if (mrt_dom_name(tJs->host, id, &s, &len) != NS_HTML) return SLOT_HTML_ELEMENT;
+  const int32_t ns = mrt_dom_name(tJs->host, id, &s, &len);
+  if (ns == NS_SVG) return SLOT_SVG_ELEMENT;
+  if (ns != NS_HTML) return SLOT_HTML_ELEMENT;
   auto it = tags.find(std::string(s, len));
   int iface = it != tags.end() ? it->second : mrt_dom_is_custom_element_name(s, len) ? -1 : unknown;
   return iface < 0 ? SLOT_HTML_ELEMENT : SLOT_HTML_INTERFACES + iface;
@@ -4855,6 +4860,10 @@ static bool Illegal_constructor(JSContext* cx, unsigned argc, JS::Value* vp) {
   return false;
 }
 
+static bool SVGElement_constructor(JSContext* cx, unsigned argc, JS::Value* vp) {
+  return ThrowTypeError(cx, "Illegal constructor.");
+}
+
 // A prototype in global slot `slot` whose own prototype is the one in `parent_slot` (or
 // Object.prototype for -1), and a global constructor `name` for it, so that `instanceof` works.
 // new EventTarget(): Gecko's ConstructibleEventTarget, an object with only EventTarget's members,
@@ -5067,6 +5076,8 @@ static bool InitGlobal(JSContext* cx, JS::HandleObject global, uint32_t doc = 1)
                        kParentNodeFns) ||
       !DefineInterface(cx, global, "HTMLElement", SLOT_HTML_ELEMENT, SLOT_ELEMENT, kHTMLElementProps, nullptr, nullptr,
                        nullptr, HTMLConstructor) ||
+      !DefineInterface(cx, global, "SVGElement", SLOT_SVG_ELEMENT, SLOT_ELEMENT, nullptr, nullptr, nullptr, nullptr,
+                       SVGElement_constructor) ||
       !DefineInterface(cx, global, "CharacterData", SLOT_CHARACTER_DATA, SLOT_NODE, kCharacterDataProps, nullptr) ||
       !DefineInterface(cx, global, "Text", SLOT_TEXT, SLOT_CHARACTER_DATA, kSlottableProps, nullptr) ||
       !DefineInterface(cx, global, "Comment", SLOT_COMMENT, SLOT_CHARACTER_DATA, nullptr, nullptr) ||
