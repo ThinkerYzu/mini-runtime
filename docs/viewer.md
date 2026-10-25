@@ -83,6 +83,8 @@ After rebuilding the runtime, stop the old service with Ctrl+C, rerun `python3 t
 
 Searching **work music** and opening the first video has been checked with advancing playback and a subsequent **focus music** search. Rebuild and restart the service to use the selector performance fix; reconnecting alone keeps the old runtime executable.
 
+Longer playback remains unreliable: some runs stall at the end of their initial 60-second media buffer. This also occurred with replay retention quotas disabled; the cause remains under investigation. The short playback check above does not establish uninterrupted long-video playback.
+
 Reattaching a playing YouTube page can still disconnect with **Stale media backend**. This is tracked separately from the search-to-video stall. Restarting the service starts a fresh live page.
 
 ### Navigation and history
