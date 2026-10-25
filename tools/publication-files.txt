@@ -141,6 +141,7 @@ bench/bridge-cases/storage-edges-child.html
 bench/bridge-cases/storage-edges.html
 bench/bridge-cases/storage.html
 bench/bridge-cases/style-elements.html
+bench/bridge-cases/svg-element.html
 bench/bridge-cases/tables.html
 bench/bridge-cases/target-phase.html
 bench/bridge-cases/touch-events.html
@@ -223,6 +224,7 @@ bench/http-viewer/adopted.js
 bench/http-viewer/demo.css
 bench/http-viewer/demo.html
 bench/http-viewer/editable.html
+bench/http-viewer/fragment-scroll.html
 bench/http-viewer/index.html
 bench/http-viewer/media-demo.html
 bench/http-viewer/media-origin.html
@@ -292,6 +294,8 @@ bench/x-scroll.actions.json
 bench/x_interactive.sh
 docs/README.md
 docs/architecture.md
+docs/assets/README.md
+docs/assets/wikipedia-session.gif
 docs/build.md
 docs/measurements.md
 docs/publication.md

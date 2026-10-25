@@ -6,6 +6,8 @@ This repository starts from a reviewed source snapshot with fresh Git history. I
 
 Keep browser profiles, cookies, access tokens, login data, page captures, screenshots, network replays, console/request logs, environment recordings and measurement outputs out of public commits. Record your own benchmark inputs locally when opting into recorded-data checks. The launcher keeps native profiles under the XDG data directory and session files under the XDG cache directory, outside the repository. Keep those private too. The `.gitignore` rules restrict generated files under `bench/`; ignore rules do not remove already tracked files or historical commits.
 
+The owner-requested [Wikipedia session demo](assets/README.md#wikipedia-sessiongif) is a selected public capture under `docs/assets/`. Its private viewer URL is redacted, it uses a fresh profile with no account login, and its credits and recording context accompany the GIF. This exception covers the finished demo asset only; raw footage, profiles, session links and diagnostic captures stay local.
+
 `tools/publication-files.txt` lists the initial approved files. Run `python3 tools/check-publication.py` before publishing changes. Add a new source or synthetic fixture to that manifest only after reviewing its contents. A file being small, synthetic-looking or ignored by a test does not establish that it contains no private data.
 
 ## Configurable inputs
