@@ -87,6 +87,12 @@ Failures or refused destinations keep the current document and show a reason on 
 
 ### Google Search
 
+To open Google from the repository root:
+
+```sh
+python3 tools/view.py https://www.google.com/
+```
+
 Search form submission and immediate startup redirects are supported. In the latest live check, Google redirected the search to its unusual-traffic verification page; reference Firefox on the same network received the same check. Search results remain unverified while that check blocks access.
 
 The viewer cannot complete the CAPTCHA in this flow: nested frame documents are not displayed, and reCAPTCHA initialization also exposes an unresolved message-transfer compatibility error. Restart the service after updating the driver to use the startup-redirect fix.

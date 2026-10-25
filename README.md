@@ -34,8 +34,6 @@ python3 tools/build.py
 
 Outputs are `mrt-js/target/release/realsite` and `mrt-api/target/release/mrt-api`. Keep the cached engine object directory while using these binaries.
 
-Try searching for **Quicksort**, opening its animated sorting image, and closing it with the top-right **X** to return to the article. See [Wikipedia interactions](docs/viewer.md#wikipedia-interactions) for the remaining focus limitation.
-
 See [build setup](docs/build.md) for prerequisites and other build options.
 
 ### 2. Open Wikipedia in the standalone HTTP viewer
@@ -47,6 +45,8 @@ python3 tools/view.py https://en.wikipedia.org/wiki/Main_Page
 ```
 
 Open the complete printed **`VIEWER_URL`**, including its access token, in your browser. Wikipedia runs in the standalone runtime; the browser displays its HTTP viewer. Follow an article link, scroll, and use the viewer toolbar's **Back** and **Forward** buttons. Close the viewer tab and open the same URL again to reconnect to the current page.
+
+Try searching for **Quicksort**, opening its animated sorting image, and closing it with the top-right **X** to return to the article. See [Wikipedia interactions](docs/viewer.md#wikipedia-interactions) for the remaining focus limitation.
 
 The launcher uses the built-in desktop environment and a dedicated default mini-runtime profile. Native cookies and persistent storage survive service restarts. It prints the profile and session-file locations, followed by a **`VIEWER_URL`** with an automatically selected loopback port. Press Ctrl+C in the service terminal to stop it.
 
@@ -71,6 +71,8 @@ Unlimited retention allows memory to grow without bound. Browser decoder, transp
 The viewer listens on IPv4 loopback only. Keep the printed token private: it authorizes viewing, input and stopping the runtime. The displayed copy has the viewer service's origin; images and styles may load with the viewer browser's cookies rather than the runtime's cookie store.
 
 New windows, downloads, nested frame rendering, 2D canvas pixels, camera/microphone capture, WebRTC calls and the origin-private file system are not implemented. Cross-document Back/Forward reloads a URL rather than restoring a cached document. Media support depends on the attached browser. Full rich editing, input methods and live-site compatibility remain incomplete. [Viewer operation](docs/viewer.md) explains these limits in more detail.
+
+Google search follows startup redirects, but results remain unverified behind its unusual-traffic check. The viewer cannot complete that CAPTCHA yet. See [Google Search](docs/viewer.md#google-search) for the tested behavior and remaining limitations.
 
 ## Tests and further reading
 

@@ -28,7 +28,13 @@ VIEWER_BROWSER=1 FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python \
   bench/test_http_viewer.py
 ```
 
-Append a test name to select a focused case:
+Append a test name to select a focused case. For the startup-redirect regression, run without a browser:
+
+```sh
+python3 bench/test_http_viewer.py Runtime.test_navigation_startup_redirects
+```
+
+This local fixture checks redirect ownership independently of Google's traffic verification. It does not establish that live Google search results or its CAPTCHA work.
 
 | Test | Coverage |
 |---|---|
