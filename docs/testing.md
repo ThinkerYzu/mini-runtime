@@ -21,7 +21,7 @@ python3 bench/test_http_viewer.py
 
 The launcher suite covers URL validation, launch from another working directory, inherited benchmark-setting isolation, native profile persistence/isolation, profile locking and clean termination. It uses local HTTP and Python `-S` without a browser or recording.
 
-The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 35 cases: 24 run without a browser and 11 require `VIEWER_BROWSER=1`. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
+The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 36 cases: 24 run without a browser and 12 require `VIEWER_BROWSER=1`. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
 
 ```sh
 VIEWER_BROWSER=1 FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python \
@@ -34,6 +34,7 @@ Append a test name to select a focused case:
 |---|---|
 | `Runtime.test_browser` | Input, scroll, tab replacement/reconnect, resize, CSSOM and script isolation. `VIEWER_SHOT=FILE` saves a screenshot. |
 | `Runtime.test_browser_editable` | Ordered typing, caret/selection replacement, deletion, Unicode and editable reconnect. |
+| `Runtime.test_browser_svg_search` | Lazy replacement of a search field, SVG namespace detection, typing and value preservation after reconnect. |
 | `Runtime.test_browser_document_input` | Controlled textarea input and consecutive submissions. |
 | `Runtime.test_browser_slow_fetch` | Slow binary fetch/XHR, responsive input, cookies, errors, abort/reuse and reconnect. |
 | `Runtime.test_browser_navigation` | Links, forms, cross-origin navigation, refusal/failure and reconnect. |
@@ -51,6 +52,14 @@ Append a test name to select a focused case:
 (cd mrt-layout && cargo test --release --offline --lib)
 (cd mrt-api && cargo test --release --offline)
 ```
+
+The counter reconstruction regression covers the layout failure previously triggered by closing Wikipedia's enlarged image. With the engine/SDK settings used for the build, run:
+
+```sh
+(cd mrt-layout && cargo test --release --offline --lib counter_reconstruction_tests)
+```
+
+It changes an ordered list's start value when both its marker and a nested link use that counter, checking that both keep live frames with updated text and no pending rebuilds. For a live check, follow [Wikipedia interactions](viewer.md#wikipedia-interactions), wait several seconds before closing the image, and repeat three times. Verify the article is usable after every close. The completed validation covered all 869 layout library tests and this live sequence. Broader recovery from other layout panics remains incomplete: the engine's process-wide Rust panic hook can terminate the runtime before its layout recovery handler runs.
 
 `bench/compare_bridge.py` compares individual API fixtures with Firefox. For example, from this source repository:
 

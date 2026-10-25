@@ -69,7 +69,13 @@ Snapshots include DOM/shadow trees, adopted stylesheets, CSSOM edits, form state
 
 Page scripts execute in the runtime. The viewer renders a sandboxed copy with page scripts disabled. Its document keeps the service's origin; it never acquires the source site's privileges. Linked images and styles load using the viewer browser's resource policies and cookies, separately from the API process. Nested frame documents and 2D canvas pixels are not mirrored.
 
-A page that replaces a focused input during initialization can require another click before typing, because page-requested focus changes do not yet reach the viewer. Wikipedia search stays visible after initialization and supports typing and suggestions.
+### Wikipedia interactions
+
+From the [quick start](../README.md#quick-start), search for **Quicksort**, open its animated sorting image, and click the top-right **X**. Closing the enlarged image returns to the article while keeping the same runtime. Repeated image open/close cycles are validated.
+
+Wikipedia search stays visible when its search widget initializes and supports typing and suggestions. Initial replacement of the static search field can require a second click before typing. More generally, page-requested focus changes do not yet reach the viewer.
+
+After rebuilding the runtime, stop the old service with Ctrl+C, rerun `python3 tools/view.py URL` and open the newly printed viewer URL. Disconnecting and reconnecting retains the running executable. A service restart keeps native profile stores but starts fresh live page state.
 
 ### Navigation and history
 

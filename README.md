@@ -34,6 +34,8 @@ python3 tools/build.py
 
 Outputs are `mrt-js/target/release/realsite` and `mrt-api/target/release/mrt-api`. Keep the cached engine object directory while using these binaries.
 
+Try searching for **Quicksort**, opening its animated sorting image, and closing it with the top-right **X** to return to the article. See [Wikipedia interactions](docs/viewer.md#wikipedia-interactions) for the remaining focus limitation.
+
 See [build setup](docs/build.md) for prerequisites and other build options.
 
 ### 2. Open Wikipedia in the standalone HTTP viewer
