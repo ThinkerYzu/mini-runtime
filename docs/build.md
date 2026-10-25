@@ -4,7 +4,7 @@ The default command downloads the pinned Mozilla source checkout when absent, bu
 
 ## Automatic source checkout and build
 
-From the repository root:
+From the repository root, run the build script. No environment variables need to be set:
 
 ```sh
 python3 tools/build.py
@@ -62,20 +62,21 @@ The installer verifies the archive digest before extraction, rejects traversal, 
 
 ## Build mini-runtime and the API process
 
-From the repository root:
+Use the same build script for either engine input:
 
 ```sh
-export MINI_RUNTIME="$PWD"
-export CXX=/usr/bin/c++
-(cd mrt-js && cargo build --release --locked --bin realsite)
-(cd mrt-api && cargo build --release --locked)
+python3 tools/build.py                         # source checkout and engine build
+# Or, after installing the optional SDK:
+python3 tools/build.py --sdk /absolute/path/to/mrt-sdk
 ```
 
-Run the first command inside `mrt-js` so Cargo reads its checked-in `.cargo/config.toml`, which sets `LIBZ_RS_SYS_PREFIX=MOZ_Z_`. No manifests need editing. Compression uses exact public libz-rs-sys/zlib-rs 0.6.8 crates with the existing prefix/features and three small source-local C interface headers; see [provenance](../vendor/zlib-PROVENANCE.md). Other Rust sources are locked registry dependencies and mrt-api's pinned public mp4parse Git dependency. The first fetch needs network access; `--offline` is available once those inputs are cached. There is no root Cargo workspace.
+The script selects the engine input, validates it and builds both binaries with locked Cargo dependencies. It runs Cargo inside each crate so the checked-in prefix configuration is loaded automatically. No shell environment setup or manifest editing is required. See the maintainer alternative below for direct Cargo commands.
 
-Outputs are `mrt-js/target/release/realsite`, `mrt-js/target/release/lib/libmozjs-154a1.so` and `mrt-api/target/release/mrt-api`. JS binaries and tests load the staged engine via `$ORIGIN/lib:$ORIGIN/../lib`, without an SDK/producer absolute loader path. Keep `realsite` and its `lib/` directory together when moving them; `mrt-api` does not link libmozjs. The runtime does not need the SDK headers after compilation. An ordinary browser displays the viewer, with its own codecs and playback policies.
+Compression uses exact public libz-rs-sys/zlib-rs 0.6.8 crates with the existing prefix/features and three small source-local C interface headers; see [provenance](../vendor/zlib-PROVENANCE.md). Other Rust sources are locked registry dependencies and mrt-api's pinned public mp4parse Git dependency. The first fetch needs network access. There is no root Cargo workspace.
 
-Parser and HarfBuzz objects are built automatically. Parser compiler failures now stop the build; its objects live in Cargo's output directory. `CXX` selects the compiler, otherwise `c++` is used. A rebuilt executable does not replace a running service; restart a service when you want it to use new code.
+Both modes produce `mrt-js/target/release/realsite` and `mrt-api/target/release/mrt-api`. Source builds load the engine from the cached object directory, which must be retained. SDK builds also stage `mrt-js/target/release/lib/libmozjs-154a1.so`; their JS binaries and tests load that engine via `$ORIGIN/lib:$ORIGIN/../lib`, without an SDK/producer absolute loader path. For SDK builds, keep `realsite` and its `lib/` directory together when moving them; `mrt-api` does not link libmozjs. The runtime does not need the SDK headers after compilation. An ordinary browser displays the viewer, with its own codecs and playback policies.
+
+Parser and HarfBuzz objects are built automatically. Parser compiler failures stop the build; its objects live in Cargo's output directory. The build script uses Clang by default for source builds; `CC`/`CXX` can override the compilers. SDK builds use `CXX` or `c++`. A rebuilt executable does not replace a running service; restart a service when you want it to use new code.
 
 ## Recording the browser environment
 

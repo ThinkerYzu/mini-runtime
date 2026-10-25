@@ -26,10 +26,9 @@ An installed Firefox executable is used once for browser environment recording; 
 
 ### 1. Build the two binaries
 
-From this repository's root:
+From this repository's root, run the build script. No environment variables need to be set:
 
 ```sh
-export MINI_RUNTIME="$PWD"
 python3 tools/build.py
 ```
 
@@ -73,9 +72,9 @@ python3 -m venv .venv
 .venv/bin/pip install -r tools/sdk/requirements-browser.txt
 export FIREFOX_BIN=/absolute/path/to/firefox
 xvfb-run -a .venv/bin/python bench/record_env.py \
-  --output "$MINI_RUNTIME/bench/realsites-env/local.json"
-export API_ENV="$MINI_RUNTIME/bench/realsites-env/local.json"
-mkdir -p "$MINI_RUNTIME/bench/realsites-mini-demo-profile"
+  --output bench/realsites-env/local.json
+export API_ENV=bench/realsites-env/local.json
+mkdir -p bench/realsites-mini-demo-profile
 ```
 
 Omit xvfb-run on a desktop display. This starts an installed Firefox in a fresh temporary profile and writes all three supported secure/isolated context entries. It does not require mach or Firefox source. The output path must be new. Subsequent standalone runs use only ordinary Python and the saved recording. See [environment setup](docs/build.md#recording-the-browser-environment).
@@ -87,7 +86,7 @@ From the repository root in the first terminal:
 ```sh
 VIEWER_HTTP=127.0.0.1:8765 ONLY=demo \
   EXTRA_SITES='{"demo":"http://localhost:8000/demo.html"}' \
-  REALSITES_PROFILE="$MINI_RUNTIME/bench/realsites-mini-demo-profile" \
+  REALSITES_PROFILE=bench/realsites-mini-demo-profile \
   MINI_DIR=realsites-mini-viewer MINI_OUT=mini_realsites_viewer.json \
   python3 bench/mini_realsites.py
 ```
