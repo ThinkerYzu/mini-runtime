@@ -3226,7 +3226,7 @@
   // until the port is made. Every window of the runtime is on the page's thread, so they share the
   // tables; each port's state keeps its own realm's functions. A port sent to a window in another
   // runtime is still dropped (B61).
-  const portStates = new WeakMap();
+  const portStates = share("portStates", () => new WeakMap());
   const portRegistry = share("ports", () => new Map());
   const portPending = share("portPending", () => new Map());
   const portWhere = share("portWhere", () => new Map());
@@ -3362,6 +3362,12 @@
   // (message, transfer) or (message, {transfer}): the transfer list (GAPS B82). Its ArrayBuffers are
   // detached once the message is encoded (their bytes go in it), its ports sent with it; a duplicate
   // fails first, then anything else that cannot be transferred.
+  // Intrinsic brand checks work across window realms and cannot be forged with toStringTag.
+  const bufferByteLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get;
+  const transferBuffer = ArrayBuffer.prototype.transfer;
+  const isTransferBuffer = value => {
+    try { bufferByteLength.call(value); return true; } catch (_) { return false; }
+  };
   const transferList = (what, arg) => {
     if (arg === undefined || arg === null) return [];
     if (typeof arg !== "object" && typeof arg !== "function") throw new TypeError(`${what}: Argument 2 is not valid for any of the 2-argument overloads.`);
@@ -3371,7 +3377,7 @@
     const items = Array.from(list);
     for (let i = 0; i < items.length; i++) {
       if (items.indexOf(items[i]) !== i) throw new DOMException("duplicate transferable for structured clone", "DataCloneError");
-      if (!(items[i] instanceof ArrayBuffer) && !isPort(items[i])) throw new DOMException("The object could not be cloned.", "DataCloneError");
+      if (!isTransferBuffer(items[i]) && !isPort(items[i])) throw new DOMException("The object could not be cloned.", "DataCloneError");
     }
     return items;
   };
@@ -3398,7 +3404,7 @@
       const name = typeof failed === "function" ? "Function" : typeof ctor === "function" && ctor.name ? ctor.name : Object.prototype.toString.call(failed).slice(8, -1);
       throw new DOMException(`${name} object could not be cloned.`, "DataCloneError");
     }
-    for (const buffer of transfer) if (buffer instanceof ArrayBuffer) buffer.transfer();
+    for (const buffer of transfer) if (isTransferBuffer(buffer)) transferBuffer.call(buffer);
     const env = { d: data, t: ports.map(port => {
       const st = portStates.get(port);
       st.shipped = true;
@@ -7353,7 +7359,7 @@
   const idbClient = String(Date.now()) + ":" + String(Math.random());
   let idbNative = false, idbPollQueued = false;
   const idbDatabases = new Map(); // Firefox's id -> IDBDatabase, while open
-  const isPlatform = v => (!isWorker && v instanceof Node) || v instanceof EventTarget || keyStates.has(v);
+  const isPlatform = v => (!isWorker && v instanceof Node) || v instanceof EventTarget || isPort(v) || keyStates.has(v);
   // a Blob's bytes for the codec; an object that only claims to be a Blob is cloned as an object
   const readBlob = (v, set) => {
     const impl = blobImplOf(v);

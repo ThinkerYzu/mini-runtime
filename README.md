@@ -76,7 +76,7 @@ The viewer listens on IPv4 loopback only. Keep the printed token private: it aut
 
 New windows, downloads, nested frame rendering, 2D canvas pixels, camera/microphone capture, WebRTC calls and the origin-private file system are not implemented. Cross-document Back/Forward reloads a URL rather than restoring a cached document. Media support depends on the attached browser. Full rich editing, input methods and live-site compatibility remain incomplete. [Viewer operation](docs/viewer.md) explains these limits in more detail.
 
-Google search follows startup redirects, but results remain unverified behind its unusual-traffic check. The viewer cannot complete that CAPTCHA yet. See [Google Search](docs/viewer.md#google-search) for the tested behavior and remaining limitations.
+Google search follows startup redirects, and isolated result-click/Back trials pass. Searches can still reach Google's unusual-traffic check, whose CAPTCHA requires nested-frame display that the viewer does not yet support. See [Google Search](docs/viewer.md#google-search) for the tested behavior and remaining limitations.
 
 ## Tests and further reading
 

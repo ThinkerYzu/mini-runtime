@@ -1,0 +1,66 @@
+<!doctype html><meta charset="utf-8"><title>frame transfers</title>
+<body><script>
+(async () => {
+  window.__log = [];
+  const log = (name, ok) => __log.push(name + ' ' + !!ok);
+  const f = document.createElement('iframe');
+  document.body.append(f);
+  const w = f.contentWindow;
+  const receive = (target, trigger) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('message timeout')), 1000);
+    target.addEventListener('message', function got(e) {
+      target.removeEventListener('message', got); clearTimeout(timer); resolve(e);
+    });
+    trigger();
+  });
+  try {
+    const channel = new w.MessageChannel();
+    channel.port1.postMessage('held');
+    const e = await receive(window, () => window.postMessage({port: channel.port2}, '*', [channel.port2]));
+    log('foreign port receives in target realm', e.ports.length === 1 && e.data.port === e.ports[0] && e.data.port instanceof MessagePort);
+    const queued = await receive(e.ports[0], () => e.ports[0].start());
+    log('foreign port retains queued message', queued.data === 'held');
+    const response = await receive(channel.port1, () => { channel.port1.start(); e.ports[0].postMessage('reply'); });
+    log('foreign port replies to originating realm', response.data === 'reply');
+    let rejected = false;
+    try { structuredClone(channel.port2, {transfer:[channel.port2]}); } catch (error) { rejected = error.name === 'DataCloneError'; }
+    log('foreign port transferred only once', rejected);
+  } catch (e) { log('foreign port transfer', false); }
+  try {
+    const channel = new MessageChannel();
+    const e = await receive(w, () => w.postMessage({port:channel.port2}, '*', [channel.port2]));
+    log('parent port receives in child realm', e.ports[0] instanceof w.MessagePort && e.data.port === e.ports[0]);
+    const answer = await receive(channel.port1, () => { channel.port1.start(); e.ports[0].postMessage('from child'); });
+    log('parent port roundtrip', answer.data === 'from child');
+  } catch (e) { log('parent port transfer', false); }
+  try {
+    const buffer = new w.ArrayBuffer(3); new w.Uint8Array(buffer).set([1,2,3]);
+    const e = await receive(window, () => window.postMessage({buffer}, '*', [buffer]));
+    log('foreign buffer cloned and detached', buffer.byteLength === 0 && e.data.buffer instanceof ArrayBuffer && String(new Uint8Array(e.data.buffer)) === '1,2,3');
+  } catch(e) { log('foreign buffer transfer', false); }
+  try {
+    const buffer = new ArrayBuffer(2); new Uint8Array(buffer).set([4,5]);
+    const e = await receive(w, () => w.postMessage(buffer, '*', [buffer]));
+    log('parent buffer cloned and detached', buffer.byteLength === 0 && e.data instanceof w.ArrayBuffer && String(new w.Uint8Array(e.data)) === '4,5');
+  } catch(e) { log('parent buffer transfer', false); }
+  {
+    const channel = new w.MessageChannel();
+    let rejected = false;
+    try { structuredClone({port:channel.port1}); } catch(e) { rejected = e.name === 'DataCloneError'; }
+    log('unlisted foreign port rejected', rejected);
+    rejected = false;
+    try { structuredClone(1, {transfer:[channel.port1, channel.port1]}); } catch(e) { rejected = e.name === 'DataCloneError'; }
+    log('duplicate foreign port rejected', rejected);
+    const buffer = new w.ArrayBuffer(1);
+    rejected = false;
+    try { structuredClone(1, {transfer:[buffer, buffer]}); } catch(e) { rejected = e.name === 'DataCloneError'; }
+    log('duplicate foreign buffer preserves original', rejected && buffer.byteLength === 1);
+  }
+  for (const [name, item] of [['fake buffer', {[Symbol.toStringTag]:'ArrayBuffer'}], ['fake port', Object.create(w.MessagePort.prototype)]]) {
+    let rejected = false;
+    try { structuredClone(1, {transfer:[item]}); } catch(e) { rejected = e.name === 'DataCloneError'; }
+    log(name + ' rejected', rejected);
+  }
+  __log.push('done');
+})().catch(e => __log.push('unexpected ' + e));
+</script>

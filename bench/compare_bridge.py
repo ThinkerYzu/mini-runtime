@@ -35,6 +35,7 @@ from a local server, and the two logs it writes to `window.__log` are diffed. Th
                 events, a cross-origin frame's size
   message-ports MessagePorts from Gecko's dom/messagechannel (GAPS D97): holding, the clone, transfers and
                 their errors, close(), and ports to, from and between workers and a shared worker
+  frame-transfers  cross-window MessagePort and ArrayBuffer transfer, queue/reply delivery and invalid transfers
   blob-workers  blob: URLs (Gecko's BlobURLProtocolHandler, GAPS D98): fetch and XHR of them, and classic,
                 module and shared workers from blob: and data: URLs
   plugins       navigator.plugins and navigator.mimeTypes (Gecko's nsPluginArray, GAPS D99)

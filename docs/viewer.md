@@ -105,9 +105,9 @@ To open Google from the repository root:
 python3 tools/view.py https://www.google.com/
 ```
 
-Search form submission and immediate startup redirects are supported. In the latest live check, Google redirected the search to its unusual-traffic verification page; reference Firefox on the same network received the same check. Search results remain unverified while that check blocks access.
+Search form submission and immediate startup redirects are supported. Isolated live searches have opened results on javascript.com, Wikipedia, MDN, W3Schools and web.dev and returned with toolbar Back. Google can instead redirect a search to its unusual-traffic verification page; reference Firefox on the same network has received the same check.
 
-The viewer cannot complete the CAPTCHA in this flow: nested frame documents are not displayed, and reCAPTCHA initialization also exposes an unresolved message-transfer compatibility error. Restart the service after updating the driver to use the startup-redirect fix.
+The viewer cannot complete the CAPTCHA in this flow: nested frame documents are not displayed, and live reCAPTCHA frame initialization can also fail or time out. Cross-window MessagePort and ArrayBuffer transfers are supported, including the port transfer used during reCAPTCHA initialization. Rebuild and restart the service to load runtime fixes; reconnecting alone keeps the running executable. These compatibility fixes do not remove Google's traffic verification.
 
 ### Media and replay quota
 
