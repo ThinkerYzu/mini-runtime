@@ -2,9 +2,9 @@
 
 mini-runtime runs a web page outside a full browser and lets you interact with it through a **standalone HTTP viewer**. The page's JavaScript and DOM live in a small runtime process. Open the viewer URL in an ordinary browser to see the page, click, type, scroll and navigate. You can close the viewer and reconnect to the same running page later.
 
-![Wikipedia demo: browse, search for Quicksort, close the viewer tab, reopen it, and continue an unfinished search.](docs/assets/wikipedia-session.gif)
+![Wikipedia demo: browse, search for Quicksort, close the viewer tab, reopen it, and continue an unfinished search.](docs/assets/wikipedia-session-v2.gif)
 
-Browse and search Wikipedia, close the viewer tab, then reopen the same link and finish an unsent search. The viewer service keeps running. [Demo details and credits](docs/assets/README.md#wikipedia-sessiongif).
+Browse and search Wikipedia, close the viewer tab, then reopen the same link and finish an unsent search. The viewer service keeps running. [Demo details and credits](docs/assets/README.md#wikipedia-session-demo).
 
 The project explores how much state and memory a page needs when its execution is separated from the browser that displays it. The runtime uses Firefox's SpiderMonkey JavaScript engine and HTML parser, Stylo for CSS, and its own DOM and layout integration. A native API process supplies network access, cookies, storage, cryptography and WebGL. A Python driver connects these components and serves the viewer.
 

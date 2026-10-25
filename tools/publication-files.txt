@@ -295,7 +295,7 @@ bench/x_interactive.sh
 docs/README.md
 docs/architecture.md
 docs/assets/README.md
-docs/assets/wikipedia-session.gif
+docs/assets/wikipedia-session-v2.gif
 docs/build.md
 docs/measurements.md
 docs/publication.md
