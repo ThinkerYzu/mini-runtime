@@ -1,16 +1,16 @@
 # Publication hygiene
 
-This repository starts from a reviewed source snapshot with fresh Git history. It includes runtime code, build inputs, source-local documentation, tools and synthetic test fixtures. Historical benchmark reports and the development repository's Git history are not included.
+This repository starts from a reviewed source snapshot with fresh Git history. It includes runtime code, build inputs, source-local documentation, tools and synthetic test fixtures. Historical benchmark reports and the development repository's Git history are not included. Selected source scripts and synthetic fixtures under `bench/` are public, including the internal viewer driver; the user-facing entry point is `tools/view.py URL`.
 
 ## Data to keep local
 
-Keep browser profiles, cookies, access tokens, login data, page captures, screenshots, network replays, console/request logs, environment recordings and measurement outputs out of public commits. Record your own benchmark inputs locally when opting into recorded-data checks. The `.gitignore` rules restrict generated files under `bench/`; ignore rules do not remove already tracked files or historical commits.
+Keep browser profiles, cookies, access tokens, login data, page captures, screenshots, network replays, console/request logs, environment recordings and measurement outputs out of public commits. Record your own benchmark inputs locally when opting into recorded-data checks. The launcher keeps native profiles under the XDG data directory and session files under the XDG cache directory, outside the repository. Keep those private too. The `.gitignore` rules restrict generated files under `bench/`; ignore rules do not remove already tracked files or historical commits.
 
 `tools/publication-files.txt` lists the initial approved files. Run `python3 tools/check-publication.py` before publishing changes. Add a new source or synthetic fixture to that manifest only after reviewing its contents. A file being small, synthetic-looking or ignored by a test does not establish that it contains no private data.
 
 ## Configurable inputs
 
-- The default `tools/build.py` setup fetches public Mozilla source at the pinned revision into its cache. Optional SDK consumer builds select `MRT_SDK_DIR`; source builds explicitly select `MRT_ENGINE_SOURCE=1` and `MRT_JS_OBJDIR`. No Cargo manifest paths refer to Firefox. SDK artifacts remain separate from the source repository.
+- The default `tools/build.py` setup fetches public Mozilla source at the pinned revision into the runtime-root `firefox-source/` directory, with engine objects/tools in the separate cache. Optional SDK consumer builds select `MRT_SDK_DIR`; source builds explicitly select `MRT_ENGINE_SOURCE=1` and `MRT_JS_OBJDIR`. No Cargo manifest paths refer to Firefox. SDK artifacts remain separate from the source repository.
 - Set `FIREFOX_BIN` for browser recording and comparison tools.
 - Set `GDOC_URL` to your own document when selecting the optional Google Docs benchmark. There is no embedded personal document URL.
 - Android experiments need an external harness selected with `MRT_PHONE_SUPPORT`; that harness is not included or needed for the standalone HTTP viewer.
@@ -26,7 +26,7 @@ gitleaks dir --redact=100 .
 gitleaks git --redact=100 .
 ```
 
-Do not commit scanner reports containing matched content. The initial commit uses a neutral contributor identity instead of importing private development commit metadata. No remote is configured by this snapshot preparation.
+Do not commit scanner reports containing matched content. The initial commit uses a neutral contributor identity instead of importing private development commit metadata. The public source remote is [ThinkerYzu/mini-runtime](https://github.com/ThinkerYzu/mini-runtime); the private development history was not imported.
 
 ## Licensing
 

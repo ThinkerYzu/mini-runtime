@@ -58,13 +58,10 @@ python3 -m http.server 8000 --bind 127.0.0.1 --directory bench/http-viewer
 Then start the viewer service from the repository root:
 
 ```sh
-VIEWER_HTTP=127.0.0.1:8765 \
-  ONLY=demo EXTRA_SITES='{"demo":"http://localhost:8000/demo.html"}' \
-  MINI_DIR=realsites-mini-viewer MINI_OUT=mini_realsites_viewer.json \
-  python3 bench/mini_realsites.py
+python3 tools/view.py http://localhost:8000/demo.html
 ```
 
-Open the complete printed `VIEWER_URL`, including its token, in an ordinary browser. The service starts no browser itself. `VIEWER_HTTP` implies standalone mode; `ONLY` must select one runtime. Use `127.0.0.1:0` to choose a free port. Ctrl+C in the service terminal stops the runtime and writes the report.
+Open the complete printed `VIEWER_URL`, including its token, in an ordinary browser. The launcher chooses a free loopback port; use `--port 8765` for a fixed port. Ctrl+C stops the runtime and writes the report into the printed session directory. Stop the local page server separately with Ctrl+C.
 
 Click, type and scroll in the viewer. Close its tab or use Disconnect, then open the same URL again: the current document's runtime, JavaScript state, form state and scroll position survive. Each attachment replaces the previous active viewer. A disconnected viewer's lease expires within five seconds; the runtime hibernates under its existing timer rules and wakes on attachment.
 
@@ -87,19 +84,16 @@ HTTP media commands drive native browser video/audio and MediaSource/SourceBuffe
 Reconnect reconstructs logical MSE sources/buffers from retained commands and restores saved position and play intent. URL media restores its saved position paused. Replay retention defaults to **32 MiB** of command payload accounting and **10,000 commands**. To disable both retention quotas, add this setting when starting a new service:
 
 ```sh
-VIEWER_MEDIA_REPLAY_UNLIMITED=1 VIEWER_HTTP=127.0.0.1:8765 \
-  ONLY=x \
-  MINI_DIR=realsites-mini-x-unlimited MINI_OUT=mini_realsites_x_unlimited.json \
-  python3 bench/mini_realsites.py
+VIEWER_MEDIA_REPLAY_UNLIMITED=1 python3 tools/view.py https://x.com/home
 ```
 
 Unset or `0` retains the defaults. This setting does not change an existing session and permits unbounded replay retention. Live transport limits (4 MiB per append, 8 MiB pending segment bytes, 1,024 queued events/commands), browser resource limits and reconstruction limits (16 MiB, 10,000 commands, ten-second deadline) still apply. Unlimited retention can exceed what reconnect can reconstruct.
 
 For the media fixture, serve `bench` instead of `bench/http-viewer` and use `http://localhost:8000/http-viewer/media-demo.html` as the source URL. Attach, play/pause/seek, reconnect, then try Rebuild MSE. Use `webgl-demo.html` from the original demo server to check drawing and WebGL replay. The WebGL journal has its own 32 MiB/10,000-batch bound; overflow loses the contexts.
 
-### Try X
+### Developer harness: X with an imported login
 
-With a profile whose X login is current:
+For compatibility work using an existing Firefox login, the direct harness can seed native stores from that Firefox profile. This differs from the launcher's persistent native `--profile`. With a Firefox profile whose X login is current:
 
 ```sh
 VIEWER_HTTP=127.0.0.1:8765 \

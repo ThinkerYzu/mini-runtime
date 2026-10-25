@@ -78,9 +78,19 @@ Both modes produce `mrt-js/target/release/realsite` and `mrt-api/target/release/
 
 Parser and HarfBuzz objects are built automatically. Parser compiler failures stop the build; its objects live in Cargo's output directory. The build script uses Clang by default for source builds; `CC`/`CXX` can override the compilers. SDK builds use `CXX` or `c++`. A rebuilt executable does not replace a running service; restart a service when you want it to use new code.
 
+## Run the standalone viewer
+
+After building, open a site with the URL launcher:
+
+```sh
+python3 tools/view.py https://en.wikipedia.org/wiki/Main_Page
+```
+
+Open the printed `VIEWER_URL` in an ordinary browser. The launcher uses a built-in environment and a persistent native profile, so no installed Firefox, automation packages or recording is needed. See [launcher and profiles](viewer.md#launcher-and-profiles) for profile locations, ports, session files and stopping the service.
+
 ## Recording the browser environment
 
-This is optional for compatibility comparisons with Firefox. Normal standalone viewing uses the built-in mini-runtime desktop environment and needs no recording or Firefox installation. Explicit `API_ENV` selects a comparison recording; unset it to return to defaults. Standalone mode does not discover local recordings automatically.
+This is optional for compatibility comparisons with Firefox. Normal standalone viewing uses the built-in mini-runtime desktop environment and needs no recording or Firefox installation. For the launcher, use `--environment /path/to/recording.json`; omit that option to use defaults. Direct harness commands select a recording with `API_ENV`. Standalone mode does not discover local recordings automatically.
 
 Create a normal Python virtual environment for recording and browser tests:
 
@@ -90,16 +100,17 @@ python3 -m venv .venv
 export FIREFOX_BIN=/absolute/path/to/firefox
 xvfb-run -a .venv/bin/python bench/record_env.py \
   --output "$PWD/bench/realsites-env/local.json"
-export API_ENV="$PWD/bench/realsites-env/local.json"
+python3 tools/view.py --environment bench/realsites-env/local.json \
+  https://en.wikipedia.org/wiki/Main_Page
 ```
 
 Omit `xvfb-run -a` on a desktop display. The complete Python dependency set is version pinned; it was tested in a fresh Python 3.14 environment. The recorder launches an installed Firefox in a fresh temporary profile, serves synthetic local context pages, and records insecure, secure and secure-plus-isolated contexts. It checks each actual context before saving; insecure plus isolated is not a browser-supported combination. It does not start the runtime, read personal profiles or require the demo server. The file contains `firefox`, `viewport` and `entries` keyed by `secure=0|1,isolated=0|1`, using the same capture code as the browser bridge.
 
-The output path is explicit and must not already exist. `--port` selects another Marionette port if an automation session is already using 2828. These are browser/profile-specific values, not a universal compatibility preset. Record your own environment and keep it private. Use an ordinary empty profile for the demo; the service's `REALSITES_PROFILE` can point to an empty directory. Login-site profile seeding remains optional and local.
+The output path is explicit and must not already exist. `--port` selects another Marionette port if an automation session is already using 2828. These are browser/profile-specific values, not a universal compatibility preset. Record your own environment and keep it private. The launcher uses its dedicated native profile; `--profile` chooses another. Direct harness runs can separately use `REALSITES_PROFILE` to seed from a Firefox profile. Login-site profile seeding remains optional and local.
 
-When API_ENV is set, standalone execution uses Python's standard library, the binaries, and this recording. It starts no Firefox and imports no Marionette. Missing context entries fail explicitly. The historical harness can still record environment values from a site's actual profile, using this virtual environment rather than `mach python`.
+With this explicit comparison override, standalone execution uses Python's standard library, the binaries, and the recording. It starts no Firefox and imports no Marionette. Missing context entries fail explicitly. The historical harness can still record environment values from a site's actual profile, using this virtual environment rather than `mach python`.
 
-Continue with [the demo](../README.md#2-serve-the-included-demo).
+Continue with [the demo](../README.md#2-open-wikipedia-in-the-standalone-http-viewer).
 
 ## Maintainer source-build alternative
 
@@ -140,6 +151,7 @@ See [SDK production and release checks](sdk-build-plan.md) and [testing](testing
 | Undefined MOZ_Z_ symbols | Run Cargo inside mrt-js so its prefix configuration is loaded. |
 | C++ compilation failure | Use the declared C++20 GNU-ABI toolchain and complete pinned SDK; the first compiler error is now fatal. |
 | Missing EGL/GLES, Brotli or fonts | Install their development/runtime packages and check `fc-match serif`. |
-| Explicit environment recording is invalid or lacks a context | Unset API_ENV to use the built-in defaults, or make a complete comparison recording with record_env.py. |
+| Explicit environment recording is invalid or lacks a context | Omit --environment (or unset API_ENV for direct harness commands) to use defaults, or make a complete recording with record_env.py. |
+| Profile already in use | Reconnect to the existing viewer URL, stop that service, or choose another --profile directory. |
 | Marionette import or port failure | Use the pinned virtual environment; select an unused `--port`. |
 | Port busy or stale viewer code | Choose another VIEWER_HTTP port, or restart the intended service with the new executable. |
