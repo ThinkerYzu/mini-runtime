@@ -31,6 +31,7 @@ function historyCommand(delta) {
 back.onclick = () => historyCommand(-1);
 forward.onclick = () => historyCommand(1);
 let session = null, after = 0, ready = false, events = [], posting = false, task = 0;
+const INPUT_BATCH = 256;
 let syncedViewport = null, inputPending = false;
 let nodes = new Map(), ids = new WeakMap(), rules = new Map(), watched = new WeakSet();
 let scrollSeq = 0, scrollEcho = null, pageURL = "", failures = 0;
@@ -98,15 +99,15 @@ async function send() {
   const current = session, size = viewport();
   const changed = !syncedViewport || size[0] !== syncedViewport[0] || size[1] !== syncedViewport[1];
   // Input captured in the old geometry must not be sent with a new viewport.
-  const batch = changed || navigating ? [] : events.splice(0, 256);
+  const batch = changed || navigating ? [] : events.splice(0, INPUT_BATCH);
   if (changed) { discardInput(); ready = false; historyControls(); frame.style.pointerEvents = "none"; }
   try {
     const result = await api("input", {session: current, ack: restoring ? restoring.before : after, events: batch,
       viewport: size, visible: !document.hidden});
     if (session === current) {
       const now = viewport();
-      inputPending = !!result.inputPending;
-      ready = result.ready && !restoring && now[0] === size[0] && now[1] === size[1];
+      inputPending = !!result.inputPending || events.length >= INPUT_BATCH;
+      ready = result.ready && !inputPending && !restoring && now[0] === size[0] && now[1] === size[1];
       if (ready) syncedViewport = size;
       frame.style.pointerEvents = ready ? "auto" : "none";
       connectedStatus();
@@ -375,8 +376,15 @@ function capture(e) {
     }
   }
   if (["input", "change"].includes(e.type) && ["input", "textarea"].includes(path[0].localName)) ev.value = [path[0].value, !!path[0].checked];
-  if (events.length < 256) events.push(ev);
-  else { disconnected("Input queue full. Click Connect to resynchronize."); }
+  events.push(ev);
+  // Pointer crossing can synchronously enter hundreds of nested nodes before
+  // a send timer or HTTP response runs. Pause as soon as this batch is full.
+  if (events.length >= INPUT_BATCH) {
+    ready = false; inputPending = true;
+    if (["keydown", "keypress", "beforeinput"].includes(e.type)) e.preventDefault();
+    frame.style.pointerEvents = "none";
+    connectedStatus(); historyControls();
+  }
 }
 function watch(root) {
   if (watched.has(root)) return;

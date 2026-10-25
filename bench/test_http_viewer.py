@@ -131,6 +131,100 @@ class Protocol(unittest.TestCase):
             firefox_exit.close(browser)
             service.close()
 
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 to drive Firefox")
+    def test_browser_local_input_burst_and_navigation(self):
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        v = Viewer("demo", "https://example.test/", [800, 600])
+        service = Service("127.0.0.1:0", v).start()
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        def until(check):
+            end = time.monotonic() + 10
+            while time.monotonic() < end:
+                if check(): return
+                time.sleep(0.03)
+            self.fail("browser did not recover from local input burst")
+        def status():
+            return browser.execute_script('return document.getElementById("status").textContent')
+        try:
+            browser.start_session()
+            browser.set_context("content")
+            browser.navigate(service.url)
+            until(lambda: v.session is not None)
+            session = v.session
+            v.wait({"now": 0, "busy": True})
+            target = {"i": 200, "n": "input", "a": [["id", "field"]], "c": []}
+            for i in range(160, 3, -1):
+                target = {"i": i, "n": "div", "a": [["style", "width:200px;height:100px"]], "c": [target]}
+            html = {"i": 1, "n": "html", "a": [], "c": [
+                {"i": 2, "n": "head", "a": [], "c": []},
+                {"i": 3, "n": "body", "a": [], "c": [target]}]}
+            v.publish([["c", 0, [html]]], session)
+            until(lambda: status().startswith("Connected"))
+            # Hold one successful response while the next local batch fills.
+            # The old response must not resume capture before that batch drains.
+            browser.execute_script("""
+                const w = window.wrappedJSObject, original = w.fetch;
+                w.__heldOnce = false; w.__nextInput = null;
+                w.fetch = async function(path, options) {
+                    const input = path === "/api/input";
+                    if (input && w.__heldOnce && w.__release === null && !w.__nextInput)
+                        w.__nextInput = {pointer: document.getElementById("page").style.pointerEvents,
+                            status: document.getElementById("status").textContent,
+                            count: JSON.parse(options.body).events.length};
+                    const response = await original(path, options);
+                    if (input && !w.__heldOnce) {
+                        w.__heldOnce = true;
+                        await new Promise(resolve => { w.__release = resolve; });
+                    }
+                    return response;
+                };
+            """)
+            until(lambda: browser.execute_script('return !!window.wrappedJSObject.__release'))
+            # Native pointer entry crosses 157 nested elements synchronously,
+            # producing pointerenter and mouseenter before the send timer runs.
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", "field").click()
+            browser.switch_to_frame()
+            self.assertEqual(status(), "Processing input…")
+            self.assertEqual(browser.execute_script('return document.getElementById("page").style.pointerEvents'), "none")
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", "field").send_keys("blocked")
+            self.assertEqual(browser.execute_script('return document.getElementById("field").value'), "")
+            browser.switch_to_frame()
+            browser.execute_script('const w = window.wrappedJSObject; w.__release(); w.__release = null;')
+            until(lambda: browser.execute_script('return !!window.wrappedJSObject.__nextInput'))
+            observed = browser.execute_script('return window.wrappedJSObject.__nextInput')
+            self.assertEqual(observed, {"pointer": "none", "status": "Processing input…", "count": 256})
+            self.assertNotIn("queue full", status().lower())
+            self.assertEqual(v.session, session)
+            accepted = []
+            for _ in range(20):
+                accepted.extend(v.wait({"now": 0, "busy": True})["ok"]["events"])
+                time.sleep(0.1)
+            until(lambda: status().startswith("Connected"))
+            tasks = [e["task"] for e in accepted]
+            self.assertGreaterEqual(len(tasks), 256)
+            self.assertEqual(tasks, sorted(set(tasks)))
+            self.assertEqual(len(accepted), v.stats["events"])
+            self.assertEqual(v.stats["attachments"], 1)
+            v.navigation_started("https://example.test/all")
+            v.navigation_committed("https://example.test/all", 42)
+            until(lambda: v.session is not None and v.session != session)
+            replacement = v.session
+            v.wait({"now": 0, "busy": True})
+            v.publish([["c", 0, [html]]], replacement)
+            until(lambda: status().startswith("Connected"))
+            self.assertIn("/all", status())
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", "field").send_keys("z")
+            until(lambda: any(e.get("value", [None])[0] == "z" for e in v.events))
+            self.assertEqual(v.stats["attachments"], 2)
+        finally:
+            firefox_exit.close(browser)
+            service.close()
+
     def test_navigation_state_and_commit(self):
         viewer = Viewer("demo", "https://a.test/", [800, 600])
         session = viewer.attach([800, 600])["session"]
