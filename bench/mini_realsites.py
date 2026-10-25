@@ -120,6 +120,8 @@ PROFILE = os.environ.get("REALSITES_PROFILE", os.path.expanduser("~/.cache/mrt-r
 REALSITE = os.environ.get("REALSITE_BIN", os.path.join(HERE, "..", "mrt-js", "target", "release", "realsite"))
 # MINI_DIR: another directory for the documents and logs, so that two runs (a phone's, a desktop's) do not mix
 OUT_DIR = os.path.join(HERE, os.environ.get("MINI_DIR", "realsites-mini"))
+CONSOLE_DIR = os.environ.get("MRT_CONSOLE_DIR", os.path.join(HERE, "realsites-console"))
+VIEWER_STORE = os.environ.get("MRT_VIEWER_STORE") if VIEWER_HTTP else None
 VIEW_W, VIEW_H = 1489, 844
 WALL_LIMIT = int(os.environ.get("WALL_LIMIT", "1200"))  # seconds per site
 FRAME_WAIT = 10  # seconds a cross-origin frame's <iframe> in the bridge tab has to start its navigation
@@ -1227,10 +1229,11 @@ class ApiProcesses:
         self.env_check = []         # API_ENV_CHECK: env's answers that differed from the tab's
         self.calls = {}             # op kind -> calls
         self.ms = {}                # op kind -> the round trips' total, ms
-        # the stores on disk (a fresh directory per run), seeded from the profile Firefox started with
-        self.store = os.path.join(OUT_DIR, f"{name}-api-store")
+        # The launcher keeps a native store across runs. Direct benchmarks use a fresh directory,
+        # seeded from the profile Firefox started with.
+        self.store = VIEWER_STORE or os.path.join(OUT_DIR, f"{name}-api-store")
         # (a navigation's set shares the page's store: its cookies, localStorage and databases)
-        if not keep_store:
+        if not keep_store and not VIEWER_STORE:
             shutil.rmtree(self.store, ignore_errors=True)
         # while fetch is the tab's: Firefox's jar copied back (syncs, rows that differed) and the
         # page's writes made in the tab too
@@ -2209,8 +2212,8 @@ def run(name, url):
         args = shlex.split(os.environ.get("REALSITE_WRAP", "")) + [REALSITE, html_file, document_url(doc["ok"]["url"], final)] + global_args + shlex.split(os.environ.get("REALSITE_ARGS", "")) + (["--render"] if RENDER else []) + (["--interactive"] if INTERACTIVE or VIEWER_HTTP else [])
         dom_file = os.path.join(OUT_DIR, name + ".dom")
         # the runtime's console, next to Firefox's from firefox_realsites.py (GAPS B20; not in git)
-        os.makedirs(os.path.join(HERE, "realsites-console"), exist_ok=True)
-        env = dict(os.environ, MRT_DUMP_CONSOLE=os.path.join(HERE, "realsites-console", name + "-mini" + ("-" + os.path.basename(os.path.normpath(os.environ["MINI_DIR"])) if os.environ.get("MINI_DIR") else "") + ".json"))
+        os.makedirs(CONSOLE_DIR, exist_ok=True)
+        env = dict(os.environ, MRT_DUMP_CONSOLE=os.path.join(CONSOLE_DIR, name + "-mini" + ("-" + os.path.basename(os.path.normpath(os.environ["MINI_DIR"])) if os.environ.get("MINI_DIR") else "") + ".json"))
         if HEAP_SCAN:
             env["MRT_DUMP_DOM"] = dom_file
         proc = start_realsite(args, log, env)
@@ -2563,7 +2566,7 @@ def run(name, url):
             width, height = frames.viewer.viewport
             args = [REALSITE, html, dest, "--origin", origin, "--secure-context", str(int(bool(secure))),
                     "--cross-origin-isolated", str(int(bool(isolated))), "--viewport", str(width), str(height)] + shlex.split(os.environ.get("REALSITE_ARGS", "")) + ["--interactive"]
-            env = dict(os.environ, MRT_DUMP_CONSOLE=os.path.join(HERE, "realsites-console", f"{name}-mini-nav{n}.json"))
+            env = dict(os.environ, MRT_DUMP_CONSOLE=os.path.join(CONSOLE_DIR, f"{name}-mini-nav{n}.json"))
             new = Runtime(start_realsite(args, open(os.path.join(OUT_DIR, f"{name}-nav{n}.log"), "w"), env), None, origin,
                           open(os.path.join(OUT_DIR, f"{name}-nav{n}-requests.jsonl"), "w"), None)
             new.viewport = [width, height]

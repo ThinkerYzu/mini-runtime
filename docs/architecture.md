@@ -15,7 +15,7 @@ flowchart LR
 
 `realsite` embeds SpiderMonkey through a C++ interface. JavaScript DOM objects refer to node ids in the arena DOM. Firefox's HTML parser populates that arena; Stylo computes styles, and translated layout code builds frames and geometry. The runtime does not paint.
 
-`bench/mini_realsites.py` loads the page, launches runtimes and API processes, routes requests, controls navigation and collects reports. `bench/http_viewer.py` serves the viewer and manages its active session. A service selects one top-level runtime; embedded contexts can require additional runtime/API processes.
+`tools/view.py` accepts a URL, locks a native profile, assigns private session output paths and launches the driver. Native profile stores survive service restarts; live document state and sessionStorage do not. `bench/mini_realsites.py` loads the page, launches runtimes and API processes, routes requests, controls navigation and collects reports. `bench/http_viewer.py` serves the viewer and manages its active session. A service selects one top-level runtime; embedded contexts can require additional runtime/API processes.
 
 `mrt-api` handles supported browser APIs without a privileged Firefox tab: HTTP requests, WebSockets, cookies, storage, cryptography, environment answers, image metadata, permissions and native WebGL. Stores are partitioned by site and top-level site. Original page URLs and origins govern API requests; attaching a viewer does not change that origin. The native process supplies a built-in desktop environment, also exported through `mrt-api --default-env` for the driver's initial viewport and network identity. Explicit `API_ENV` selects an optional comparison recording.
 

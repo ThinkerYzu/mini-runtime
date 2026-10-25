@@ -41,33 +41,22 @@ See [build setup](docs/build.md) for prerequisites and other build options.
 From the repository root:
 
 ```sh
-mkdir -p bench/realsites-mini-wikipedia-profile
-VIEWER_HTTP=127.0.0.1:8765 ONLY=wikipedia \
-  EXTRA_SITES='{"wikipedia":"https://en.wikipedia.org/wiki/Main_Page"}' \
-  REALSITES_PROFILE=bench/realsites-mini-wikipedia-profile \
-  MINI_DIR=realsites-mini-wikipedia MINI_OUT=mini_realsites_wikipedia.json \
-  python3 bench/mini_realsites.py
+python3 tools/view.py https://en.wikipedia.org/wiki/Main_Page
 ```
 
 Open the complete printed **`VIEWER_URL`**, including its access token, in your browser. Wikipedia runs in the standalone runtime; the browser displays its HTTP viewer. Follow an article link, scroll, and use the viewer toolbar's **Back** and **Forward** buttons. Close the viewer tab and open the same URL again to reconnect to the current page.
 
-The runtime supplies its own default desktop environment. If port 8765 is busy, use another port or `VIEWER_HTTP=127.0.0.1:0` for an automatically selected port. Each service hosts one runtime and one active viewer; opening another viewer replaces the previous attachment.
-
-Press Ctrl+C in the service terminal to stop the runtime and write the report. Logs and captured page files are under `bench/realsites-mini-wikipedia/`; the report is `bench/mini_realsites_wikipedia.json`. See the [local demo](docs/viewer.md#local-demo-service) for a synthetic page with click counters and draft text.
+The launcher uses the built-in desktop environment and a dedicated default mini-runtime profile. Native cookies and persistent storage survive service restarts. It prints the profile and session-file locations, followed by a **`VIEWER_URL`** with an automatically selected loopback port. Press Ctrl+C in the service terminal to stop it.
 
 ## Open another page
 
-Choose a name and URL with `ONLY` and `EXTRA_SITES`:
+Pass any HTTP(S) URL to the launcher:
 
 ```sh
-VIEWER_HTTP=127.0.0.1:8765 ONLY=page EXTRA_SITES='{"page":"https://example.com/"}' \
-  MINI_DIR=realsites-mini-page MINI_OUT=mini_realsites_page.json \
-  python3 bench/mini_realsites.py
+python3 tools/view.py https://example.com/
 ```
 
-For a site requiring login, set `REALSITES_PROFILE=/path/to/firefox-profile` to seed cookies and supported storage from a profile where you have logged in. The API stores are separate copies; they do not update that browser profile. Stores survive navigation within the run, but a fresh service run recreates them. Choose different output names to preserve earlier run artifacts.
-
-Use **Back** and **Forward** in the viewer toolbar to navigate runtime history. The browser's own history buttons operate the viewer service page. Controls stay disabled while synchronization or navigation is pending, and when no corresponding history entry exists.
+Use the viewer toolbar's **Back** and **Forward** buttons for runtime history. The browser's own history buttons operate the viewer service page. See [viewer options](docs/viewer.md#launcher-and-profiles) for profiles, ports and comparison environments, or the [local demo](docs/viewer.md#local-demo-service) for a synthetic page.
 
 ## Media replay quota
 
@@ -88,6 +77,7 @@ Recorded-data benchmark checks are disabled by default. To use them, record your
 After building, run the self-contained local checks without a browser:
 
 ```sh
+python3 tools/test_view.py
 python3 bench/test_recorded_tests.py
 python3 bench/test_no_firefox.py
 python3 bench/test_http_viewer.py

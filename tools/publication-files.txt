@@ -974,6 +974,8 @@ tools/sdk/requirements-browser.txt
 tools/sdk/sdk.lock.json
 tools/sdk/sdk.py
 tools/sdk/test_sdk.py
+tools/test_view.py
+tools/view.py
 vendor/stylo/.cargo-ok
 vendor/stylo/.cargo_vcs_info.json
 vendor/stylo/Cargo.lock

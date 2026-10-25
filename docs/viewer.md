@@ -2,6 +2,22 @@
 
 Start with the [README quick start](../README.md#quick-start). This guide describes configuration, service behavior and current limits. Commands below run from the repository root.
 
+## Launcher and profiles
+
+Use `python3 tools/view.py URL` to open a single HTTP(S) site. It uses the built-in desktop environment and prints a tokenized viewer URL on a free IPv4 loopback port. The launcher starts no browser. Open that URL in an ordinary browser; Ctrl+C stops the service.
+
+```sh
+python3 tools/view.py https://en.wikipedia.org/wiki/Main_Page
+python3 tools/view.py --port 8765 https://example.com/
+python3 tools/view.py --profile /path/to/another-native-profile https://example.com/
+```
+
+The default native profile is `${XDG_DATA_HOME:-$HOME/.local/share}/mini-runtime/profiles/default`. It starts empty and does not import a personal Firefox profile. Native cookies, localStorage, IndexedDB and saved permissions persist in its `store/` directory across launches. Live page/JavaScript state, history and sessionStorage last only for the running service. One launcher can use a profile at a time; choose another `--profile` for a concurrent independent session. This directory is a mini-runtime profile, not a Firefox profile.
+
+Each run writes captures, console/request logs and `report.json` under a new `${XDG_CACHE_HOME:-$HOME/.cache}/mini-runtime/sessions/viewer-*/` directory. The launcher prints the location; no generated state needs to be written into the repository. It ignores inherited benchmark mode/site/evaluator settings. `VIEWER_MEDIA_REPLAY_UNLIMITED` remains available as described below.
+
+For an explicit comparison environment, use `--environment /path/to/recording.json`. Otherwise the built-in environment is used regardless of an inherited `API_ENV`. See [optional environment recording](build.md#recording-the-browser-environment). The sections below also show direct driver commands for benchmark and developer workflows.
+
 ## Environment and stores
 
 For a finite run without a viewer:
@@ -16,7 +32,7 @@ Serve a local source URL first; live sites need no local source server. By defau
 
 For Firefox compatibility comparisons, explicitly set `API_ENV=/path/to/recorded-env.json` to use a recording containing `entries` and `viewport`. Invalid recordings or missing contexts fail without fallback. Unset `API_ENV` to use defaults; standalone mode never selects recordings automatically. See [optional environment recording](build.md#recording-the-browser-environment).
 
-`REALSITES_PROFILE=/path/to/profile` selects the Firefox profile used to seed native stores. Cookies, localStorage, saved permissions and supported IndexedDB databases are copied into partitioned API stores. The profile is read without starting Firefox; subsequent API writes do not update it. A fresh harness run recreates its stores, while navigation and API-process restarts within that run retain persisted data. Use distinct `MINI_DIR` and `MINI_OUT` values for runs whose artifacts you want to keep.
+`REALSITES_PROFILE=/path/to/profile` selects the Firefox profile used to seed native stores. Cookies, localStorage, saved permissions and supported IndexedDB databases are copied into partitioned API stores. The profile is read without starting Firefox; subsequent API writes do not update it. A fresh direct harness run recreates its stores, while navigation and API-process restarts within that run retain persisted data. The user-facing launcher instead keeps native stores in its profile across launches. Use distinct `MINI_DIR` and `MINI_OUT` values for runs whose artifacts you want to keep.
 
 Standalone and HTTP viewer modes require `API_PROCESS=all`, which is their default. They cannot be combined with `INTERACTIVE`, `RENDER`, phone mode (`MRT_ADB`) or `API_ENV_CHECK`. Firefox-only frame bridge operations and other unavailable services fail explicitly. Reports include `unsupported_ops`, `firefox_started: false` and `bridge_tab: {"made": false}`; unsupported requests cause a nonzero driver exit status.
 

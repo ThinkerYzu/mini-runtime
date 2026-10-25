@@ -13,10 +13,13 @@ The viewer/API integration commands below are explicit fixture-based checks. Kee
 Build both release binaries first, then run from this repository's root:
 
 ```sh
+python3 tools/test_view.py
 python3 bench/test_recorded_tests.py
 python3 bench/test_no_firefox.py
 python3 bench/test_http_viewer.py
 ```
+
+The launcher suite covers URL validation, launch from another working directory, inherited benchmark-setting isolation, native profile persistence/isolation, profile locking and clean termination. It uses local HTTP and Python `-S` without a browser or recording.
 
 The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 35 cases: 24 run without a browser and 11 require `VIEWER_BROWSER=1`. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
 
