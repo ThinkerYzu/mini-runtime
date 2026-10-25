@@ -195,13 +195,15 @@ impl PresShellFrames {
     /// texts (Gecko: the RestyleManager's loop over posted restyles, and RecalcQuotesAndCounters).
     pub fn ProcessPendingReconstructs(&mut self) {
         loop {
-            let pending = self.mFrameConstructor.TakePendingReconstructs();
+            let mut pending = self.mFrameConstructor.TakePendingReconstructs();
             if pending.is_empty() {
                 self.mFrameConstructor.RecalcQuotesAndCounters();
-                if self.mFrameConstructor.TakePendingReconstructs().is_empty() {
+                // Taking the queue drains it: process this batch rather than
+                // discarding the counter rebuilds in an emptiness check.
+                pending = self.mFrameConstructor.TakePendingReconstructs();
+                if pending.is_empty() {
                     break;
                 }
-                continue;
             }
             for content in pending {
                 self.RecreateFramesForContent(content);

@@ -3694,6 +3694,10 @@ impl nsCSSFrameConstructor {
         reframe.dedup();
         for content in reframe {
             self.RecreateFramesForContent(content, InsertionKind::Async);
+            // An ancestor's removal can destroy a later origin's generated frames.
+            // Forget their primary-frame references before that descendant is
+            // processed, just as the dynamic removal entry points do.
+            self.ReleaseDestroyedFrames();
         }
     }
 }
@@ -7878,5 +7882,44 @@ impl FlattenedChildIterator {
             self.mNext = aConstructor.GetNextSibling(child);
         }
         child
+    }
+}
+
+// Written from the counter adapter's documented behavior: changed counter text
+// can require rebuilding an originating element and one of its descendants.
+#[cfg(test)]
+mod counter_reconstruction_tests {
+    use super::*;
+    use crate::driver::PresShellFrames;
+    use mrt_style::mrt_dom::Dom;
+
+    #[test]
+    fn nested_counter_origins_are_rebuilt_with_updated_text() {
+        let mut sd = Box::new(StyleDom::new(Dom::parse(r#"<!doctype html>
+            <style>a::before { content: counter(list-item) }</style>
+            <ol id="list"><li id="item"><a id="link">reference</a></li></ol>
+            "#), (800.0, 600.0)));
+        sd.resolve();
+        let node = |id: &str| (1..sd.tree.dom.nodes.len() as u32)
+            .find(|&n| sd.tree.dom.node(n).kind == Kind::Element && sd.tree.dom.get_attribute(n, "id") == Some(id)).unwrap();
+        let (list, item, link) = (node("list"), node("item"), node("link"));
+        let mut frames = PresShellFrames::new(&sd, 800, 600);
+        for origin in [item, link] {
+            assert!(frames.mFrameConstructor.mCounterUses.iter().any(|u|
+                u.mOriginating == origin && u.mText.starts_with('1')));
+        }
+        // The counter manager reads ol[start] from the current DOM. Changing it
+        // changes both the list marker and the descendant's generated text.
+        sd.tree.dom.set_attribute(list, "start", "9");
+        frames.ProcessPendingReconstructs();
+        for origin in [item, link] {
+            let fc = &frames.mFrameConstructor;
+            let frame = fc.GetPrimaryFrame(origin).expect("counter origin lost its frames");
+            assert!(frame.GetParent().is_some());
+            assert!(fc.mCounterUses.iter().any(|u|
+                u.mOriginating == origin && u.mText.starts_with('9')));
+        }
+        assert!(frames.mFrameConstructor.TakePendingReconstructs().is_empty());
+        frames.Destroy();
     }
 }
