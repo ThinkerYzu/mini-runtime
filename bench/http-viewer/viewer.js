@@ -19,7 +19,25 @@ function historyControls() {
 }
 function discardInput() {
   if (events.some(e => e.type === "viewer-history" && e.task === historyPending)) historyPending = null;
-  events = [];
+  events = []; hover = {};
+}
+// The hover state the runtime has been told, per kind ("pointer", "mouse"): the nodes entered and
+// the last over target (task 52da0). A pause turns off the frame's hit testing, and its leave and
+// out records are not captured; on resume Firefox sends over and enter again for the whole path
+// under the resting pointer. Those only restate this state, and over deep nesting they would fill
+// the batch and pause again, so they are dropped.
+let hover = {};
+function restatesHover(type, node) {
+  const kind = /^(pointer|mouse)(over|enter|out|leave)$/.exec(type);
+  if (!kind) return false;
+  const state = hover[kind[1]] ??= {entered: new Set(), over: null};
+  switch (kind[2]) {
+  case "enter": if (state.entered.has(node)) return true; state.entered.add(node); break;
+  case "leave": state.entered.delete(node); break;
+  case "over": if (state.over === node) return true; state.over = node; break;
+  case "out": if (state.over === node) state.over = null; break;
+  }
+  return false;
 }
 function historyCommand(delta) {
   if ((delta === -1 ? back : forward).disabled) return;
@@ -132,7 +150,7 @@ function failed(e, current) {
 }
 function disconnected(message) {
   gpu?.dispose(); media?.dispose(); mediaEvents = [];
-  session = null; ready = false; inputPending = false; events = []; restoring = null; scrollEcho = null;
+  session = null; ready = false; inputPending = false; events = []; hover = {}; restoring = null; scrollEcho = null;
   disconnect.disabled = true; connect.disabled = false; frame.style.pointerEvents = "none";
   historyState = null; historyPending = null; historyControls();
   status.textContent = message;
@@ -485,6 +503,7 @@ function capture(e) {
   if (inputPending && ["keydown", "keypress", "beforeinput"].includes(e.type)) e.preventDefault();
   if (!ready || !session) return;
   if ((e.type === "scroll" || e.type === "scrollend") && target !== 0) return;
+  if (restatesHover(e.type, path[0])) return;
   // (the page's document, or a frame's: its own focus and selection; the page's scroll)
   const top = frame.contentDocument, win = frame.contentWindow;
   const doc = path[0].nodeType === 9 ? path[0] : path[0].ownerDocument, view = doc.defaultView || win;
@@ -542,7 +561,7 @@ function watch(root) {
 }
 async function attach() {
   if (session) await api("detach", {session}).catch(() => {});
-  ready = false; inputPending = false; events = []; after = 0; syncedViewport = null; restoring = null; scrollEcho = null;
+  ready = false; inputPending = false; events = []; hover = {}; after = 0; syncedViewport = null; restoring = null; scrollEcho = null;
   navigating = null; notice = ""; noticeSeq = 0;
   historyState = null; historyPending = null; historyControls();
   let current = null;

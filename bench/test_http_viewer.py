@@ -5,6 +5,7 @@ VIEWER_BROWSER=1 FIREFOX_BIN=... ./mach python .../bench/test_http_viewer.py
 VIEWER_TRANSPORT=poll (or ws) loads the browser viewer with that ?transport= instead of the default.
 """
 import base64
+import collections
 import functools
 import http.server
 import json
@@ -490,8 +491,7 @@ class Protocol(unittest.TestCase):
             self.assertEqual(observed, {"pointer": "none", "status": "Processing input…", "count": 256})
             self.assertNotIn("queue full", status().lower())
             self.assertEqual(v.session, session)
-            # Drain as a runtime would. While the pointer rests over the nested
-            # content, each resume can make Firefox send the enter burst again.
+            # Drain as a runtime would.
             def draining(into):
                 stop = threading.Event()
                 def drain():
@@ -506,10 +506,28 @@ class Protocol(unittest.TestCase):
             accepted = []
             stop = draining(accepted)
             until(lambda: status().startswith("Connected"))
+            # With the pointer still resting over the nested content, a resume
+            # must not restate its enter burst (task 52da0): once the click's
+            # records are in, nothing more arrives.
+            seen = [len(accepted), time.monotonic()]
+            def quiet():
+                if len(accepted) != seen[0]:
+                    seen[:] = [len(accepted), time.monotonic()]
+                return time.monotonic() - seen[1] > 1 and not v.events
+            until(quiet)
+            settled = len(accepted)
+            time.sleep(2)
             stop()
             with v.lock:
                 accepted.extend(v.events)
                 self.assertEqual(len(accepted), v.stats["events"])
+            extra = accepted[settled:]
+            self.assertFalse(extra, "input after resume: " + repr(collections.Counter(e["type"] for e in extra)))
+            # The pointer entered each nested node once; without the fix each
+            # resume repeated the whole path (about 30 times before it settled).
+            enters = collections.Counter((e["type"], e["target"]) for e in accepted if e["type"].endswith("enter"))
+            self.assertEqual(max(enters.values()), 1, "repeated enter: " + repr(enters.most_common(2)))
+            self.assertTrue(status().startswith("Connected"), status())
             tasks = [e["task"] for e in accepted]
             self.assertGreaterEqual(len(tasks), 256)
             self.assertEqual(tasks, sorted(set(tasks)))
@@ -522,9 +540,9 @@ class Protocol(unittest.TestCase):
             later = []
             stop = draining(later)
             v.publish([["c", 0, [html]]], replacement)
-            # One read: a resume's enter burst (task 52da0) can turn it back to Processing input…
+            # One read: the new document's own enter burst can still pause input once.
             until(lambda: (lambda s: s.startswith("Connected") and "/all" in s)(status()))
-            # Keys typed while such a burst pauses input are dropped, so type again while connected
+            # Keys typed while that burst pauses input are dropped, so type again while connected
             typed = []
             def type_z():
                 if any(e.get("value", [None])[0] == "z" for e in later):
