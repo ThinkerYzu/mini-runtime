@@ -8310,8 +8310,10 @@
   // A walk rather than a MutationObserver: it also sees CSSOM edits and nodes changed while out of
   // the document, and puts no observer beside the page's. <noscript> is a comment (the tab has JS
   // off, and would show its contents). The document is id 0.
-  // (`byId`: each id's node at the last flush, for the owner's input, which names nodes by id)
-  const mirror = share("viewerMirror", () => ({ on: false, next: 1, ids: new WeakMap(), snapshot: null, pendingSnapshot: null, sent: new WeakMap(), byId: new Map(), last: -Infinity, href: "", adopted: "", history: "", historyAck: 0 }));
+  // (`byId`: each id's node at the last flush, for the owner's input, which names nodes by id;
+  // `windows`: the window that mirrored each node, whose fireInput runs the input on it (a frame's).
+  // Unlike `sent` it outlives a detach, so input queued before one still reaches its frame.)
+  const mirror = share("viewerMirror", () => ({ on: false, next: 1, ids: new WeakMap(), windows: new WeakMap(), snapshot: null, pendingSnapshot: null, sent: new WeakMap(), byId: new Map(), last: -Infinity, href: "", adopted: "", history: "", historyAck: 0 }));
   const XHTML = "http://www.w3.org/1999/xhtml";
   // the DOM's own methods, as they were before the page's scripts, which may wrap them
   const domOwn = (proto, name) => {
@@ -8420,8 +8422,7 @@
     if (env.httpViewer && isMedia(node)) mediaLink.els.set(i, new WeakRef(node));
     const a = mirrorAttrs(node);
     const rec = { i, a: JSON.stringify(a), e: cssomEdits.get(node) || 0, k: "" };
-    // (a frame's node: its window runs the viewer's input on it)
-    if (isFrameWindow) rec.w = global;
+    mirror.windows.set(node, global);
     mirror.sent.set(node, rec);
     mirror.byId.set(i, node);
     const spec = { i, n: node.localName, a };
@@ -8889,7 +8890,7 @@
     input.events++;
     // a node of a frame's document: its window dispatches the event, with its own focus, selection
     // and default actions (the frame element is focused here); not the page's scroll
-    const owner = mirror.sent.get(target)?.w;
+    const owner = mirror.windows.get(target);
     if (owner && owner !== global) {
       if ("outerActive" in ev) focus.element = node(ev.outerActive);
       owner.__mrt.fireViewerInput(Object.assign({}, ev, { scroll: null }));
@@ -9161,8 +9162,9 @@
       }
       const i = mirror.ids.get(doc) || mirror.next++;
       mirror.ids.set(doc, i);
-      rec = { i, k: "", u: mirrorBase(), adopted: adoptedText(), w: global };
+      rec = { i, k: "", u: mirrorBase(), adopted: adoptedText() };
       mirror.sent.set(doc, rec);
+      mirror.windows.set(doc, global);
       mirror.byId.set(i, doc);
       const kids = Array.from(childNodes(doc)).filter(k => k.nodeType === 1 || k.nodeType === 8).map(k => mirrorSpec(k, ops));
       rec.k = kids.map(k => (typeof k === "number" ? k : k.i)).join(",");
