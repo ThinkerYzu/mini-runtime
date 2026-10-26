@@ -50,6 +50,7 @@ This local fixture checks redirect ownership independently of Google's traffic v
 | `Runtime.test_browser_navigation_controls` | Back/Forward boundaries, branching, same/full-document traversal, cancellation and readiness. |
 | `Runtime.test_browser_images_journey` | A local Google Images-like journey: temporary-document preview CSS, consecutive `CSSStyleRule.style` edits with the preview open, reconnect, a pointer burst over 161 nested boxes that pauses and resumes input, then All, a real navigation that reattaches on its own; accepted input order, process cleanup and the driver report. |
 | `Runtime.test_browser_media` | Native media playback and MSE reconstruction on reconnect. |
+| `Runtime.test_browser_media_audible_resume` | An audible MSE video (Opus tone) playing across a viewer reload and a new tab, on Firefox's default autoplay policy: the new viewer plays its copy muted with the status note, the page sees no pause or mute, and a click turns the sound back on. |
 | `Runtime.test_browser_webgl` | Shader drawing and replay on reconnect. |
 | `WebSocketTransport` | No browser required: handshake token/Origin checks, the same answers and errors as HTTP, one waiting poll per socket, framing and close codes, a reader that stops reading is not buffered for and is closed, and a lost socket keeps the session. |
 | `Protocol.test_browser_websocket_loss_and_fallback` | A dropped socket shows the loss and Connect reattaches on a new one; a refused socket falls back to long polling, or fails with `transport=ws`. |

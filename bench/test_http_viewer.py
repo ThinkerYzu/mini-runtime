@@ -1124,9 +1124,9 @@ class Runtime(unittest.TestCase):
                     self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
                     self.send_header("Content-Length", str(end + 1 - start)); self.end_headers(); self.wfile.write(data[start:end + 1])
                     return
-                if media_file in ("media-plain.mp4", "media-v.mp4", "media-a.mp4"):
+                if media_file in ("media-plain.mp4", "media-v.mp4", "media-a.mp4", "media-tone.webm"):
                     data = (HERE / "bridge-cases" / media_file).read_bytes()
-                    self.send_response(200); self.send_header("Content-Type", "video/mp4")
+                    self.send_response(200); self.send_header("Content-Type", "audio/webm" if media_file.endswith(".webm") else "video/mp4")
                     self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
                     return
                 if self.path.startswith("/slow?"):
@@ -1190,6 +1190,8 @@ class Runtime(unittest.TestCase):
             page = "media-demo.html"
         if self._testMethodName == "test_browser_media_large_replay":
             page = "media-large-replay.html"
+        if self._testMethodName == "test_browser_media_audible_resume":
+            page = "media-audible-resume.html"
         if self._testMethodName.startswith(("test_navigation", "test_browser_navigation")):
             page = "nav-start"
         if self._testMethodName == "test_browser_images_journey":
@@ -2309,6 +2311,75 @@ class Runtime(unittest.TestCase):
         viewer = result["viewer"]
         self.assertEqual((viewer["attachments"], viewer["snapshots"], viewer["resyncs"]), (3, 3, 0), viewer)
         self.assertGreater(viewer["media_bytes"], 3 * 7_000_000, viewer)
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_media_audible_resume(self):
+        # Task 3a93c (B207): a new viewer of an audible video that is playing, on Firefox's default
+        # autoplay policy. Its document has no user activation, so its play() is refused; that used
+        # to reach the page as a pause. The viewer plays its copy muted instead, the page sees
+        # neither a pause nor a mute, and the first click in the viewer gives the sound back.
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        log = self.root / "logs" / "demo.log"
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False,
+            # Firefox's defaults, which test profiles change: audible playback needs user activation
+            "media.autoplay.default": 1, "media.autoplay.blocking_policy": 0})
+        browser.start_session()
+        status = 'return document.getElementById("status").textContent'
+        frame = 'document.getElementById("page").contentDocument'
+        video = f'{frame}.getElementById("mse")'
+        page_state = f'return {frame}.getElementById("state").textContent'
+        def plays_muted_copy():
+            """A new viewer: Connected, its copy playing (muted), the page still playing unmuted"""
+            self.until(lambda: browser.execute_script(status).startswith("Connected") and
+                       browser.execute_script(f'const v={video};return v&&v.readyState>=3'), timeout=30)
+            start = browser.execute_script(f'return {video}.currentTime')
+            self.until(lambda: browser.execute_script(f'const v={video};return !v.paused&&Math.abs(v.currentTime-{start})>0.5'), timeout=15)
+            self.assertTrue(browser.execute_script(f'return {video}.muted'))
+            self.assertIn("click", browser.execute_script(status))
+            self.until(lambda: browser.execute_script(page_state).endswith(" false false"))
+            self.assertNotIn("PAGE_PAUSE", log.read_text())
+            self.assertNotIn("PAGE_VOLUME", log.read_text())
+        try:
+            browser.set_context("content"); browser.navigate(self.viewer_url)
+            self.until(lambda: "AUDIBLE_READY" in log.read_text(), timeout=20)
+            self.until(lambda: browser.execute_script(status).startswith("Connected"))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", "play").click()
+            self.until(lambda: "PLAY_OK" in log.read_text())
+            self.until(lambda: browser.execute_script('const v=document.getElementById("mse");return !v.paused&&!v.muted&&v.currentTime>0.5'))
+            browser.switch_to_frame()
+            pid = self.call("runtimes")[0]["pid"]
+            # reload the viewer (YouTube's reconnect step), then click: the sound comes back
+            browser.navigate(self.viewer_url)
+            plays_muted_copy()
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            self.until(lambda: browser.execute_script('return window.frameElement.style.pointerEvents === "auto"'))
+            browser.find_element("id", "state").click()
+            browser.switch_to_frame()
+            self.until(lambda: browser.execute_script(f'const v={video};return !v.muted&&!v.paused'))
+            start = browser.execute_script(f'return {video}.currentTime')
+            self.until(lambda: browser.execute_script(f'const v={video};return !v.paused&&!v.muted&&Math.abs(v.currentTime-{start})>0.5'))
+            self.assertNotIn("click", browser.execute_script(status))
+            self.assertNotIn("PAGE_PAUSE", log.read_text())
+            self.assertNotIn("PAGE_VOLUME", log.read_text())
+            # a new tab after the old one closed (reconnect-new-tab)
+            spare = browser.open(type="tab")["handle"]; browser.close(); browser.switch_to_window(spare)
+            browser.navigate(self.viewer_url)
+            plays_muted_copy()
+            self.assertEqual(self.call("runtimes")[0]["pid"], pid)
+        except Exception:
+            browser.switch_to_frame()
+            print("VIEWER STATUS", browser.execute_script(status), browser.execute_script(
+                f'const v={video};return v&&[v.paused,v.muted,v.currentTime,v.readyState,v.error&&v.error.message]'),
+                "RUNTIME MEDIA LOG", log.read_text()[-8000:]); raise
+        finally:
+            firefox_exit.close(browser)
+        self.call("stop", {})
+        self.proc.wait(timeout=20)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual((result["exit"], result["js_errors"]), (0, 0), result)
 
     # ---- navigation (DESIGN "Top-level navigation in the HTTP viewer") ----
 

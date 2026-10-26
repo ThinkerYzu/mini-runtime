@@ -1,5 +1,5 @@
 // Shared browser media executor: native decoding, MSE and playback events.
-globalThis.createMrtMedia = function(W, getNodes, getIds, emit, bounded = false) {
+globalThis.createMrtMedia = function(W, getNodes, getIds, emit, bounded = false, onHold = () => {}) {
 let active = true, pendingBytes = 0, pendingOps = 0;
 const queue = {push: m => { if (active) emit(m); }};
 const elements = new Map(), restored = new Set(), roots = new Set(), urls = new Set();
@@ -7,8 +7,22 @@ const num = v => (typeof v === "number" && !Number.isFinite(v) ? String(v) : v);
 const dec = v => (typeof v === "string" ? Number(v) : v);
 const ranges = r => { const out = []; for (let i = 0; i < r.length; i++) out.push([num(r.start(i)), num(r.end(i))]); return out; };
 const lastSeq = new WeakMap();
+// The elements this viewer muted to keep them playing (task 3a93c), each with the page's own muted
+// value: a new viewer's document has no user activation, so Firefox refuses an audible play() for
+// the runtime's resume, while muted playback is allowed. The page still sees its own value, and the
+// volumechange events of these mutes (`quiet`, a count per element) are not sent. The first user
+// gesture in the viewer gives each its value back (unmuting earlier would make Firefox pause it).
+const held = new Map(), quiet = new WeakMap();
+const setQuietly = (el, muted) => { if (el.muted !== muted) { quiet.set(el, (quiet.get(el) || 0) + 1); el.muted = muted; } };
+const hold = el => { held.set(el, el.muted); setQuietly(el, true); onHold(held.size); };
+const restoreSound = () => {
+  if (!held.size || W.navigator.userActivation?.hasBeenActive === false) return;
+  for (const [el, muted] of held) setQuietly(el, muted);
+  held.clear(); onHold(0);
+};
+const GESTURES = ["pointerdown", "mousedown", "keydown", "touchend", "click"];
 const state = el => ({ readyState: el.readyState, networkState: el.networkState, currentTime: num(el.currentTime), duration: num(el.duration),
-  paused: el.paused, ended: el.ended, seeking: el.seeking, volume: el.volume, muted: el.muted, playbackRate: el.playbackRate,
+  paused: el.paused, ended: el.ended, seeking: el.seeking, volume: el.volume, muted: held.has(el) ? held.get(el) : el.muted, playbackRate: el.playbackRate,
   defaultPlaybackRate: el.defaultPlaybackRate, buffered: ranges(el.buffered), seekable: ranges(el.seekable), played: ranges(el.played),
   videoWidth: el.videoWidth || 0, videoHeight: el.videoHeight || 0, error: el.error ? [el.error.code, el.error.message] : null });
 const TYPES = ["loadstart", "progress", "suspend", "abort", "error", "emptied", "stalled", "loadedmetadata", "loadeddata", "canplay",
@@ -20,6 +34,7 @@ const listener = e => {
   const el = e.target;
   if (!active || !e.isTrusted || !el || el.nodeType !== 1 || (el.localName !== "video" && el.localName !== "audio") || taken.has(e)) return;
   taken.add(e);
+  if (e.type === "volumechange" && quiet.get(el)) { quiet.set(el, quiet.get(el) - 1); return; }
   if ([...sources.values()].some(rec => rec.el === el && rec.replaying)) return;
   const ids = getIds();
   if (!ids || !ids.has(el)) return;
@@ -32,6 +47,7 @@ const watchRoot = root => { roots.add(root); for (const t of TYPES) root.addEven
 const watched = new WeakSet();
 const watchElement = el => { if (!watched.has(el)) { watched.add(el); watchRoot(el); } };
 watchRoot(W);
+for (const t of GESTURES) W.addEventListener(t, restoreSound, true);
 for (const node of getNodes().values()) if (node.nodeType === 11) watchRoot(node);
 const sources = new Map();
 const ownURL = new WeakMap();
@@ -94,8 +110,15 @@ function step(rec, op) {
           if (op.currentTime > 0) el.currentTime = op.currentTime;
           rec.replaying = false; rec.busy = false; W.clearTimeout(rec.timer);
           queue.push({type:"media", k:"el", el:op.el, ev:"timeupdate", s:state(el), seq:op.seq, resumed:true});
-          if (!op.paused) el.play().catch(() => {
-            if (active) queue.push({type:"media", k:"el", el:op.el, ev:"pause", s:state(el), seq:op.seq, resumed:true});
+          const paused = () => { if (active) queue.push({type:"media", k:"el", el:op.el, ev:"pause", s:state(el), seq:op.seq, resumed:true}); };
+          // refused for want of user activation: play muted (see `held`), not paused
+          if (!op.paused) el.play().catch(e => {
+            if (!active || e.name !== "NotAllowedError" || el.muted || held.has(el)) { paused(); return; }
+            hold(el);
+            el.play().catch(() => {
+              if (held.has(el)) { setQuietly(el, held.get(el)); held.delete(el); onHold(held.size); }
+              paused();
+            });
           });
           pump(rec);
         } catch (e) { lose(rec, e.name + ": " + e.message); }
@@ -185,6 +208,14 @@ const apply = op => {
     case "load": if (el) el.load(); return;
     case "set":
       if (!["currentTime", "volume", "muted", "playbackRate", "defaultPlaybackRate"].includes(op.name)) throw new TypeError("Unknown media attribute");
+      // a held element stays muted until the gesture; the page gets the volumechange Firefox would fire
+      if (el && op.name === "muted" && held.has(el)) {
+        if (held.get(el) === !!op.value) return;
+        held.set(el, !!op.value);
+        const ids = getIds();
+        if (ids && ids.has(el)) queue.push({ type: "media", k: "el", el: ids.get(el), ev: "volumechange", s: state(el), seq: op.seq });
+        return;
+      }
       if (el) el[op.name] = op.name === "muted" ? op.value : dec(op.value); return;
     case "abort": {
       const rec = sources.get(op.ms);
@@ -232,6 +263,8 @@ return {
   dispose() {
     active = false;
     for (const root of roots) for (const t of TYPES) root.removeEventListener(t, listener, true);
+    for (const t of GESTURES) W.removeEventListener(t, restoreSound, true);
+    held.clear();
     for (const el of elements.values()) { el.pause(); if (ownURL.has(el)) { el.removeAttribute("src"); el.load(); } }
     for (const rec of sources.values()) { W.clearTimeout(rec.timer); rec.queue = []; rec.current = null; }
     for (const url of urls) W.URL.revokeObjectURL(url);

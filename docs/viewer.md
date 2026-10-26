@@ -87,7 +87,7 @@ Searching **work music** and opening the first video has been checked with advan
 
 Longer playback stops once the default media replay retention quota (32 MiB, 10,000 commands; see below) is used up: appends are then refused and the player shows an error, typically after about a minute of video. Launch with `VIEWER_MEDIA_REPLAY_UNLIMITED=1` to lift it. Separately, some runs stall at the end of their initial 60-second media buffer even with the quota lifted; that cause is still unknown. The short playback check above does not establish uninterrupted long-video playback.
 
-Reattaching a playing YouTube page can still disconnect with **Stale media backend**. This is tracked separately from the search-to-video stall. Restarting the service starts a fresh live page.
+Reloading the viewer tab, or opening the viewer URL in a new tab, while a YouTube video plays keeps it playing on the same live page. The sound stays off until you click the page (see [Media and replay quota](#media-and-replay-quota)).
 
 Starting the viewer directly at a YouTube watch URL plays after one click on the player: the page's codec checks wait for the first viewer instead of hearing that nothing plays. After a search the results appear, but the status line and Back still show the home page.
 
@@ -121,7 +121,7 @@ reCAPTCHA's frames are of `www.google.com`, the page's own origin, so the viewer
 
 HTTP media commands drive native browser video/audio and MediaSource/SourceBuffer objects, returning playback state, events and promise results. Media resource bytes come through the API process with the page's origin and cookies. Normal browser autoplay and codec restrictions apply.
 
-Reconnect reconstructs logical MSE sources/buffers from retained commands and restores saved position and play intent. URL media restores its saved position paused. Replay retention defaults to **32 MiB** of command payload accounting and **10,000 commands**. To disable both retention quotas, add this setting when starting a new service:
+Reconnect reconstructs logical MSE sources/buffers from retained commands and restores saved position and play intent. URL media restores its saved position paused. A new viewer tab has had no click yet, so Firefox's default autoplay policy refuses to resume an audible video there. The viewer then plays its copy muted and the status line adds "sound off until you click the page"; the first click or key press in the page turns the sound back on. The page itself sees neither a pause nor a mute. Replay retention defaults to **32 MiB** of command payload accounting and **10,000 commands**. To disable both retention quotas, add this setting when starting a new service:
 
 ```sh
 VIEWER_MEDIA_REPLAY_UNLIMITED=1 python3 tools/view.py https://x.com/home

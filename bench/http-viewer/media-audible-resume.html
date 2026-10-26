@@ -1,0 +1,29 @@
+<!doctype html><meta charset="utf-8"><title>Audible media resume</title>
+<button id="play">Play</button>
+<video id="mse" loop width="320" height="180"></video><pre id="state"></pre><pre id="log"></pre>
+<script>
+// Task 3a93c (B207): an audible video playing when a new viewer attaches. The viewer's document has
+// no user activation, so Firefox's default autoplay policy refuses its play(); the page must not
+// see a pause or a mute for that. The audio is Opus (a 440 Hz tone): Firefox decodes it itself,
+// while AAC needs the system's codecs, and a video whose audio is not decoded counts as inaudible.
+const video=document.getElementById('mse'), type='video/mp4; codecs="avc1.42c01e"';
+function log(s){document.getElementById('log').textContent+=s+'\n';console.log(s);}
+const once=(o,t)=>new Promise(resolve=>o.addEventListener(t,resolve,{once:true}));
+(async()=>{
+ const ms=new MediaSource();video.src=URL.createObjectURL(ms);await once(ms,'sourceopen');
+ // both buffers before the first append: the first init segment sets the tracks, and a buffer added
+ // after it would leave Firefox's element without audio (so not blocked)
+ const tracks=[[type,'../bridge-cases/media-v.mp4'],['audio/webm; codecs="opus"','../bridge-cases/media-tone.webm']];
+ const buffers=tracks.map(([kind])=>ms.addSourceBuffer(kind));
+ for(const [i,[,file]] of tracks.entries()){
+  const done=once(buffers[i],'updateend');
+  buffers[i].appendBuffer(await fetch(file).then(r=>r.arrayBuffer()));await done;
+ }
+ if(video.readyState<3)await once(video,'canplay');
+ log('AUDIBLE_READY');
+})().catch(e=>log('AUDIBLE_ERROR '+e));
+document.getElementById('play').onclick=()=>video.play().then(()=>log('PLAY_OK'),e=>log('PLAY_ERROR '+e.name));
+video.addEventListener('pause',()=>log('PAGE_PAUSE'));
+video.addEventListener('volumechange',()=>log('PAGE_VOLUME '+video.muted+' '+video.volume));
+setInterval(()=>document.getElementById('state').textContent=[video.currentTime.toFixed(1),video.paused,video.muted].join(' '),100);
+</script>

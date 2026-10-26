@@ -10,7 +10,8 @@ function connectedStatus() {
   if (session && inputPending && !restoring && !navigating)
     status.title = status.textContent = "Processing input…";
   else if (session && ready && !navigating)
-    status.title = status.textContent = "Connected · " + pageURL + (failures ? " · some CSS rules unavailable" : "") + (notice ? " · " + notice : "");
+    status.title = status.textContent = "Connected · " + pageURL + (failures ? " · some CSS rules unavailable" : "") + (notice ? " · " + notice : "") +
+      (soundHeld ? " · sound off until you click the page" : "");
 }
 function historyControls() {
   const enabled = !!session && ready && !navigating && historyPending === null && historyState !== null;
@@ -111,9 +112,10 @@ const api = async (path, body) => {
     ws.send(JSON.stringify({id, op: path, body: body === undefined ? {} : body}));
   });
 };
-let media, mediaEpoch = null, mediaEvents = [], mediaPosting = false;
+// how many videos play muted until the user's first click (media.js `held`, task 3a93c)
+let media, mediaEpoch = null, mediaEvents = [], mediaPosting = false, soundHeld = 0;
 function newMedia(epoch) {
-  media?.dispose(); mediaEvents = []; mediaEpoch = epoch;
+  media?.dispose(); mediaEvents = []; mediaEpoch = epoch; soundHeld = 0;
   media = createMrtMedia(frame.contentWindow, () => nodes, () => ids, event => {
     if (event.k === "el" && ["timeupdate", "progress"].includes(event.ev)) {
       const at = mediaEvents.findIndex(e => e.k === "el" && e.el === event.el && e.ev === event.ev);
@@ -121,7 +123,7 @@ function newMedia(epoch) {
     }
     if (mediaEvents.length >= 1024) { disconnected("Playback event queue full. Click Connect to reattach."); return; }
     mediaEvents.push(event);
-  }, true);
+  }, true, count => { soundHeld = count; connectedStatus(); });
 }
 async function sendMedia() {
   if (!session || mediaPosting || !mediaEvents.length) return;
