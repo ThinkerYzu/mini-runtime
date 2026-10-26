@@ -13,6 +13,7 @@ from pathlib import Path
 import hashlib
 import selectors
 import socket
+import statistics
 import struct
 import subprocess
 import sys
@@ -357,6 +358,54 @@ class Protocol(unittest.TestCase):
             browser.switch_to_frame(browser.find_element("id", "page"))
             browser.find_element("id", "field").send_keys("z")
             until(lambda: any(e.get("value", [None])[0] == before + "z" for e in v.events))
+        finally:
+            firefox_exit.close(browser)
+            service.close()
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 to drive Firefox")
+    def test_browser_keydown_sent_at_once(self):
+        """A keydown on an idle page reaches the service as soon as its task ends, not at the 30 ms
+        input timer (task 61692): the median wait, over 20 keys, is well under the timer's 15"""
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        v = Viewer("demo", "https://example.test/", [800, 600])
+        service = Service("127.0.0.1:0", v).start()
+        waits = []
+        input0 = v.input
+        def input(session, ack, events, *args):
+            now = time.time() * 1000
+            waits.extend(now - e["at"] for e in events if e.get("type") == "keydown")
+            return input0(session, ack, events, *args)
+        v.input = input
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        def until(check):
+            end = time.monotonic() + 10
+            while time.monotonic() < end:
+                if check(): return
+                time.sleep(0.03)
+            self.fail("browser did not reach expected input state")
+        try:
+            browser.start_session()
+            browser.set_context("content")
+            browser.navigate(page_url(service.url))
+            until(lambda: v.session is not None)
+            session = v.session
+            v.wait({"now": 0, "busy": True})
+            html = {"i": 1, "n": "html", "a": [], "c": [
+                {"i": 2, "n": "head", "a": [], "c": []},
+                {"i": 3, "n": "body", "a": [], "c": [{"i": 4, "n": "input", "a": [["id", "field"]], "c": []}]}]}
+            v.publish([["c", 0, [html]]], session)
+            until(lambda: browser.execute_script('return document.getElementById("status").textContent').startswith("Connected"))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            field = browser.find_element("id", "field")
+            field.click()
+            for _ in range(20):
+                field.send_keys("a")
+                time.sleep(0.037)  # (not a multiple of the timer's period)
+            until(lambda: len(waits) >= 20)
+            v.wait({"now": 0, "busy": True})
+            self.assertLess(statistics.median(waits), 8, sorted(waits))
         finally:
             firefox_exit.close(browser)
             service.close()

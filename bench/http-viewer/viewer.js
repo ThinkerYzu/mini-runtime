@@ -137,6 +137,17 @@ function disconnected(message) {
   historyState = null; historyPending = null; historyControls();
   status.textContent = message;
 }
+// Discrete input (keys, buttons, clicks, focus, form changes) is sent as soon as the task that
+// captured it ends, and again as soon as the call in flight is answered (task 61692): waiting for the
+// 30 ms timer or the next poll answer was most of a keydown's latency. Pointer movement, crossing,
+// wheel and scroll records wait for those, so a stream of moves does not become a call per event.
+const LAZY = new Set("pointermove pointerover pointerenter pointerout pointerleave gotpointercapture lostpointercapture mousemove mouseover mouseenter mouseout mouseleave wheel scroll scrollend".split(" "));
+let urgent = false, soon = false;
+function sendSoon() {
+  if (soon) return;
+  soon = true;
+  setTimeout(() => { soon = false; send(); }, 0);
+}
 async function send() {
   if (!session || posting) return;
   posting = true;
@@ -144,6 +155,7 @@ async function send() {
   const changed = !syncedViewport || size[0] !== syncedViewport[0] || size[1] !== syncedViewport[1];
   // Input captured in the old geometry must not be sent with a new viewport.
   const batch = changed || navigating ? [] : events.splice(0, INPUT_BATCH);
+  if (!events.length) urgent = false;
   if (changed) { discardInput(); ready = false; historyControls(); frame.style.pointerEvents = "none"; }
   try {
     const result = await api("input", {session: current, ack: restoring ? restoring.before : after, events: batch,
@@ -158,7 +170,11 @@ async function send() {
       historyControls();
     }
   } catch (e) { failed(e, current); }
-  finally { posting = false; }
+  finally {
+    posting = false;
+    // (while the service's queue is full, the timers retry instead)
+    if (urgent && events.length && session && !inputPending) sendSoon();
+  }
 }
 const XHTML = "http://www.w3.org/1999/xhtml";
 const childrenOf = n => n.localName === "template" ? n.content : n;
@@ -503,6 +519,7 @@ function capture(e) {
   }
   if (["input", "change"].includes(e.type) && ["input", "textarea"].includes(path[0].localName)) ev.value = [path[0].value, !!path[0].checked];
   events.push(ev);
+  if (!LAZY.has(e.type)) { urgent = true; sendSoon(); }
   // Pointer crossing can synchronously enter hundreds of nested nodes before
   // a send timer or HTTP response runs. Pause as soon as this batch is full.
   if (events.length >= INPUT_BATCH) {
