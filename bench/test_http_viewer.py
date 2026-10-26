@@ -707,6 +707,24 @@ class Protocol(unittest.TestCase):
         v.publish([["c", 0, []]], session)
         self.assertTrue(v.poll(session, 0)["batches"][0]["snapshot"])
 
+    def test_large_snapshot_does_not_fill_the_journal(self):
+        # A snapshot carrying a big media replay may exceed the journal budget (task 3450e): the
+        # updates after it, sent before the viewer acknowledges it, are still the journal's to bound
+        v = Viewer("demo", "http://example.test/", [800, 600], max_bytes=1024 * 1024)
+        session = v.attach([800, 600])["session"]
+        v.wait({"now": 0, "busy": True})
+        epoch = v.media_epoch
+        v.publish([["c", 0, []], ["m", {"o": "append", "b64": "A" * (2 * 1024 * 1024)}]], session)
+        v.publish([["d", 1, "after the snapshot"]])
+        self.assertEqual((v.stats["resyncs"], v.media_epoch, len(v.journal)), (0, epoch, 2))
+        v.publish([["d", 1, "x" * (1024 * 1024)]])
+        self.assertEqual((v.stats["resyncs"], len(v.journal)), (1, 0))
+        # an event the viewer sent under the old epoch before its poll told it of the new one is
+        # dropped; the session goes on
+        self.assertEqual(v.media_input(session, epoch, [{"k": "play", "p": 1, "ok": True}]), {"stale": True})
+        self.assertEqual(v.session, session)
+        self.assertEqual(v.wait({"now": 0, "busy": True})["ok"]["media"], [])
+
     def test_lease_and_access_policy(self):
         v = Viewer("demo", "http://example.test/", [800, 600], lease=0.01)
         session = v.attach([800, 600])["session"]
@@ -875,7 +893,7 @@ class Protocol(unittest.TestCase):
         for _ in range(4): v.media_input(other, epoch, [{"k":"play","p":1,"ok":True}]*256)
         with self.assertRaises(ValueError): v.media_input(other, epoch, [{"k":"play","p":2,"ok":True}])
         self.assertGreater(v.media_epoch, epoch); self.assertEqual(v.media_events, [])
-        with self.assertRaises(ValueError): v.media_input(other, epoch, [])
+        self.assertEqual(v.media_input(other, epoch, []), {"stale": True})
         self.assertTrue(v.snapshot_needed)
 
     def test_media_journal_overflow_resets_backend(self):
@@ -1170,6 +1188,8 @@ class Runtime(unittest.TestCase):
             page = "media-stale-events.html"
         if self._testMethodName == "test_browser_media":
             page = "media-demo.html"
+        if self._testMethodName == "test_browser_media_large_replay":
+            page = "media-large-replay.html"
         if self._testMethodName.startswith(("test_navigation", "test_browser_navigation")):
             page = "nav-start"
         if self._testMethodName == "test_browser_images_journey":
@@ -2235,6 +2255,60 @@ class Runtime(unittest.TestCase):
             print("RUNTIME MEDIA LOG", log.read_text()[-8000:]); raise
         finally:
             firefox_exit.close(browser)
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_media_large_replay(self):
+        # Task 3450e: a new viewer's snapshot carries 9.6 MB of replayed appends, more than the 8 MiB
+        # journal, while the page's DOM changes every 100 ms. The updates after the snapshot used to
+        # overflow the journal before the viewer acknowledged it: a resynchronization, with another
+        # such snapshot, without end (the viewer stayed at Synchronizing).
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        log = self.root / "logs" / "demo.log"
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        browser.start_session()
+        status = 'return document.getElementById("status").textContent'
+        frame = 'document.getElementById("page").contentDocument.getElementById("mse")'
+        try:
+            browser.set_context("content"); browser.navigate(self.viewer_url)
+            self.until(lambda: "LARGE_READY" in log.read_text(), timeout=30)
+            self.until(lambda: browser.execute_script(status).startswith("Connected"))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", "play").click()
+            self.until(lambda: browser.execute_script('return document.getElementById("mse").currentTime > 0.5'))
+            browser.switch_to_frame()
+            pid = self.call("runtimes")[0]["pid"]
+            # a reload of the viewer (YouTube's reconnect step) keeps playing: the runtime asks the
+            # new viewer to resume; the 4 s video loops, so its time only has to move
+            browser.navigate(self.viewer_url)
+            self.until(lambda: browser.execute_script(status).startswith("Connected") and
+                       browser.execute_script(f'const v={frame};return v&&v.readyState>=3&&v.buffered.length>0'), timeout=30)
+            start = browser.execute_script(f'return {frame}.currentTime')
+            self.until(lambda: browser.execute_script(f'const v={frame};return !v.paused&&Math.abs(v.currentTime-{start})>0.5'), timeout=15)
+            # a new tab after the old one closed rebuilds the source again
+            spare = browser.open(type="tab")["handle"]; browser.close(); browser.switch_to_window(spare)
+            browser.navigate(self.viewer_url)
+            self.until(lambda: browser.execute_script(status).startswith("Connected") and
+                       browser.execute_script(f'const v={frame};return v&&v.readyState>=3&&v.buffered.length>0&&v.videoWidth>0'), timeout=30)
+            time.sleep(2)
+            self.assertTrue(browser.execute_script(status).startswith("Connected"), browser.execute_script(status))
+            self.assertEqual(self.call("runtimes")[0]["pid"], pid)
+        except Exception:
+            browser.switch_to_frame()
+            print("VIEWER STATUS", browser.execute_script(status), browser.execute_script(
+                f'const v={frame};return v&&[v.paused,v.currentTime,v.readyState,v.error&&v.error.message]'),
+                "RUNTIME MEDIA LOG", log.read_text()[-8000:]); raise
+        finally:
+            firefox_exit.close(browser)
+        self.call("stop", {})
+        self.proc.wait(timeout=20)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual((result["exit"], result["js_errors"]), (0, 0), result)
+        self.assertNotIn("LARGE_ERROR", log.read_text())
+        viewer = result["viewer"]
+        self.assertEqual((viewer["attachments"], viewer["snapshots"], viewer["resyncs"]), (3, 3, 0), viewer)
+        self.assertGreater(viewer["media_bytes"], 3 * 7_000_000, viewer)
 
     # ---- navigation (DESIGN "Top-level navigation in the HTTP viewer") ----
 

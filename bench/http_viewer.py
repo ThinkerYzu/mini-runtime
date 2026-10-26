@@ -106,7 +106,7 @@ class Viewer:
         self.committed_at = None
         self.polled_notice = 0
         self.polled_navigating = None
-        self.stats = {"media_resources": 0, "media_resource_requests": 0, "media_resource_bytes": 0, "media_resource_chunks": 0, "media_resource_cancels": 0, "media_ops": 0, "media_replays": 0, "media_bytes": 0, "media_events": 0, "media_queries": 0, "media_attach_waits": 0, "media_resets": 0, "webgl_jobs": 0, "webgl_timeouts": 0, "webgl_dummy": 0, "webgl_native": 0, "webgl_replays": 0, "webgl_overflows": 0, "attachments": 0, "snapshots": 0, "resyncs": 0, "events": 0,
+        self.stats = {"media_resources": 0, "media_resource_requests": 0, "media_resource_bytes": 0, "media_resource_chunks": 0, "media_resource_cancels": 0, "media_ops": 0, "media_replays": 0, "media_bytes": 0, "media_events": 0, "media_queries": 0, "media_attach_waits": 0, "media_resets": 0, "media_stale_events": 0, "webgl_jobs": 0, "webgl_timeouts": 0, "webgl_dummy": 0, "webgl_native": 0, "webgl_replays": 0, "webgl_overflows": 0, "attachments": 0, "snapshots": 0, "resyncs": 0, "events": 0,
                       "navigations": 0, "navigation_failures": 0, "navigation_refusals": 0, "navigation_input_dropped": 0,
                       "http_api_calls": 0, "http_api_bytes_in": 0, "http_api_bytes_out": 0,
                       "ws_connections": 0, "ws_calls": 0, "ws_bytes_in": 0, "ws_bytes_out": 0}
@@ -205,8 +205,11 @@ class Viewer:
                 self.awaiting_snapshot = False
                 self.stats["snapshots"] += 1
             self.seq += 1
+            # The budget bounds the updates after a snapshot, not the snapshot itself: one that carries
+            # a large media replay may exceed it, and counting it made the next update resynchronize
+            # again before the viewer could acknowledge it, without end (task 3450e).
             self.journal.append({"seq": self.seq, "snapshot": bool(snapshot), "ops": ops})
-            self.journal_bytes += size
+            self.journal_bytes += 0 if snapshot else size
             if snapshot:
                 self.snapshot_seq = self.seq
             self.lock.notify_all()
@@ -308,7 +311,9 @@ class Viewer:
                 self.ready = True
             # The browser acknowledged applying these batches. Keep no delivered history.
             while self.journal and self.journal[0]["seq"] <= ack:
-                self.journal_bytes -= len(json.dumps(self.journal.popleft()["ops"]))
+                batch = self.journal.popleft()
+                if not batch["snapshot"]:
+                    self.journal_bytes -= len(json.dumps(batch["ops"]))
             if events and not self.ready:
                 raise ValueError("snapshot and viewport must be applied before input")
             if events and self.navigating:
@@ -384,8 +389,14 @@ class Viewer:
         size = len(json.dumps(events))
         with self.lock:
             self._check(session)
-            if type(epoch) is not int or epoch != self.media_epoch:
+            if type(epoch) is not int or epoch > self.media_epoch:
                 raise ValueError("Stale media backend")
+            if epoch < self.media_epoch:
+                # The events of a backend reset (resynchronization, a full queue) while this session
+                # stays attached, sent before its poll brought the new epoch: they are dropped, and the
+                # viewer goes on with the new backend (task 3450e)
+                self.stats["media_stale_events"] += len(events)
+                return {"stale": True}
             if len(self.media_events) + len(events) > 1024 or self.media_bytes + size > MAX_BODY:
                 self._media_reset()
                 self._resync()
