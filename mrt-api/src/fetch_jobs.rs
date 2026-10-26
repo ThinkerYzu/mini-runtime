@@ -1,37 +1,100 @@
 //! Finite live HTTP fetches whose completion must not block the runtime (B185).
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}, mpsc};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use crate::{fetch, store::Stores};
 
+// Workers at once, in all and per host (Firefox's max-persistent-connections-per-server).
+// Starts beyond them wait in a queue, as Firefox's connection manager queues them (B206).
 const LIMIT: usize = 16;
+const HOST_LIMIT: usize = 6;
+// Handles a page may hold before a start is refused; only a page that never polls gets here.
+const PENDING_LIMIT: usize = 4096;
 type Owner = (String, String, bool, String);
 fn owner(req: &Value) -> Owner {
     let text = |k: &str| req[k].as_str().unwrap_or("").to_owned();
     (text("site"), text("top"), req["ancestor"].as_bool().unwrap_or(false), text("origin"))
 }
+fn host(req: &Value) -> String {
+    let url = url::Url::parse(req["url"].as_str().unwrap_or(""));
+    url.ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default()
+}
+type Answer = Result<Value, String>;
 struct Job {
     owner: Owner,
-    created: Instant,
-    answer: mpsc::Receiver<Result<Value, String>>,
+    // Set when a worker takes the request; a queued job does not expire.
+    started: Arc<OnceLock<Instant>>,
+    answer: mpsc::Receiver<Answer>,
 }
-struct Running(Arc<AtomicUsize>);
-impl Drop for Running {
-    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
+struct Request {
+    id: String,
+    host: String,
+    request: Value,
+    started: Arc<OnceLock<Instant>>,
+    send: mpsc::Sender<Answer>,
+}
+#[derive(Default)]
+struct Queue {
+    waiting: VecDeque<Request>,
+    running: usize,
+    by_host: HashMap<String, usize>,
+}
+impl Queue {
+    fn has_room(&self, host: &str) -> bool {
+        self.running < LIMIT && self.by_host.get(host).copied().unwrap_or(0) < HOST_LIMIT
+    }
+    fn take(&mut self, request: &Request) {
+        self.running += 1;
+        *self.by_host.entry(request.host.clone()).or_default() += 1;
+    }
+    fn release(&mut self, host: &str) {
+        self.running -= 1;
+        if let Some(n) = self.by_host.get_mut(host) {
+            *n -= 1;
+            if *n == 0 { self.by_host.remove(host); }
+        }
+    }
+    /// The oldest waiting request whose host has room, counted as running.
+    fn next(&mut self) -> Option<Request> {
+        let i = self.waiting.iter().position(|r| self.has_room(&r.host))?;
+        let request = self.waiting.remove(i)?;
+        self.take(&request);
+        Some(request)
+    }
 }
 #[derive(Default)]
 pub struct Jobs {
     jobs: HashMap<String, Job>,
-    running: Arc<AtomicUsize>,
+    queue: Arc<Mutex<Queue>>,
+}
+/// Runs one worker: fetches `first`, then the queued requests it frees room for, until none can start.
+///
+/// The caller has already counted `first` as running.
+fn work(queue: Arc<Mutex<Queue>>, first: Request, stores: Arc<Mutex<Stores>>) {
+    let mut shared = stores;
+    let mut net = fetch::Net::from_env();
+    let mut current = first;
+    loop {
+        let _ = current.started.set(Instant::now());
+        let result = fetch::live(&current.request, &mut net, &mut shared, Duration::from_secs(120)).map(|mut value| {
+            // Real time passed while the page was running, not virtual replay time.
+            value["took"] = json!(0);
+            value
+        });
+        let _ = current.send.send(result);
+        let mut queue = queue.lock().unwrap();
+        queue.release(&current.host);
+        match queue.next() { Some(next) => current = next, None => return }
+    }
 }
 impl Jobs {
     pub fn handle(&mut self, req: &Value, stores: &Arc<Mutex<Stores>>) -> Result<Value, String> {
         match req["call"].as_str().unwrap_or("") {
             "start" => {
                 // Abandoned delivery handles expire after the bounded worker deadline.
-                self.jobs.retain(|_, j| j.created.elapsed() < Duration::from_secs(125));
-                if self.jobs.len() >= LIMIT || self.running.load(Ordering::SeqCst) >= LIMIT {
+                self.jobs.retain(|_, j| j.started.get().is_none_or(|t| t.elapsed() < Duration::from_secs(125)));
+                if self.jobs.len() >= PENDING_LIMIT {
                     return Err("mrt-api: live fetch capacity exceeded".into());
                 }
                 // Do not reuse an old request's id after the API process restarts.
@@ -41,25 +104,24 @@ impl Jobs {
                     if !self.jobs.contains_key(&id) { break id; }
                 };
                 let (send, answer) = mpsc::channel();
-                let request = req.clone();
-                let mut shared = stores.clone();
-                let count = self.running.clone();
-                self.running.fetch_add(1, Ordering::SeqCst);
-                let worker = std::thread::Builder::new().name(format!("fetch-{id}")).spawn(move || {
-                    let _running = Running(count);
-                    let mut net = fetch::Net::from_env();
-                    let result = fetch::live(&request, &mut net, &mut shared, Duration::from_secs(120)).map(|mut value| {
-                        // Real time passed while the page was running, not virtual replay time.
-                        value["took"] = json!(0);
-                        value
-                    });
-                    let _ = send.send(result);
-                });
-                if let Err(e) = worker {
-                    self.running.fetch_sub(1, Ordering::SeqCst);
-                    return Err(format!("mrt-api: fetch worker: {e}"));
+                let started = Arc::new(OnceLock::new());
+                let request = Request { id: id.clone(), host: host(req), request: req.clone(), started: started.clone(), send };
+                let mut queue = self.queue.lock().unwrap();
+                if queue.has_room(&request.host) {
+                    queue.take(&request);
+                    let host = request.host.clone();
+                    let (shared, stores) = (self.queue.clone(), stores.clone());
+                    let worker = std::thread::Builder::new().name(format!("fetch-{id}"))
+                        .spawn(move || work(shared, request, stores));
+                    if let Err(e) = worker {
+                        queue.release(&host);
+                        return Err(format!("mrt-api: fetch worker: {e}"));
+                    }
+                } else {
+                    queue.waiting.push_back(request);
                 }
-                self.jobs.insert(id.clone(), Job { owner: owner(req), created: Instant::now(), answer });
+                drop(queue);
+                self.jobs.insert(id.clone(), Job { owner: owner(req), started, answer });
                 Ok(json!({"job": id, "pending": true}))
             }
             "poll" | "cancel" => {
@@ -68,6 +130,7 @@ impl Jobs {
                 if job.owner != owner(req) { return Err("mrt-api: wrong fetch owner".into()); }
                 if req["call"] == "cancel" {
                     self.jobs.remove(id);
+                    self.queue.lock().unwrap().waiting.retain(|r| r.id != id);
                     return Ok(Value::Null);
                 }
                 match job.answer.try_recv() {
@@ -92,7 +155,7 @@ mod tests {
     }
     fn pending(jobs: &mut Jobs) -> mpsc::Sender<Result<Value,String>> {
         let (send, answer) = mpsc::channel();
-        jobs.jobs.insert("test".into(), Job { owner: owner(&request("poll")), created: Instant::now(), answer });
+        jobs.jobs.insert("test".into(), Job { owner: owner(&request("poll")), started: Arc::new(OnceLock::new()), answer });
         send
     }
     #[test]
@@ -121,14 +184,85 @@ mod tests {
         drop(pending(&mut jobs));
         assert!(jobs.handle(&request("poll"), &stores).unwrap_err().contains("worker ended"));
     }
+    fn poll_until_done(jobs: &mut Jobs, stores: &Arc<Mutex<Stores>>, id: &Value) -> Result<Value, String> {
+        let mut poll = request("poll"); poll["id"] = id.clone();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let result = jobs.handle(&poll, stores);
+            if !result.as_ref().is_ok_and(|v| v["pending"] == true) { return result; }
+            assert!(Instant::now() < deadline, "job {id} never finished");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    // A server that answers each connection only once `release` lets it.
+    fn held_server(release: mpsc::Receiver<()>) -> String {
+        use std::net::TcpListener;
+        use std::io::{Read, Write};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}/", listener.local_addr().unwrap().port());
+        let release = Arc::new(Mutex::new(release));
+        std::thread::spawn(move || for socket in listener.incoming() {
+            let (mut socket, release) = (socket.unwrap(), release.clone());
+            std::thread::spawn(move || {
+                let mut bytes = [0;2048]; let _ = socket.read(&mut bytes);
+                let _ = release.lock().unwrap().recv();
+                let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+            });
+        });
+        url
+    }
+    fn live_start(url: &str) -> Value {
+        let mut start = request("start");
+        start["url"] = json!(url); start["mode"] = json!("no-cors"); start["credentials"] = json!("omit");
+        start
+    }
     #[test]
-    fn running_workers_stay_bounded_after_cancel() {
+    fn burst_beyond_the_workers_is_queued_not_refused() {
         let stores = Arc::new(Mutex::new(Stores::default()));
         let mut jobs = Jobs::default();
-        let _send = pending(&mut jobs);
-        jobs.running.store(LIMIT, Ordering::SeqCst);
-        jobs.handle(&request("cancel"), &stores).unwrap();
-        assert!(jobs.handle(&request("start"), &stores).unwrap_err().contains("capacity"));
+        let (release, held) = mpsc::channel();
+        let url = held_server(held);
+        let ids: Vec<Value> = (0..40).map(|_| jobs.handle(&live_start(&url), &stores).unwrap()["job"].clone()).collect();
+        {
+            let queue = jobs.queue.lock().unwrap();
+            assert_eq!((queue.running, queue.waiting.len()), (HOST_LIMIT, 40 - HOST_LIMIT));
+        }
+        for _ in 0..40 { release.send(()).unwrap(); }
+        // no-cors from another origin: each answer is an opaque response, not an error
+        for id in &ids { assert_eq!(poll_until_done(&mut jobs, &stores, id).unwrap()["type"], "opaque"); }
+        assert_eq!(jobs.queue.lock().unwrap().running, 0);
+    }
+    #[test]
+    fn a_busy_host_does_not_hold_another_hosts_request() {
+        let stores = Arc::new(Mutex::new(Stores::default()));
+        let mut jobs = Jobs::default();
+        let (release, held) = mpsc::channel();
+        let busy = held_server(held);
+        for _ in 0..30 { jobs.handle(&live_start(&busy), &stores).unwrap(); }
+        let other = jobs.handle(&live_start("data:text/plain,other"), &stores).unwrap()["job"].clone();
+        assert_eq!(poll_until_done(&mut jobs, &stores, &other).unwrap()["body"], "other");
+        drop(release);
+    }
+    #[test]
+    fn cancelled_queued_job_never_starts() {
+        let stores = Arc::new(Mutex::new(Stores::default()));
+        let mut jobs = Jobs::default();
+        jobs.queue.lock().unwrap().running = LIMIT;
+        let mut start = request("start"); start["url"] = json!("data:text/plain,x");
+        let id = jobs.handle(&start, &stores).unwrap()["job"].clone();
+        assert_eq!(jobs.queue.lock().unwrap().waiting.len(), 1);
+        let mut cancel = request("cancel"); cancel["id"] = id;
+        jobs.handle(&cancel, &stores).unwrap();
+        assert!(jobs.queue.lock().unwrap().waiting.is_empty());
+    }
+    #[test]
+    fn pending_handles_stay_bounded() {
+        let stores = Arc::new(Mutex::new(Stores::default()));
+        let mut jobs = Jobs::default();
+        jobs.queue.lock().unwrap().running = LIMIT;
+        let mut start = request("start"); start["url"] = json!("data:text/plain,x");
+        for _ in 0..PENDING_LIMIT { jobs.handle(&start, &stores).unwrap(); }
+        assert!(jobs.handle(&start, &stores).unwrap_err().contains("capacity"));
     }
     #[test]
     fn real_job_delivers_bytes_and_errors() {
