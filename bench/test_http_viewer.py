@@ -473,11 +473,20 @@ class Protocol(unittest.TestCase):
             later = []
             stop = draining(later)
             v.publish([["c", 0, [html]]], replacement)
-            until(lambda: status().startswith("Connected"))
-            self.assertIn("/all", status())
-            browser.switch_to_frame(browser.find_element("id", "page"))
-            browser.find_element("id", "field").send_keys("z")
-            until(lambda: any(e.get("value", [None])[0] == "z" for e in later))
+            # One read: a resume's enter burst (task 52da0) can turn it back to Processing input…
+            until(lambda: (lambda s: s.startswith("Connected") and "/all" in s)(status()))
+            # Keys typed while such a burst pauses input are dropped, so type again while connected
+            typed = []
+            def type_z():
+                if any(e.get("value", [None])[0] == "z" for e in later):
+                    return True
+                if (not typed or time.monotonic() - typed[-1] > 1) and status().startswith("Connected"):
+                    typed.append(time.monotonic())
+                    browser.switch_to_frame(browser.find_element("id", "page"))
+                    browser.find_element("id", "field").send_keys("z")
+                    browser.switch_to_frame()
+                return False
+            until(type_z)
             stop()
             self.assertEqual(v.stats["attachments"], 2)
         finally:

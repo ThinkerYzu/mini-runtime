@@ -69,6 +69,8 @@ const PREFLIGHT_DEFAULT_S: u64 = 5;
 
 pub struct Net {
     agent: ureq::Agent,
+    /// keeps no idle connection: a request retried on a new one (`send`)
+    fresh: ureq::Agent,
     /// what Firefox sends: navigator.userAgent, and intl.accept_languages as a header
     user_agent: String,
     accept_language: String,
@@ -100,20 +102,24 @@ impl Net {
             tls = tls.root_certs(ureq::tls::RootCerts::Specific(std::sync::Arc::new(certs)));
         }
         let proxy = var("API_PROXY").and_then(|p| ureq::Proxy::new(&p).ok());
-        let config = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .max_redirects(0)
-            .max_redirects_will_error(false)
-            .save_redirect_history(false)
-            .allow_non_standard_methods(true)
-            .user_agent("")
-            .accept("")
-            .accept_encoding("")
-            .proxy(proxy)
-            .tls_config(tls.build())
-            .build();
+        let tls = tls.build();
+        let config = |fresh: bool| {
+            let b = ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .max_redirects(0)
+                .max_redirects_will_error(false)
+                .save_redirect_history(false)
+                .allow_non_standard_methods(true)
+                .user_agent("")
+                .accept("")
+                .accept_encoding("")
+                .proxy(proxy.clone())
+                .tls_config(tls.clone());
+            if fresh { b.max_idle_connections(0).max_idle_connections_per_host(0) } else { b }.build()
+        };
         Net {
-            agent: config.new_agent(),
+            agent: config(false).new_agent(),
+            fresh: config(true).new_agent(),
             user_agent: var("API_UA").unwrap_or_else(|| crate::env::DEFAULT_UA.into()),
             accept_language: var("API_ACCEPT_LANGUAGE").unwrap_or_else(|| "en-US,en;q=0.9".into()),
             preflights: Vec::new(),
@@ -502,6 +508,13 @@ enum Failure {
     Pending,
 }
 
+/// The connection ended, or was refused writing, before any byte of an answer: ureq's
+/// "Peer disconnected", a reset, an abort or a broken pipe
+fn unanswered(e: &ureq::Error) -> bool {
+    matches!(e, ureq::Error::Io(io) if matches!(io.kind(), std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::BrokenPipe))
+}
+
 impl Net {
     /// Sends one HTTP request (no redirect followed); its answer, or a failure
     fn send(&self, method: &str, url: &Url, headers: &[(String, Vec<u8>)], body: Option<&[u8]>, deadline: Instant, limit: u64) -> Result<Answer, Failure> {
@@ -510,27 +523,40 @@ impl Net {
             return Err(Failure::Pending);
         }
         let t0 = Instant::now();
-        let mut b = ureq::http::Request::builder().method(method).uri(url.as_str());
-        for (k, v) in headers {
-            if let Ok(v) = ureq::http::HeaderValue::from_bytes(v) {
-                b = b.header(k.as_str(), v);
+        let run = |agent: &ureq::Agent, left: Duration| -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+            let mut b = ureq::http::Request::builder().method(method).uri(url.as_str());
+            for (k, v) in headers {
+                if let Ok(v) = ureq::http::HeaderValue::from_bytes(v) {
+                    b = b.header(k.as_str(), v);
+                }
             }
-        }
-        let result = match body {
-            Some(body) if !body.is_empty() || !matches!(method, "GET" | "HEAD") => {
-                let req = b.body(body.to_vec()).map_err(|e| Failure::Network(format!("{NETWORK_ERROR} ({e})")))?;
-                self.agent.configure_request(req).timeout_global(Some(left)).build().pipe(|r| self.agent.run(r))
-            }
-            _ => {
-                let req = b.body(()).map_err(|e| Failure::Network(format!("{NETWORK_ERROR} ({e})")))?;
-                self.agent.configure_request(req).timeout_global(Some(left)).build().pipe(|r| self.agent.run(r))
+            match body {
+                Some(body) if !body.is_empty() || !matches!(method, "GET" | "HEAD") => {
+                    agent.configure_request(b.body(body.to_vec())?).timeout_global(Some(left)).build().pipe(|r| agent.run(r))
+                }
+                _ => agent.configure_request(b.body(())?).timeout_global(Some(left)).build().pipe(|r| agent.run(r)),
             }
         };
         let fail = |e: ureq::Error| match e {
             ureq::Error::Timeout(_) => Failure::Pending,
+            ureq::Error::Http(e) => Failure::Network(format!("{NETWORK_ERROR} ({e})")),
             e => Failure::Network(format!("{NETWORK_ERROR} ({e})")),
         };
-        let resp = result.map_err(fail)?;
+        // A pooled connection that the server closed after its last answer gives no answer at all;
+        // Firefox restarts such a request on a new connection (nsHttpTransaction::Restart: a reused
+        // connection reset before any response byte). An HTTP/1.0 server that closes after every
+        // answer without `Connection: close` (Python's http.server) is one, as ureq pools it.
+        let resp = match run(&self.agent, left) {
+            Err(e) if unanswered(&e) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(Failure::Pending);
+                }
+                run(&self.fresh, left)
+            }
+            other => other,
+        }
+        .map_err(fail)?;
         let status = resp.status().as_u16();
         let raw: Vec<(String, String)> =
             resp.headers().iter().map(|(k, v)| (k.as_str().to_ascii_lowercase(), latin1(v.as_bytes()))).collect();
@@ -1192,7 +1218,48 @@ fn opaque(no_body: bool, took: f64) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::byte_range;
+    use super::{byte_range, Net};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    /// Reads one request's head off `s`
+    fn request(s: &mut std::net::TcpStream) {
+        let mut head = Vec::new();
+        let mut b = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") && s.read(&mut b).unwrap() == 1 {
+            head.push(b[0]);
+        }
+    }
+
+    #[test]
+    fn request_on_a_closed_pooled_connection_is_sent_again() {
+        // An HTTP/1.0 answer without `Connection: close` (Python's http.server): ureq pools the
+        // connection. The server takes the next request on it and closes, as when its close
+        // crosses that request; the request is answered on a new connection.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = url::Url::parse(&format!("http://127.0.0.1:{}/", listener.local_addr().unwrap().port())).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            request(&mut first);
+            first.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\none").unwrap();
+            request(&mut first);
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            request(&mut second);
+            second.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\ntwo").unwrap();
+        });
+        let net = Net::from_env();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let body = |r: Result<super::Answer, super::Failure>| match r {
+            Ok(a) => String::from_utf8(a.body).unwrap(),
+            Err(super::Failure::Network(e)) => e,
+            Err(super::Failure::Pending) => "pending".into(),
+        };
+        assert_eq!(body(net.send("GET", &url, &[], None, deadline, u64::MAX)), "one");
+        assert_eq!(body(net.send("GET", &url, &[], None, deadline, u64::MAX)), "two");
+        server.join().unwrap();
+    }
 
     #[test]
     fn media_range_header() {

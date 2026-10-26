@@ -21,7 +21,7 @@ python3 bench/test_http_viewer.py
 
 The launcher suite covers URL validation, launch from another working directory, inherited benchmark-setting isolation, native profile persistence/isolation, profile locking and clean termination. It uses local HTTP and Python `-S` without a browser or recording.
 
-The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 51 cases: 33 run without a browser and 18 require `VIEWER_BROWSER=1`. Browser cases load the viewer with its default transport (WebSocket, falling back to long polling); `VIEWER_TRANSPORT=poll` or `ws` runs them on one transport only. Run the browser cases on both `poll` and the default. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
+The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 53 cases: 34 run without a browser and 19 require `VIEWER_BROWSER=1`. Browser cases load the viewer with its default transport (WebSocket, falling back to long polling); `VIEWER_TRANSPORT=poll` or `ws` runs them on one transport only. Run the browser cases on both `poll` and the default. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
 
 ```sh
 VIEWER_BROWSER=1 FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python \
