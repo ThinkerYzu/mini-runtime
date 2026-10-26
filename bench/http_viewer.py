@@ -179,6 +179,11 @@ class Viewer:
 
     def publish(self, ops, snapshot=None):
         with self.lock:
+            # the document's URL after pushState or replaceState (bridge.js `u`), whether or not a viewer
+            # takes these ops: /api/runtimes and the next attachment report it (B203)
+            for o in ops:
+                if o[0] == "u":
+                    self.page_url = o[1]
             self._expire()
             if not self.session or (snapshot and snapshot != self.session):
                 return

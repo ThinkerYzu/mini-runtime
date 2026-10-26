@@ -181,6 +181,23 @@ class WebSocketTransport(unittest.TestCase):
         self.assertEqual(stats["ws_calls"], 8)
         self.assertGreater(stats["ws_bytes_out"], stats["ws_calls"] * 10)
 
+    def test_document_url_follows_push_state(self):
+        # B203: /api/runtimes and an attachment report the URL pushState moved the document to
+        def runtimes():
+            req = Request(self.service.origin + "/api/runtimes", headers={"X-Viewer-Token": self.service.token})
+            with urlopen(req) as response:
+                return json.load(response)[0]["url"]
+        ws = self.open()
+        session, seq = self.attached(ws)
+        self.viewer.publish([["u", "https://example.test/results?q=1"]])
+        self.assertEqual(runtimes(), "https://example.test/results?q=1")
+        ws.call("detach", {"session": session})
+        self.viewer.publish([["u", "https://example.test/watch?v=2"]])
+        self.assertEqual(runtimes(), "https://example.test/watch?v=2")
+        self.assertEqual(ws.call("attach", {"runtime": "demo", "viewport": [800, 600]})["ok"]["url"], "https://example.test/watch?v=2")
+        self.viewer.navigation_committed("https://example.test/next", 7)
+        self.assertEqual(runtimes(), "https://example.test/next")
+
     def test_one_poll_waits_while_other_calls_answer(self):
         ws = self.open()
         session, seq = self.attached(ws)

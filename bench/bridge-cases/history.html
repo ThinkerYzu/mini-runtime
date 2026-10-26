@@ -77,6 +77,21 @@
     history.scrollRestoration = "bogus";
     log("scrollRestoration", m, history.scrollRestoration);
     history.scrollRestoration = "auto";
+
+    // 6. another window's History methods act on the History they are called on (WebIDL), not on
+    // their own window's: YouTube's history manager calls an about:blank frame's pushState and
+    // replaceState on the page's history (GAPS B203)
+    const f = document.createElement("iframe");
+    document.body.appendChild(f);
+    const other = f.contentWindow.History.prototype;
+    other.pushState.call(history, { f: 1 }, "", "?p=frame");
+    log("frame's pushState", where(), tail(f.contentWindow.location.href), JSON.stringify(f.contentWindow.history.state));
+    other.replaceState.call(history, "fr", "", "?p=framer");
+    log("frame's replaceState", where(), JSON.stringify(Object.getOwnPropertyDescriptor(other, "state").get.call(history)));
+    await move("frame's back", () => other.back.call(history));
+    try { other.pushState.call({}, null, "", "?p=x"); err = "none"; } catch (e) { err = e.name; }
+    log("pushState on another object", err, where());
+    f.remove();
     history.replaceState(null, "", "history.html");
     log("end", tail(location.href));
   });

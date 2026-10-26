@@ -5055,12 +5055,12 @@
     pageURL = url;
     entry.url = url.href;
   };
-  const History = { History: function () { throw new TypeError("Illegal constructor."); } }.History;
-  for (const [key, desc] of Object.entries(Object.getOwnPropertyDescriptors({
-    get length() { return historyEntries().length; },
-    get scrollRestoration() { return historyState.scrollRestoration; },
-    set scrollRestoration(v) { v = String(v); if (v === "auto" || v === "manual") historyState.scrollRestoration = v; },
-    get state() { return historyEntries()[historyState.index].state; },
+  // This window's History: what the interface's methods do when called on this window's `history`
+  const historyImpl = {
+    length() { return historyEntries().length; },
+    scrollRestoration() { return historyState.scrollRestoration; },
+    setScrollRestoration(v) { v = String(v); if (v === "auto" || v === "manual") historyState.scrollRestoration = v; },
+    state() { return historyEntries()[historyState.index].state; },
     go(delta = 0) {
       delta = Math.trunc(Number(delta)) || 0;
       const to = historyState.index + delta;
@@ -5086,9 +5086,7 @@
         }
       });
     },
-    back() { this.go(-1); },
-    forward() { this.go(1); },
-    pushState(state, t, u) {
+    pushState(state, u) {
       const entries = historyEntries();
       const entry = { url: pageURL.href, state: null };
       setEntry(entry, state, u);
@@ -5096,11 +5094,33 @@
       entries.splice(historyState.index + 1, entries.length, entry);
       historyState.index = entries.length - 1;
     },
-    replaceState(state, t, u) { setEntry(historyEntries()[historyState.index], state, u); },
+    replaceState(state, u) { setEntry(historyEntries()[historyState.index], state, u); },
+  };
+  // The interface's members act on the History they are called on, which may be another window's:
+  // YouTube's history manager calls an about:blank frame's pushState on the page's `history` (GAPS
+  // B203). Each window's History is found in a map all the runtime's windows share.
+  const histories = share("histories", () => new WeakMap());
+  const historyOf = (self, name) => {
+    const impl = histories.get(self);
+    if (!impl) throw new TypeError(`'${name}' called on an object that does not implement interface History.`);
+    return impl;
+  };
+  const History = { History: function () { throw new TypeError("Illegal constructor."); } }.History;
+  for (const [key, desc] of Object.entries(Object.getOwnPropertyDescriptors({
+    get length() { return historyOf(this, "length").length(); },
+    get scrollRestoration() { return historyOf(this, "scrollRestoration").scrollRestoration(); },
+    set scrollRestoration(v) { historyOf(this, "scrollRestoration").setScrollRestoration(v); },
+    get state() { return historyOf(this, "state").state(); },
+    go(delta = 0) { historyOf(this, "go").go(delta); },
+    back() { historyOf(this, "back").go(-1); },
+    forward() { historyOf(this, "forward").go(1); },
+    pushState(state, t, u) { historyOf(this, "pushState").pushState(state, u); },
+    replaceState(state, t, u) { historyOf(this, "replaceState").replaceState(state, u); },
   }))) Object.defineProperty(History.prototype, key, { ...desc, enumerable: true });
   Object.defineProperty(History.prototype, Symbol.toStringTag, { value: "History", configurable: true });
   define(global, "History", History);
   const pageHistory = Object.create(History.prototype);
+  histories.set(pageHistory, historyImpl);
   const traverseHistory = History.prototype.go;
   define(global, "history", pageHistory);
 
