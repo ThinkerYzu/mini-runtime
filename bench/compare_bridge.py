@@ -36,6 +36,8 @@ from a local server, and the two logs it writes to `window.__log` are diffed. Th
   message-ports MessagePorts from Gecko's dom/messagechannel (GAPS D97): holding, the clone, transfers and
                 their errors, close(), and ports to, from and between workers and a shared worker
   frame-transfers  cross-window MessagePort and ArrayBuffer transfer, queue/reply delivery and invalid transfers
+  frame-names   browsing-context names: a frame's window.name from its name attribute, renames, navigation,
+                and window[name] / frames[name] lookup, including reCAPTCHA's sibling lookup through its parent
   blob-workers  blob: URLs (Gecko's BlobURLProtocolHandler, GAPS D98): fetch and XHR of them, and classic,
                 module and shared workers from blob: and data: URLs
   plugins       navigator.plugins and navigator.mimeTypes (Gecko's nsPluginArray, GAPS D99)

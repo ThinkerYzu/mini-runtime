@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8"><title>Frames in the viewer</title>
+<style>body{font:15px system-ui;margin:16px}iframe{display:block;width:420px;height:150px;margin:8px 0;border:1px solid #888}</style>
+<p id="state">parent</p>
+<p>Replies <output id="replies">0</output>, bytes <output id="bytes">none</output>, focus <output id="focus">none</output></p>
+<iframe id="child" name="c-demo" src="frames-child.html"></iframe>
+<iframe id="inline" name="a-demo" srcdoc="<style>p{color:rgb(10,120,30)}</style><p id=inline-text>Inline frame</p><button id=inline-button>Inline</button> <output id=inline-count>0</output><script>window.__frameStarts=(window.__frameStarts||0)+1;let n=0;document.getElementById('inline-button').onclick=e=>{document.getElementById('inline-count').textContent=++n+' '+(e.view===window)}</script>"></iframe>
+<script>
+// A trusted click in the child sends a MessagePort and an ArrayBuffer here; the reply goes back
+// over the port, and both documents show it (bench/test_http_viewer.py, test_frames*).
+window.__frameStarts = (window.__frameStarts || 0) + 1;
+let replies = 0;
+addEventListener("message", e => {
+  if (e.ports.length !== 1 || !(e.data.buffer instanceof ArrayBuffer)) return;
+  const bytes = new Uint8Array(e.data.buffer);
+  const sum = bytes.reduce((a, b) => a + b, 0);
+  replies++;
+  document.getElementById("replies").textContent = String(replies);
+  document.getElementById("bytes").textContent = Array.from(bytes).join(",");
+  document.getElementById("focus").textContent = String(document.activeElement === document.getElementById("child")) + " " +
+    String(e.source === document.getElementById("child").contentWindow);
+  e.ports[0].postMessage({reply: replies, sum});
+});
+</script>

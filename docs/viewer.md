@@ -67,7 +67,9 @@ Click, type and scroll in the viewer. Close its tab or use Disconnect, then open
 
 Snapshots include DOM/shadow trees, adopted stylesheets, CSSOM edits, form state and scroll position, followed by incremental updates. Input waits for snapshot, viewport and scroll synchronization. Accepted input runs before a replacement snapshot, including its handlers and microtasks. Slow viewers resynchronize after the bounded update journal overflows (128 batches or 8 MiB). If page execution falls behind, the viewer shows **Processing input** and pauses new input before its queue fills. It resumes automatically after queued input reaches the runtime, preserving the connection and accepted events. The browser also pauses immediately when a synchronous event burst fills its local batch, including pointer entry into deeply nested content. Reload the viewer tab to load updated viewer JavaScript.
 
-Page scripts execute in the runtime. The viewer renders a sandboxed copy with page scripts disabled. Its document keeps the service's origin; it never acquires the source site's privileges. Linked images and styles load using the viewer browser's resource policies and cookies, separately from the API process. Nested frame documents and 2D canvas pixels are not mirrored.
+Page scripts execute in the runtime. The viewer renders a sandboxed copy with page scripts disabled. Its document keeps the service's origin; it never acquires the source site's privileges. Linked images and styles load using the viewer browser's resource policies and cookies, separately from the API process. 2D canvas pixels are not mirrored.
+
+Frames whose documents run in the page's runtime are shown with those documents. This covers same-origin frames, `srcdoc` frames, `about:blank` frames and frames nested inside them. Each one is a frame of the sandboxed copy, so page scripts stay disabled there too. Clicks, typing and other input inside a frame reach the frame's own window in the runtime. A frame whose document runs elsewhere (another site, in a separate runtime) shows an empty box. Frames of another origin of the same site cannot open in this mode. Scrolling inside a frame, media and WebGL in frames, and frame navigation from the viewer are not supported.
 
 ### Wikipedia interactions
 
@@ -111,7 +113,7 @@ python3 tools/view.py https://www.google.com/
 
 Search form submission and immediate startup redirects are supported. Isolated live searches have opened results on javascript.com, Wikipedia, MDN, W3Schools and web.dev and returned with toolbar Back. Google can instead redirect a search to its unusual-traffic verification page; reference Firefox on the same network has received the same check.
 
-The viewer cannot complete the CAPTCHA in this flow: nested frame documents are not displayed, and live reCAPTCHA frame initialization can also fail or time out. Cross-window MessagePort and ArrayBuffer transfers are supported, including the port transfer used during reCAPTCHA initialization. Rebuild and restart the service to load runtime fixes; reconnecting alone keeps the running executable. These compatibility fixes do not remove Google's traffic verification.
+reCAPTCHA's frames are of `www.google.com`, the page's own origin, so the viewer displays them and passes your input to them. Their names and named lookup (`parent.frames[name]`) work, as do the cross-window MessagePort and ArrayBuffer transfers they use. Solving the check is left to you; the runtime does not automate it. Whether Google then accepts the result is not established. Rebuild and restart the service to load runtime fixes; reconnecting alone keeps the running executable. These compatibility fixes do not remove Google's traffic verification.
 
 ### Media and replay quota
 

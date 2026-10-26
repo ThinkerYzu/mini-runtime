@@ -39,6 +39,7 @@ bench/bridge-cases/fetch.html
 bench/bridge-cases/fragment-context.html
 bench/bridge-cases/frame-layout-child.html
 bench/bridge-cases/frame-layout.html
+bench/bridge-cases/frame-names.html
 bench/bridge-cases/geolocation.html
 bench/bridge-cases/history.html
 bench/bridge-cases/hit-test-child.html
@@ -225,6 +226,9 @@ bench/http-viewer/demo.css
 bench/http-viewer/demo.html
 bench/http-viewer/editable.html
 bench/http-viewer/fragment-scroll.html
+bench/http-viewer/frames-child.css
+bench/http-viewer/frames-child.html
+bench/http-viewer/frames.html
 bench/http-viewer/index.html
 bench/http-viewer/media-demo.html
 bench/http-viewer/media-origin.html

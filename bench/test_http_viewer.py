@@ -1052,6 +1052,8 @@ class Runtime(unittest.TestCase):
             page = "media-demo.html"
         if self._testMethodName.startswith(("test_navigation", "test_browser_navigation")):
             page = "nav-start"
+        if self._testMethodName in ("test_frames", "test_browser_frames"):
+            page = "frames.html"
         if self._testMethodName in ("test_fragment_scroll", "test_browser_fragment_scroll"):
             page = "fragment-scroll.html#initial"
         resources = self._testMethodName in ("test_media_resources", "test_browser_media_resources")
@@ -1143,6 +1145,8 @@ class Runtime(unittest.TestCase):
                 visit(child)
             if spec.get("r"):
                 visit(spec["r"])
+            if isinstance(spec.get("f"), dict):
+                visit(spec["f"])
 
         for batch in batches:
             for op in batch["ops"]:
@@ -1187,6 +1191,77 @@ class Runtime(unittest.TestCase):
         self.assertEqual(result["viewer"]["events"], 1)
         self.assertTrue(any("hibernated_at" in item for item in result["interactive_hibernations"]))
         self.assertEqual((self.root / "logs" / "demo.log").read_text().count("DEMO_STARTED"), 1)
+
+    def frame_snapshot(self, ready):
+        """A snapshot once `ready(elements by id)` holds (the frames load after the page)."""
+        end = time.monotonic() + 15
+        while True:
+            session, batches = self.snapshot()
+            elements = {dict(s.get("a", [])).get("id"): s for s in self.specs(batches).values() if "n" in s}
+            if ready(elements) or time.monotonic() > end:
+                return session, batches, elements
+            self.call("detach", {"session": session})
+            time.sleep(0.3)
+
+    def test_frames(self):
+        text = lambda elements, name: "".join(c.get("t", "") for c in elements[name]["c"] if isinstance(c, dict))
+        loaded = lambda e: "nested-button" in e and "inline-text" in e and text(e, "child-state").startswith("child ")
+        a, batches, elements = self.frame_snapshot(loaded)
+        self.assertTrue(loaded(elements), sorted(k for k in elements if k))
+        # each frame element carries its runtime document; ids are unique across the documents
+        child, inline, nested = elements["child"]["f"], elements["inline"]["f"], elements["nested"]["f"]
+        self.assertTrue(child["u"].endswith("/frames-child.html"), child["u"])
+        self.assertTrue(inline["u"].endswith("/frames.html"), inline["u"])  # about:srcdoc resolves against its parent
+        self.assertEqual(nested["u"], child["u"])
+        ids = []
+        def collect(spec):
+            if isinstance(spec, dict):
+                ids.append(spec["i"])
+                for c in spec.get("c", []):
+                    collect(c)
+                collect(spec.get("r"))
+                collect(spec.get("f"))
+        for batch in batches:
+            for op in batch["ops"]:
+                if op[0] == "c":
+                    for spec in op[2]:
+                        collect(spec)
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(text(elements, "child-state"), "child true")  # reCAPTCHA's sibling lookup by name
+        send = elements["send"]["i"]
+        seq = batches[-1]["seq"]
+        self.call("input", {"session": a, "ack": seq, "events": []})
+        def click(name, task, outer):
+            return {"type": "click", "iface": "MouseEvent", "target": elements[name]["i"], "active": elements[name]["i"],
+                    "outerActive": elements[outer]["i"], "task": task, "bubbles": True, "cancelable": True, "composed": True,
+                    "fields": {"button": 0}}
+        self.call("input", {"session": a, "ack": seq, "events": [click("send", 1, "child"), click("inline-button", 2, "inline"),
+                                                               click("nested-button", 3, "child")]})
+        done = lambda e: text(e, "child-reply").startswith("reply 1") and text(e, "nested-count") != "0"
+        self.call("detach", {"session": a})
+        b, batches, elements = self.frame_snapshot(done)
+        self.assertEqual(text(elements, "child-reply"), "reply 1 sum 6 owned true detached true")
+        self.assertEqual(text(elements, "replies"), "1")
+        self.assertEqual(text(elements, "bytes"), "1,2,3")
+        self.assertEqual(text(elements, "focus"), "true true")
+        self.assertEqual(text(elements, "inline-count"), "1 true")
+        self.assertEqual(text(elements, "nested-count"), "1 true true")
+        # reconnected: the same documents and ids, and input still reaches the frame's window
+        self.assertEqual(elements["child"]["f"]["i"], child["i"])
+        self.assertEqual(elements["send"]["i"], send)
+        seq = batches[-1]["seq"]
+        self.call("input", {"session": b, "ack": seq, "events": []})
+        self.call("input", {"session": b, "ack": seq, "events": [click("send", 4, "child")]})
+        self.call("detach", {"session": b})
+        _, batches, elements = self.frame_snapshot(lambda e: text(e, "child-reply").startswith("reply 2"))
+        self.assertEqual(text(elements, "child-reply"), "reply 2 sum 7 owned true detached true")
+        self.call("stop", {})
+        self.proc.wait(timeout=10)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual(self.proc.returncode, 0, result)
+        self.assertEqual(result["js_errors"], 0, result)
+        self.assertFalse(result["unsupported_ops"], result)
+        self.assertEqual(result["bridge_tab"], {"made": False})
 
     def test_input_before_reconnect_snapshot(self):
         log = self.root / "logs" / "demo.log"
@@ -1524,6 +1599,78 @@ class Runtime(unittest.TestCase):
         self.assertEqual(result["js_errors"],0,result)
         self.assertFalse(result["unsupported_ops"],result)
         self.assertEqual(result["bridge_tab"],{"made":False})
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_frames(self):
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        browser.start_session()
+        text = lambda id: browser.execute_script("return document.getElementById(arguments[0])?.textContent ?? null", script_args=(id,))
+        connected = lambda: browser.execute_script('return document.getElementById("status").textContent.startsWith("Connected")')
+        def into(*path):
+            """The copy's document, then each frame of `path` in it."""
+            browser.switch_to_frame()
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            for id in path:
+                browser.switch_to_frame(browser.find_element("id", id))
+        def reached(path, id, value):
+            def check():
+                try:
+                    into(*path)
+                    return text(id) == value
+                except Exception:
+                    return False
+            self.until(check)
+        try:
+            browser.set_context("content")
+            browser.navigate(self.viewer_url)
+            self.until(connected)
+            reached(["child"], "child-state", "child true")
+            reached(["child", "nested"], "nested-count", "0")
+            # scripts disabled in every copied document; frames have no src; the service's origin
+            into()
+            service = browser.execute_script("return window.origin")
+            self.assertEqual(browser.execute_script("return [window.__frameStarts ?? null, document.getElementById('child').hasAttribute('src'),"
+                                                    " document.getElementById('child').contentWindow.origin]"), [None, False, service])
+            for path in (["child"], ["inline"], ["child", "nested"]):
+                into(*path)
+                self.assertIsNone(browser.execute_script("return window.__frameStarts ?? null"), path)
+            into("child")
+            self.assertEqual(browser.execute_script('return getComputedStyle(document.getElementById("child-state")).color'), "rgb(150, 40, 20)")
+            into("inline")
+            self.assertEqual(browser.execute_script('return getComputedStyle(document.getElementById("inline-text")).color'), "rgb(10, 120, 30)")
+            # trusted clicks in each displayed frame reach the window that owns the node
+            into("child")
+            browser.find_element("id", "send").click()
+            reached(["child"], "child-reply", "reply 1 sum 6 owned true detached true")
+            reached([], "focus", "true true")
+            self.assertEqual([text("replies"), text("bytes")], ["1", "1,2,3"])
+            into("inline")
+            browser.find_element("id", "inline-button").click()
+            reached(["inline"], "inline-count", "1 true")
+            into("child", "nested")
+            browser.find_element("id", "nested-button").click()
+            reached(["child", "nested"], "nested-count", "1 true true")
+            # reconnect: the frames' state is the runtime's, and input still reaches them
+            browser.switch_to_frame()
+            browser.find_element("id", "detach").click()
+            browser.find_element("id", "attach").click()
+            self.until(connected)
+            reached(["child"], "child-reply", "reply 1 sum 6 owned true detached true")
+            browser.find_element("id", "send").click()
+            reached(["child"], "child-reply", "reply 2 sum 7 owned true detached true")
+            reached([], "replies", "2")
+        finally:
+            firefox_exit.close(browser)
+        self.call("stop", {})
+        self.proc.wait(timeout=10)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual(self.proc.returncode, 0, result)
+        self.assertEqual(result["js_errors"], 0, result)
+        self.assertFalse(result["unsupported_ops"], result)
+        self.assertEqual(result["bridge_tab"], {"made": False})
 
     @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_shadow_adopted(self):

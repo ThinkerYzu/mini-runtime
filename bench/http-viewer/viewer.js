@@ -162,11 +162,83 @@ async function send() {
 }
 const XHTML = "http://www.w3.org/1999/xhtml";
 const childrenOf = n => n.localName === "template" ? n.content : n;
+// (a frame document's own base URL, from its spec; the page's is pageURL)
+const docBases = new WeakMap();
 function resourceBase(head) {
   let base = Array.from(head.children).find(n => n.localName === "base" && n.id === "__mrt_base");
   if (!base) { base = head.ownerDocument.createElement("base"); base.id = "__mrt_base"; head.prepend(base); }
-  base.href = pageURL;
+  base.href = docBases.get(head.ownerDocument) ?? pageURL;
   return base;
+}
+function adoptedStyle(doc, text) {
+  let el = doc.getElementById("__mrt_adopted");
+  if (!el && doc.head) { el = doc.createElement("style"); el.id = "__mrt_adopted"; doc.head.append(el); }
+  if (el) el.textContent = text;
+}
+// Frames (DESIGN "Frame documents in the HTTP viewer"): a frame element of the copy is a real
+// <iframe> or <frame> with no src. Its document inherits the copy's sandbox and CSP (no scripts, no
+// navigation) and the service's origin, so this page builds it. A frame document's spec is built in
+// a document of its own until its element is in the copy (attachFrames), then its nodes move into the
+// frame's document; if the browser replaces that document, they move again.
+let frameStates = new WeakMap(), docStates = new Map(), pendingFrames = new Set();
+function frameDocument(el, spec) {
+  const old = frameStates.get(el);
+  if (old) { pendingFrames.delete(old); frameStates.delete(el); }
+  if (spec === null) { el.contentDocument?.replaceChildren(); return; }
+  let state;
+  if (typeof spec === "number") {
+    state = docStates.get(spec);
+    if (!state) throw new Error("Missing mirror document " + spec);
+    if (frameStates.get(state.el) === state) frameStates.delete(state.el);
+    state.el = el;
+  } else {
+    const holder = frame.contentDocument.implementation.createHTMLDocument("");
+    holder.replaceChildren();
+    docBases.set(holder, spec.u);
+    nodes.set(spec.i, holder); ids.set(holder, spec.i);
+    state = {el, id: spec.i, doc: holder, url: spec.u, adopted: spec.adopted || ""};
+    docStates.set(spec.i, state);
+    holder.append(...spec.c.map(c => build(c, holder)));
+  }
+  frameStates.set(el, state);
+  pendingFrames.add(state);
+}
+function moveFrameDocument(state, doc) {
+  // (a document's replaceChildren() refuses a second root element before it removes the first)
+  const moved = Array.from(state.doc.childNodes);
+  doc.replaceChildren();
+  doc.append(...moved);
+  docBases.set(doc, state.url);
+  nodes.set(state.id, doc); ids.set(doc, state.id);
+  state.doc = doc;
+  if (doc.head) resourceBase(doc.head);
+  adoptedStyle(doc, state.adopted);
+  if (doc.defaultView) listen(doc.defaultView);
+}
+// (again after a move: a frame inside a moved document has its own document only once that one is
+// in its frame)
+function attachFrames() {
+  for (let moved = true; moved; ) {
+    moved = false;
+    for (const state of pendingFrames) {
+      const doc = state.el.isConnected ? state.el.contentDocument : null;
+      if (!doc) continue;
+      if (doc !== state.doc) moveFrameDocument(state, doc);
+      pendingFrames.delete(state);
+      moved = true;
+      watchFrameLoad(state);
+    }
+  }
+}
+const frameLoads = new WeakSet();
+function watchFrameLoad(state) {
+  const el = state.el;
+  if (frameLoads.has(el)) return;
+  frameLoads.add(el);
+  el.addEventListener("load", () => {
+    const current = frameStates.get(el), doc = el.contentDocument;
+    if (current && doc && doc !== current.doc) moveFrameDocument(current, doc);
+  });
 }
 // Stylesheets are inserted by the mirror after the frame's own load event.
 // Track their load/error explicitly; sheet presence alone misses @import loads.
@@ -228,7 +300,10 @@ function attrs(node, list) {
   watchResource(node);
   if (node.localName === "link" && list.some(([name, value]) =>
       (name.toLowerCase() === "href" || (name.toLowerCase() === "rel" && !node.sheet)) && node.getAttribute(name) !== value)) resourceDone.delete(node);
-  const allowed = list.filter(([name]) => !name.toLowerCase().startsWith("on") && !["srcdoc", "sandbox", "http-equiv"].includes(name.toLowerCase()));
+  // (a frame's src would load the page's URL in the copy: its document comes from the runtime)
+  const frameEl = ["iframe", "frame"].includes(node.localName);
+  const allowed = list.filter(([name]) => !name.toLowerCase().startsWith("on") && !["srcdoc", "sandbox", "http-equiv"].includes(name.toLowerCase()) &&
+    !(frameEl && name.toLowerCase() === "src"));
   const want = new Set(allowed.map(([name]) => name));
   for (const name of node.getAttributeNames()) if (!want.has(name)) node.removeAttribute(name);
   for (const [name, value] of allowed) {
@@ -238,24 +313,24 @@ function attrs(node, list) {
   }
   if (node.localName === "script") node.setAttribute("type", "application/x-mrt-inert");
 }
-function build(spec) {
+function build(spec, doc = frame.contentDocument) {
   if (typeof spec === "number") {
     if (!nodes.has(spec)) throw new Error("Missing mirror node " + spec);
     return nodes.get(spec);
   }
-  const doc = frame.contentDocument;
   let node;
   if (spec.t !== undefined) node = doc.createTextNode(spec.t);
   else if (spec.m !== undefined) node = doc.createComment(spec.m);
   else {
-    // Nested browsing contexts and plugins cannot become another bridge here.
-    const name = ["iframe", "frame", "object", "embed", "base"].includes(spec.n) ? "mrt-placeholder" : spec.n;
+    // Plugins cannot become another bridge here; frames show their runtime documents (frameDocument).
+    const name = ["object", "embed", "base"].includes(spec.n) ? "mrt-placeholder" : spec.n;
     node = (name === "canvas" && gpu?.canvases.get(spec.i)) ||
       (["video", "audio"].includes(name) && media?.elements.get(spec.i)) || doc.createElementNS(spec.s || XHTML, name);
     attrs(node, spec.a);
     if (name === "head" && node.namespaceURI === XHTML) resourceBase(node);
-    childrenOf(node).append(...spec.c.map(build));
+    childrenOf(node).append(...spec.c.map(c => build(c, doc)));
     if (spec.r) shadow(node, spec.r);
+    if (spec.f !== undefined && ["iframe", "frame"].includes(name) && node.namespaceURI === XHTML) frameDocument(node, spec.f);
   }
   nodes.set(spec.i, node); ids.set(node, spec.i);
   if (node.localName === "video" || node.localName === "audio") media?.track(spec.i, node);
@@ -264,7 +339,7 @@ function build(spec) {
 function shadow(host, spec) {
   const root = host.shadowRoot || host.attachShadow({mode: "open"});
   nodes.set(spec.i, root); ids.set(root, spec.i);
-  root.replaceChildren(...spec.c.map(build));
+  root.replaceChildren(...spec.c.map(c => build(c, host.ownerDocument)));
   mirrorAdoptedSheets(root, spec.adopted);
   watch(root); media?.watchRoot(root);
 }
@@ -334,6 +409,7 @@ function apply(batch) {
     historyState = null;
     holdScroll(0, 0);
     nodes = new Map([[0, doc]]); ids = new WeakMap([[doc, 0]]); rules = new Map();
+    frameStates = new WeakMap(); docStates = new Map(); pendingFrames = new Set();
   }
   for (const [kind, id, arg, fourth] of batch.ops) {
     if (kind === "u") { pageURL = id; continue; }
@@ -343,22 +419,24 @@ function apply(batch) {
       historyControls();
       continue;
     }
-    if (kind === "adopted") {
-      let el = doc.getElementById("__mrt_adopted");
-      if (!el && doc.head) { el = doc.createElement("style"); el.id = "__mrt_adopted"; doc.head.append(el); }
-      if (el) el.textContent = id;
-      continue;
-    }
+    if (kind === "adopted") { adoptedStyle(doc, id); continue; }
     if (kind === "scroll") { scrollSeq = id; holdScroll(arg, fourth); continue; }
     if (kind === "m") { media?.apply(id); continue; }
     const node = nodes.get(id);
     if (!node) throw new Error("Unknown mirror node " + id);
     if (kind === "c") {
-      const wanted = arg.map(build);
-      if (node === doc) {
-        for (const child of Array.from(doc.childNodes)) if (child.nodeType !== 10) child.remove();
-        doc.append(...wanted);
+      const owner = node.nodeType === 9 ? node : node.ownerDocument;
+      const wanted = arg.map(c => build(c, owner));
+      if (node.nodeType === 9) {
+        for (const child of Array.from(node.childNodes)) if (child.nodeType !== 10) child.remove();
+        node.append(...wanted);
       } else syncChildren(node, wanted);
+    } else if (kind === "f") frameDocument(node, arg);
+    else if (kind === "fu" || kind === "fadopted") {
+      const state = docStates.get(id);
+      if (!state) throw new Error("Unknown mirror document " + id);
+      if (kind === "fu") { state.url = arg; docBases.set(state.doc, arg); if (state.doc.head) resourceBase(state.doc.head); }
+      else { state.adopted = arg; adoptedStyle(state.doc, arg); }
     } else if (kind === "a") attrs(node, arg);
     else if (kind === "d") { if (node.data !== arg) node.data = arg; }
     else if (kind === "r") shadow(node, arg);
@@ -367,6 +445,7 @@ function apply(batch) {
     else if (kind === "s") { rules.set(id, arg); setRules(node, arg); }
   }
   if (doc.head) resourceBase(doc.head);
+  attachFrames();
   // Moving a stylesheet reparses it; restore script-inserted rules after moves.
   for (const [id, list] of rules) if (nodes.get(id)?.isConnected) setRules(nodes.get(id), list);
   restoreEditableSelection(doc, caret);
@@ -390,18 +469,21 @@ function capture(e) {
   if (inputPending && ["keydown", "keypress", "beforeinput"].includes(e.type)) e.preventDefault();
   if (!ready || !session) return;
   if ((e.type === "scroll" || e.type === "scrollend") && target !== 0) return;
-  const doc = frame.contentDocument, win = frame.contentWindow;
+  // (the page's document, or a frame's: its own focus and selection; the page's scroll)
+  const top = frame.contentDocument, win = frame.contentWindow;
+  const doc = path[0].nodeType === 9 ? path[0] : path[0].ownerDocument, view = doc.defaultView || win;
   const iface = Object.prototype.toString.call(e).slice(8, -1), fields = {};
   for (let i = iface; OWN[i]; i = OWN[i][0]) for (const f of OWN[i][1]) fields[f] = e[f];
   const ev = {type: e.type, iface, target, active: idOf(doc.activeElement), task: ++task, bubbles: e.bubbles,
     cancelable: e.cancelable, composed: e.composed, fields, scroll: [win.scrollX, win.scrollY], scrollSeq, at: Date.now()};
+  if (doc !== top) ev.outerActive = idOf(top.activeElement);
   if ((e.type === "scroll" || e.type === "scrollend") && scrollEcho) {
     if (scrollEcho[0] === win.scrollX && scrollEcho[1] === win.scrollY) return;
     scrollEcho = null;
   }
   if ("relatedTarget" in e) ev.related = idOf(e.relatedTarget);
   if (iface === "SubmitEvent") ev.submitter = idOf(e.submitter);
-  const sel = win.getSelection();
+  const sel = view.getSelection();
   if (sel) ev.selection = [sel.type, sel.toString(), idOf(sel.anchorNode), sel.anchorOffset, idOf(sel.focusNode), sel.focusOffset];
   const caret = editableSelection(doc);
   if (caret) {
@@ -429,6 +511,12 @@ function capture(e) {
     frame.style.pointerEvents = "none";
     connectedStatus(); historyControls();
   }
+}
+// a frame document's window: its events are captured as the page's
+function listen(win) {
+  if (watched.has(win)) return;
+  watched.add(win);
+  for (const type of TYPES) win.addEventListener(type, capture, true);
 }
 function watch(root) {
   if (watched.has(root)) return;

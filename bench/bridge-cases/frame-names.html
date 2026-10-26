@@ -1,0 +1,61 @@
+<!doctype html><meta charset="utf-8"><title>frame names</title>
+<body><script>
+(async () => {
+  window.__log = [];
+  const log = (name, value) => __log.push(name + ' ' + value);
+  const loaded = f => new Promise(resolve => f.addEventListener('load', resolve, {once: true}));
+  const frame = (name, srcdoc) => {
+    const f = document.createElement('iframe');
+    if (name !== null) f.setAttribute('name', name);
+    if (srcdoc !== undefined) f.srcdoc = srcdoc;
+    document.body.append(f);
+    return f;
+  };
+  const a = frame('a-1');
+  log('initial name', a.contentWindow.name);
+  log('named access', window['a-1'] === a.contentWindow);
+  log('frames named access', frames['a-1'] === a.contentWindow);
+  log('in window', 'a-1' in window);
+  log('own property', Object.prototype.hasOwnProperty.call(window, 'a-1'));
+  log('unknown name', typeof window['no-such-frame'] + ' ' + ('no-such-frame' in window));
+  log('properties object', Object.prototype.toString.call(Object.getPrototypeOf(Window.prototype)) + ' ' + (Object.getPrototypeOf(Object.getPrototypeOf(Window.prototype)) === EventTarget.prototype));
+  const shadowed = frame('document');
+  log('window property wins', window.document instanceof Document);
+  a.name = 'b-1';
+  log('attribute renames', a.contentWindow.name + ' ' + (window['a-1'] === undefined) + ' ' + (window['b-1'] === a.contentWindow));
+  a.contentWindow.name = 'c-1';
+  log('script renames', (window['c-1'] === a.contentWindow) + ' ' + a.getAttribute('name') + ' ' + (window['b-1'] === undefined));
+  const navigated = loaded(a);
+  a.srcdoc = '<p>navigated</p>';
+  await navigated;
+  log('name kept across navigation', a.contentWindow.name + ' ' + (window['c-1'] === a.contentWindow));
+  a.removeAttribute('name');
+  log('attribute removed', JSON.stringify(a.contentWindow.name) + ' ' + (window['c-1'] === undefined));
+  const first = frame('same'), second = frame('same');
+  log('first in tree order', (window.same === first.contentWindow) + ' ' + (second.contentWindow.name === 'same'));
+  first.remove();
+  log('next after removal', window.same === second.contentWindow);
+  const host = document.createElement('div');
+  document.body.append(host);
+  const inShadow = document.createElement('iframe');
+  inShadow.name = 'in-shadow';
+  host.attachShadow({mode: 'open'}).append(inShadow);
+  log('shadow frame not named', typeof window['in-shadow'] + ' ' + inShadow.contentWindow.name);
+  window.assigned = 1;
+  const later = frame('assigned');
+  log('expando wins', window.assigned);
+  // reCAPTCHA's lookup: a frame finds its sibling through its parent by a name made from its own
+  const anchor = frame('a-xyz', '<p>anchor</p><script>addEventListener("message", e => parent.__log.push("sibling message " + e.data + " " + (e.source === parent.frames["c-xyz"])))<\/script>');
+  await loaded(anchor);
+  const bframe = frame('c-xyz', '<script>const s = parent.frames[window.name.replace(/^c-/, "a-")]; parent.__log.push("sibling found " + (s === parent.document.getElementsByName("a-xyz")[0].contentWindow)); s.postMessage("hello", "*")<\/script>');
+  await loaded(bframe);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  log('nested name', (() => {
+    const inner = bframe.contentDocument.createElement('iframe');
+    inner.name = 'inner';
+    bframe.contentDocument.body.append(inner);
+    return (bframe.contentWindow.inner === inner.contentWindow) + ' ' + (window.inner === undefined) + ' ' + (bframe.contentWindow.frames.inner.parent === bframe.contentWindow);
+  })());
+  __log.push('done');
+})().catch(e => __log.push('unexpected ' + e));
+</script>

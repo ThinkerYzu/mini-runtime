@@ -2462,7 +2462,7 @@ static void SetAttr(uint32_t self, const std::string& name, const std::string& v
   mrt_dom_set_attr(tJs->host, self, name.data(), name.size(), value.data(), value.size());
   slotWatch.Finish(tJs->cx);
   EnqueueAttributeChanged(self, name, std::move(old), value);
-  if ((name == "src" || name == "srcdoc") && !tJs->windows.empty()) FrameAttributeChanged(self, name);
+  if ((name == "src" || name == "srcdoc" || name == "name") && !tJs->windows.empty()) FrameAttributeChanged(self, name);
   if (name == "src") ImageSrcChanged(self);
 }
 
@@ -2500,6 +2500,7 @@ NATIVE(Element_removeAttribute) {
   slotWatch.Finish(cx);
   if (old) EnqueueAttributeChanged(self, name, std::move(old), std::nullopt);
   if (old && name == "src") ImageSrcChanged(self);
+  if (old && name == "name" && !tJs->windows.empty()) FrameAttributeChanged(self, name);
   args.rval().setUndefined();
   return true;
 }
@@ -6280,13 +6281,15 @@ static void FramesInserted(JSContext* cx, uint32_t aRoot) {
 
 // A frame element's src or srcdoc changed while it has a window: it navigates (Gecko's
 // nsGenericHTMLFrameElement::AfterSetAttr calls LoadSrc): the parent window's __mrt.frameSrcChanged.
+// Its name, set or removed: the frame's browsing-context name becomes it (AfterSetAttr's
+// BrowsingContext::SetName): the parent window's __mrt.frameNameChanged.
 static void FrameAttributeChanged(uint32_t aElement, const std::string& aName) {
   if (!IsFrameElement(aElement) || !OpenWindowOfFrame(aElement)) return;
   JSContext* cx = tJs->cx;
   JS::RootedObject parent(cx, WindowGlobalForDoc(mrt_dom_node_document(tJs->host, aElement)));
   JS::RootedValue el(cx);
   if (!parent || !Wrap(cx, aElement, &el)) return;
-  CallWindowHook(cx, parent, "frameSrcChanged", JS::HandleValueArray(el));
+  CallWindowHook(cx, parent, aName == "name" ? "frameNameChanged" : "frameSrcChanged", JS::HandleValueArray(el));
 }
 
 // Close window `aIndex` and the windows of the frames in its document.

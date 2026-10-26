@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8"><title>Child frame</title>
+<link rel="stylesheet" href="frames-child.css">
+<p id="child-state">child</p>
+<button id="send">Send</button> <output id="child-reply">none</output>
+<iframe id="nested" name="nested" srcdoc="<button id=nested-button>Nested</button> <output id=nested-count>0</output><script>window.__frameStarts=(window.__frameStarts||0)+1;let n=0;document.getElementById('nested-button').onclick=e=>{document.getElementById('nested-count').textContent=++n+' '+(e.view===window)+' '+(parent.frames.nested===window)}</script>"></iframe>
+<script>
+window.__frameStarts = (window.__frameStarts || 0) + 1;
+// reCAPTCHA's lookup: its sibling through the parent, by a name made from this frame's own
+const sibling = parent.frames[window.name.replace(/^c-/, "a-")];
+document.getElementById("child-state").textContent = "child " + (sibling === parent.document.getElementById("inline").contentWindow);
+let clicks = 0;
+document.getElementById("send").addEventListener("click", e => {
+  const channel = new MessageChannel();
+  const buffer = new Uint8Array([++clicks, 2, 3]).buffer;
+  const owned = e.isTrusted && e.view === window && e.target.ownerDocument === document && document.activeElement === e.target;
+  channel.port1.onmessage = m => {
+    document.getElementById("child-reply").textContent = "reply " + m.data.reply + " sum " + m.data.sum + " owned " + owned + " detached " + (buffer.byteLength === 0);
+  };
+  parent.postMessage({buffer}, "*", [channel.port2, buffer]);
+});
+</script>

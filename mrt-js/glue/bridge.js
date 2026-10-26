@@ -535,7 +535,21 @@
   // isSecureContext and crossOriginIsolated are defined by the C++ layer from the realm's options
   // (Firefox's answers for the page, mrt_js_new)
   // top, parent, frames, opener and closed are prelude.js's (the windows' relations)
-  define(global, "name", "");
+  // window.name, the window's browsing-context name, kept by window in the windows' shared state so a
+  // parent finds its frames by name whatever their origin (the named properties, "frames by name"
+  // below). A frame's starts as its element's name attribute; Gecko keeps it in the BrowsingContext,
+  // so a frame's navigations keep it (openSameSiteFrame carries it to a new window). `version` counts
+  // the changes, for the parents' caches.
+  const contextNames = share("contextNames", () => ({ byWindow: new WeakMap(), version: 0 }));
+  const setContextName = (win, name) => { contextNames.byWindow.set(win, String(name)); contextNames.version++; };
+  if (!isWorker) {
+    if (isFrameWindow) {
+      // (the initial about:blank is of its parent's origin, so its frame element is visible here)
+      const frame = __mrtWindows(3);
+      if (frame) setContextName(global, Element.prototype.getAttribute.call(frame, "name") ?? "");
+    }
+    getter(global, "name", () => contextNames.byWindow.get(global) ?? "", v => setContextName(global, v));
+  }
 
   // ---- base64 and text encoding ----
 
@@ -8287,11 +8301,17 @@
   //   ["adopted", text]             the document's adopted sheets, as one <style> in the tab
   //   ["v", id, value, checked]     a form control's value and checkedness, once they are not what
   //                                 its attributes and text give
+  //   ["f", id, spec or null]       (HTTP viewer) the document of a frame element now, or none
+  //   ["fu", id, url]               (HTTP viewer) a frame document's base URL, changed since
+  //   ["fadopted", id, text]        (HTTP viewer) a frame document's adopted sheets, as one <style>
+  // In the HTTP viewer a frame element of a window of this runtime carries its document as `f`:
+  // {i, u (its base URL), c (its children), adopted}, walked by that window's own code (the copy has
+  // each node once, so the windows share this state, and ids are unique across the documents).
   // A walk rather than a MutationObserver: it also sees CSSOM edits and nodes changed while out of
   // the document, and puts no observer beside the page's. <noscript> is a comment (the tab has JS
   // off, and would show its contents). The document is id 0.
   // (`byId`: each id's node at the last flush, for the owner's input, which names nodes by id)
-  const mirror = { on: false, next: 1, ids: new WeakMap(), snapshot: null, pendingSnapshot: null, sent: new WeakMap(), byId: new Map(), last: -Infinity, href: "", adopted: "", history: "", historyAck: 0 };
+  const mirror = share("viewerMirror", () => ({ on: false, next: 1, ids: new WeakMap(), snapshot: null, pendingSnapshot: null, sent: new WeakMap(), byId: new Map(), last: -Infinity, href: "", adopted: "", history: "", historyAck: 0 }));
   const XHTML = "http://www.w3.org/1999/xhtml";
   // the DOM's own methods, as they were before the page's scripts, which may wrap them
   const domOwn = (proto, name) => {
@@ -8400,6 +8420,8 @@
     if (env.httpViewer && isMedia(node)) mediaLink.els.set(i, new WeakRef(node));
     const a = mirrorAttrs(node);
     const rec = { i, a: JSON.stringify(a), e: cssomEdits.get(node) || 0, k: "" };
+    // (a frame's node: its window runs the viewer's input on it)
+    if (isFrameWindow) rec.w = global;
     mirror.sent.set(node, rec);
     mirror.byId.set(i, node);
     const spec = { i, n: node.localName, a };
@@ -8407,6 +8429,11 @@
     const kids = Array.from(mirrorKids(node), k => mirrorSpec(k, ops));
     rec.k = kids.map(k => (typeof k === "number" ? k : k.i)).join(",");
     spec.c = kids;
+    if (env.httpViewer && isFrameElement(node)) {
+      const doc = mirrorFrame(node, ops);
+      rec.f = doc ? (typeof doc === "number" ? doc : doc.i) : 0;
+      if (doc) spec.f = doc;
+    }
     if (rec.e) ops.push(["s", i, sheetRules(node)]);
     if (isControl(node)) { rec.v = controlDefault(node); mirrorControl(node, rec, ops); }
     const root = shadowOf(node);
@@ -8456,6 +8483,14 @@
       const e = cssomEdits.get(node) || 0;
       if (e !== rec.e) { rec.e = e; ops.push(["s", rec.i, sheetRules(node)]); }
       if (rec.v !== undefined) mirrorControl(node, rec, ops);
+      if (rec.f !== undefined) {
+        // its document walked; a new one (the frame navigated) replaces the copy's
+        const at = ops.push(null) - 1;
+        const doc = mirrorFrame(node, ops);
+        const i = doc ? (typeof doc === "number" ? doc : doc.i) : 0;
+        if (i !== rec.f || (doc && typeof doc === "object")) { rec.f = i; ops[at] = ["f", rec.i, doc]; }
+        else ops.splice(at, 1);
+      }
       const root = shadowOf(node);
       if (root && !mirror.sent.has(root)) {
         const at = ops.push(null) - 1;
@@ -8472,7 +8507,7 @@
     mirrorChildren(node, rec, ops);
   }
   function mirrorChildren(parent, rec, ops) {
-    const kids = Array.from(parent === document ? Array.from(childNodes(parent)).filter(k => k.nodeType === 1 || k.nodeType === 8) : mirrorKids(parent));
+    const kids = Array.from(parent.nodeType === 9 ? Array.from(childNodes(parent)).filter(k => k.nodeType === 1 || k.nodeType === 8) : mirrorKids(parent));
     const ids = kids.map(k => { const r = mirror.sent.get(k); return r ? r.i : 0; }).join(",");
     if (ids !== rec.k) {
       // (its place taken first: the new nodes' own ops, as their sheets' rules, come after it)
@@ -8483,6 +8518,23 @@
     }
     for (const k of kids) if (mirror.sent.has(k)) mirrorWalk(k, ops);
   }
+  // The HTTP viewer's frames: a frame element's window, if this runtime has it, mirrors its own
+  // document (its __mrt.mirrorDocument): the document's spec when the copy does not have it yet, else
+  // its id, walked for what changed; null without a window here (a frame of another runtime's: the
+  // copy's frame stays empty).
+  const isFrameElement = el => el.namespaceURI === XHTML && (el.localName === "iframe" || el.localName === "frame");
+  function mirrorFrame(el, ops) {
+    const win = frameWindowOf(el);
+    if (!win || crossOriginWindowsHeld.has(win) || __mrtWindows(5, win)) return null;
+    return win.__mrt.mirrorDocument(ops);
+  }
+  // a document's base URL as the copy's <base> gives it: an about:blank or about:srcdoc frame's is its
+  // parent's (it has no URL of its own to resolve against)
+  const mirrorBase = () => {
+    if (!isFrameWindow || pageURL.protocol !== "about:") return pageURL.href;
+    try { return global.parent.__mrt.mirrorBase(); } catch (e) { return pageURL.href; }
+  };
+  const adoptedText = () => (document.adoptedStyleSheets || []).map(sh => Array.from(sh.cssRules, r => r.cssText).join("\n")).join("\n");
   // what changed since the last flush, sent to the bridge tab; at most every 100 ms unless `force`
   function mirrorFlush(force) {
     if (!mirror.on) return 0;
@@ -8504,7 +8556,7 @@
         ops.push(["history", historyState.index, count, mirror.historyAck]);
       }
     }
-    const adopted = (document.adoptedStyleSheets || []).map(sh => Array.from(sh.cssRules, r => r.cssText).join("\n")).join("\n");
+    const adopted = adoptedText();
     if (adopted !== mirror.adopted) { mirror.adopted = adopted; ops.push(["adopted", adopted]); }
     // the page scrolled since: the tab moves there, after the nodes it scrolls to
     if (rootScroll.sent !== rootScroll.seq) { rootScroll.sent = rootScroll.seq; ops.push(["scroll", rootScroll.seq, rootScroll.x, rootScroll.y]); }
@@ -8835,6 +8887,14 @@
     const target = node(ev.target);
     if (!target) { input.missed++; return; }
     input.events++;
+    // a node of a frame's document: its window dispatches the event, with its own focus, selection
+    // and default actions (the frame element is focused here); not the page's scroll
+    const owner = mirror.sent.get(target)?.w;
+    if (owner && owner !== global) {
+      if ("outerActive" in ev) focus.element = node(ev.outerActive);
+      owner.__mrt.fireViewerInput(Object.assign({}, ev, { scroll: null }));
+      return;
+    }
     focus.element = node(ev.active);
     if (env.httpViewer && ev.type === "input" && Array.isArray(ev.editable) && ev.editSelection) {
       const host = node(ev.editSelection.host);
@@ -9086,6 +9146,32 @@
     // that relative stylesheets, images and links resolve, and no <noscript> (scripts ran here; the
     // render tab has JS off and would show it).
     // the bridge tab as the page's screen (realsite --interactive)
+    // (HTTP viewer) this window's document for its frame element's spec (mirrorFrame): its spec the
+    // first time, else its id once walked for what changed
+    mirrorDocument(ops) {
+      const doc = document;
+      let rec = mirror.sent.get(doc);
+      if (rec) {
+        mirror.byId.set(rec.i, doc);
+        mirrorChildren(doc, rec, ops);
+        const base = mirrorBase(), adopted = adoptedText();
+        if (base !== rec.u) { rec.u = base; ops.push(["fu", rec.i, base]); }
+        if (adopted !== rec.adopted) { rec.adopted = adopted; ops.push(["fadopted", rec.i, adopted]); }
+        return rec.i;
+      }
+      const i = mirror.ids.get(doc) || mirror.next++;
+      mirror.ids.set(doc, i);
+      rec = { i, k: "", u: mirrorBase(), adopted: adoptedText(), w: global };
+      mirror.sent.set(doc, rec);
+      mirror.byId.set(i, doc);
+      const kids = Array.from(childNodes(doc)).filter(k => k.nodeType === 1 || k.nodeType === 8).map(k => mirrorSpec(k, ops));
+      rec.k = kids.map(k => (typeof k === "number" ? k : k.i)).join(",");
+      return { i, u: rec.u, c: kids, adopted: rec.adopted };
+    },
+    mirrorBase,
+    // (HTTP viewer) an input event on a node of this frame's document, from the page's window's
+    // queue (fireInput), run here as the page's window runs its own
+    fireViewerInput(ev) { fireInput(ev); },
     mirrorNodeId(node) {
       let id = mirror.ids.get(node);
       if (!id) { id = mirror.next++; mirror.ids.set(node, id); }
@@ -9213,6 +9299,8 @@
   const CROSS_ORIGIN_ALLOWED = new Set(["postMessage", "closed", "length", "frames", "top", "parent", "window", "self", "location", "opener",
     "close", "focus", "blur", "then", Symbol.toPrimitive, Symbol.toStringTag]);
   const crossOriginWindows = new Map();
+  // (the proxies above: windows of other runtimes)
+  const crossOriginWindowsHeld = new WeakSet();
   // A cross-origin window's location: Gecko's cross-origin Location, which allows setting href and
   // calling replace() only (CrossOriginProperties in the HTML spec); `navigate` gets the URL. The
   // frames do not navigate yet (GAPS B52), so both do nothing.
@@ -9279,6 +9367,7 @@
       has(_, name) { return CROSS_ORIGIN_ALLOWED.has(name); },
     });
     crossOriginWindows.set(target, proxy);
+    crossOriginWindowsHeld.add(proxy);
     return proxy;
   }
   // A URL's site (scheme and registrable domain), as Firefox's eTLD service gives it, or null; asked
@@ -9312,8 +9401,11 @@
     let r;
     try { r = bridge("frameContext", { url, width, height }); } catch (e) { unblock(); return; }
     if (!r || r.loaded === false) { unblock(); return; }
+    const before = frameWindowOf(el);
     const win = __mrtWindows(10, el, r.body, r.origin, r.secure, r.isolated);
     if (!win) { unblock(); return; }
+    // the browsing context keeps its name
+    if (before) setContextName(win, contextNames.byWindow.get(before) ?? "");
     win.__mrt.setBridgeContext(r.ctx, foreignAncestor);
     win.__mrt.frameNavigated(r.url);
     win.__mrt.runDocument(() => {
@@ -9326,6 +9418,8 @@
   // same properties as crossOriginWindow's; postMessage queues the message as a task of the target
   // window (PostMessageEvent), on the loop the runtime's windows share.
   const inProcessViews = new WeakMap();
+  // each view's window, for this window's own code (frames by name, the viewer's mirror)
+  const viewTargets = new WeakMap();
   function crossOriginView(target) {
     let view = inProcessViews.get(target);
     if (view) return view;
@@ -9363,16 +9457,92 @@
           if (frame !== undefined) return frame;
         }
         if (name === "then" || typeof name === "symbol") return undefined;
+        // its frames by name (CrossOriginGetOwnPropertyHelper's child navigable target names)
+        const child = typeof name === "string" ? target.__mrt.namedFrame(name) : undefined;
+        if (child !== undefined) return asSeenHere(child);
         throw new DOMException(`Permission denied to access property "${String(name)}" on cross-origin object`, "SecurityError");
       },
       set(_, name, value) {
         if (name === "location") return true;
         throw new DOMException(`Permission denied to access property "${String(name)}" on cross-origin object`, "SecurityError");
       },
-      has(_, name) { return CROSS_ORIGIN_ALLOWED.has(name); },
+      has(_, name) { return CROSS_ORIGIN_ALLOWED.has(name) || (typeof name === "string" && target.__mrt.namedFrame(name) !== undefined); },
     });
     inProcessViews.set(target, view);
+    viewTargets.set(view, target);
     return view;
+  }
+  // ---- frames by name (window[name], HTML's document-tree child navigable target name property set) ----
+  //
+  // A frame element's window as this window's code has it: the window itself, also when it is of
+  // another origin (not the view a page gets), or, for a frame in another runtime, its proxy; null
+  // without one.
+  const qsaOwn = isWorker ? null : Document.prototype.querySelectorAll, attrOwn = isWorker ? null : Element.prototype.getAttribute;
+  function frameWindowOf(el) {
+    const id = crossFrameOf.get(el);
+    if (id !== undefined) return crossOriginWindow(id);
+    const v = __mrtWindows(0, el);
+    return v ? viewTargets.get(v) || v : null;
+  }
+  // a window of this runtime as this window sees it (a proxy of another runtime's is already a view)
+  const asSeenHere = win => (crossOriginWindowsHeld.has(win) ? win : __mrtWindows(12, win));
+  // This document's frames by browsing-context name, the first in tree order for each, leaving out a
+  // frame of another origin whose name is not its element's name attribute (a name its own script
+  // set). Made again when the DOM or a name changed.
+  const namedFrames = { generation: -1, version: -1, map: new Map() };
+  function framesByName() {
+    const generation = __mrtRefresh(1);
+    if (generation === namedFrames.generation && contextNames.version === namedFrames.version) return namedFrames.map;
+    const map = new Map();
+    for (const el of Reflect.apply(qsaOwn, document, ["iframe, frame"])) {
+      const win = frameWindowOf(el);
+      if (!win) continue;
+      const remote = crossOriginWindowsHeld.has(win);
+      const attr = Reflect.apply(attrOwn, el, ["name"]) ?? "";
+      const name = remote ? attr : contextNames.byWindow.get(win) ?? "";
+      if (name === "" || map.has(name)) continue;
+      if (!remote && __mrtWindows(12, win) !== win && name !== attr) continue;
+      map.set(name, win);
+    }
+    Object.assign(namedFrames, { generation, version: contextNames.version, map });
+    return map;
+  }
+  // Gecko's WindowProperties object between Window.prototype and EventTarget.prototype
+  // (WindowNamedPropertiesHandler): window[name] is the frame of that name, unless the window or
+  // Window.prototype has the property. (Named elements are not here: GAPS B52.) Only after a frame
+  // was inserted: a global name the page does not define looks here.
+  let hasFrames = false;
+  if (!isWorker) {
+    const windowProto = Object.getPrototypeOf(global);
+    const above = Object.getPrototypeOf(windowProto);
+    const named = name => (hasFrames && typeof name === "string" ? framesByName().get(name) : undefined);
+    const properties = Object.create(above);
+    Object.defineProperty(properties, Symbol.toStringTag, { value: "WindowProperties", configurable: true });
+    Object.setPrototypeOf(windowProto, new Proxy(properties, {
+      get(target, name, receiver) {
+        const win = named(name);
+        return win !== undefined ? asSeenHere(win) : Reflect.get(target, name, receiver);
+      },
+      has(target, name) { return named(name) !== undefined || Reflect.has(target, name); },
+      getOwnPropertyDescriptor(target, name) {
+        const win = named(name);
+        return win !== undefined ? { value: asSeenHere(win), writable: true, enumerable: false, configurable: true } : Reflect.getOwnPropertyDescriptor(target, name);
+      },
+    }));
+    const frameInserted = global.__mrt.frameInserted;
+    Object.assign(global.__mrt, {
+      frameInserted(el) { hasFrames = true; return frameInserted(el); },
+      // a frame of this runtime by name, for another window's cross-origin view of this one
+      namedFrame(name) {
+        const win = hasFrames ? framesByName().get(String(name)) : undefined;
+        return win === undefined || crossOriginWindowsHeld.has(win) ? undefined : win;
+      },
+      // the C++ layer's: a frame element's name attribute was set or removed
+      frameNameChanged(el) {
+        const win = frameWindowOf(el);
+        if (win && !crossOriginWindowsHeld.has(win)) setContextName(win, Reflect.apply(attrOwn, el, ["name"]) ?? "");
+      },
+    });
   }
   // The driver's "open": a frame of this runtime's site whose embedder is in another runtime (a page's
   // second frame of a site, or a frame of the page's site inside another site's frame) becomes a root
