@@ -89,6 +89,8 @@ Longer playback stops once the default media replay retention quota (32 MiB, 10,
 
 Reattaching a playing YouTube page can still disconnect with **Stale media backend**. This is tracked separately from the search-to-video stall. Restarting the service starts a fresh live page.
 
+Starting the viewer directly at a YouTube watch URL does not play: the page loads before any viewer attaches, while media capabilities are negative, and the player shows **Your browser can't play this video** (its Learn more link opens YouTube's supported-browsers page). Start at YouTube's home or a results page and open the video from there. After a search the results appear, but the status line and Back still show the home page.
+
 ### Navigation and history
 
 Links, forms, `location` assignments, reloads and history traversal can load another document. The driver loads it into a new runtime and switches the viewer after it is ready. Same-document history changes keep the runtime. The service URL and sandbox frame stay on the viewer service throughout.
