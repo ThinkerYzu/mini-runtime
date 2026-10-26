@@ -79,6 +79,17 @@ The socket carries the same calls with about a fifth of the bytes when idle and 
 
 `bench/http_viewer.py` owns transport; `bench/http-viewer/viewer.js` adapts the browser; `mrt-js/glue/bridge.js` and `mrt-js/src/bin/realsite.rs` own runtime mirroring and input. See [viewer operation](viewer.md) for supported behavior and [architecture](architecture.md) for process responsibilities.
 
+## Service discovery runs
+
+`tools/discovery_run.py` writes the private records of a service discovery run (a plain-Firefox reference journey, then the same journey in the standalone viewer): run manifest and step results, timestamped events, screenshots, URLs, DOM, consoles, the identity of the runtime and API binaries actually running, and the launcher's logs, copied before cleanup. Runs live in `$XDG_DATA_HOME/mini-runtime/discovery/runs/`, outside the repository. Its module docstring lists the CLI (`recover`, `link-bug`, `report`, `check`).
+
+```sh
+python3 tools/test_discovery_run.py
+VIEWER_BROWSER=1 FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python tools/test_discovery_run.py
+```
+
+The first form needs only the release binaries and a local HTTP server: step recording rules, run ids, redaction, dedicated profiles, running binary identity, launcher files kept after the launcher's own are deleted, and runs ended by SIGTERM or recovered after SIGKILL. The second adds a reference and viewer journey with a deliberate failure: screenshot, consoles, logs, a blocked dependent step and a bug linked after the run. Set `DISCOVERY_SCHEMAS` to a directory of the discovery record schemas to check every run's records against them as well; that needs `jsonschema` 4.18 or later, and when the browser environment's is older the test runs the check with `DISCOVERY_CHECK_PYTHON` (default `/usr/bin/python3`).
+
 ## Additional checks
 
 ```sh

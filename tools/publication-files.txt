@@ -973,6 +973,7 @@ parser/vendor/nsHtml5UTF16BufferCppSupplement.h
 parser/vendor/nsHtml5UTF16BufferHSupplement.h
 tools/build.py
 tools/check-publication.py
+tools/discovery_run.py
 tools/engine/source.json
 tools/engine/test_build.py
 tools/publication-files.txt
@@ -982,6 +983,7 @@ tools/sdk/requirements-browser.txt
 tools/sdk/sdk.lock.json
 tools/sdk/sdk.py
 tools/sdk/test_sdk.py
+tools/test_discovery_run.py
 tools/test_view.py
 tools/view.py
 vendor/stylo/.cargo-ok
