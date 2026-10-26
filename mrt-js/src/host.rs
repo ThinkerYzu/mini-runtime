@@ -53,6 +53,10 @@ pub struct Host {
     /// The page document's root scroll offset in app units: the bridge tab's (realsite --interactive),
     /// or where the page's scrollTo put it (bridge.js). Frame documents do not scroll.
     root_scroll: (i32, i32),
+    /// Each scrolled element scroll container's offset in app units (bridge.js, task 0bec4), and a
+    /// number that changes with any of them, for the boxes read at them.
+    element_scroll: std::collections::BTreeMap<NodeId, (i32, i32)>,
+    element_scroll_generation: u64,
     /// The frame documents whose size changed since the last resize steps (Gecko's
     /// PresShell::mResizeEventPending), in the order the changes were found.
     resizes: Vec<NodeId>,
@@ -174,6 +178,8 @@ struct PresShell {
     boxes: Option<(u64, Option<(i32, i32)>, HashMap<NodeId, [f64; 8]>)>,
     /// The root scroll offset the boxes were read at (app units): they are in client coordinates.
     boxes_scroll: (i32, i32),
+    /// The element scroll generation the boxes were read at.
+    boxes_element_scroll: u64,
     /// The size each frame element of the document gives its own document, from the last flush.
     subdocument_sizes: HashMap<NodeId, (i32, i32)>,
 }
@@ -190,6 +196,7 @@ impl PresShell {
             kept_sheets: None,
             boxes: None,
             boxes_scroll: (0, 0),
+            boxes_element_scroll: 0,
             subdocument_sizes: HashMap::new(),
         }
     }
@@ -216,6 +223,8 @@ impl Host {
             sheet_generations: HashMap::new(),
             shells,
             root_scroll: (0, 0),
+            element_scroll: Default::default(),
+            element_scroll_generation: 0,
             resizes: Vec::new(),
             bridge: false,
             bridge_calls: 0,
@@ -301,6 +310,17 @@ impl Host {
         // CSSPixel::ToAppUnits: NSToCoordRoundWithClamp
         let au = |v: f64| (v * 60.0 + 0.5).floor().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
         self.root_scroll = (au(x), au(y));
+    }
+
+    /// An element scroll container's scroll offset, in CSS px (bridge.js's element scroll state): the
+    /// next layout read flushes with it (PresShellFrames::ApplyElementScroll); (0, 0) forgets it.
+    pub fn set_element_scroll(&mut self, id: NodeId, x: f64, y: f64) {
+        let au = |v: f64| (v * 60.0 + 0.5).floor().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+        let offset = (au(x), au(y));
+        let old = if offset == (0, 0) { self.element_scroll.remove(&id) } else { self.element_scroll.insert(id, offset) };
+        if old.unwrap_or((0, 0)) != offset {
+            self.element_scroll_generation += 1;
+        }
     }
 
     /// Forget the boxes of the last flushes.
@@ -520,7 +540,9 @@ impl Host {
             return false;
         };
         let scroll = if doc == mrt_style::mrt_dom::DOCUMENT { self.root_scroll } else { (0, 0) };
-        let stale = shell.boxes.as_ref().is_none_or(|b| b.0 != self.generation || b.1 != Some(viewport)) || shell.boxes_scroll != scroll;
+        let stale = shell.boxes.as_ref().is_none_or(|b| b.0 != self.generation || b.1 != Some(viewport))
+            || shell.boxes_scroll != scroll
+            || shell.boxes_element_scroll != self.element_scroll_generation;
         if stale && shell.boxes.is_some() && self.flushes >= self.max_flushes {
             self.stale_reads += 1;
         } else if stale {
@@ -537,6 +559,7 @@ impl Host {
                 frame_ops: std::mem::take(&mut shell.frame_ops),
                 flush: self.flushes,
                 scroll,
+                element_scroll: self.element_scroll.iter().map(|(&n, &o)| (n, o)).collect(),
             };
             if shell.layout_thread.is_none() {
                 self.layout_threads += 1;
@@ -561,6 +584,7 @@ impl Host {
             };
             shell.boxes = Some((self.generation, Some(viewport), boxes));
             shell.boxes_scroll = scroll;
+            shell.boxes_element_scroll = self.element_scroll_generation;
             shell.subdocument_sizes = subdocuments;
             self.update_frame_sizes(doc);
         }
@@ -968,6 +992,8 @@ struct LayoutRequest {
     flush: usize,
     /// The root scroll offset in app units (PresShellFrames::SetRootScrollPosition).
     scroll: (i32, i32),
+    /// The element scroll containers' offsets in app units (PresShellFrames::ApplyElementScroll).
+    element_scroll: Vec<(NodeId, (i32, i32))>,
 }
 
 /// What it gives back: the DOM, and unless the layout panicked the boxes and what the restyle
@@ -1367,7 +1393,8 @@ fn read_boxes(frames: &PresShellFrames) -> HashMap<NodeId, [f64; 8]> {
         .into_iter()
         .map(|(node, frame)| {
             let (x, y, w, h) = BoundingClientRectInCSSPixels(frame);
-            let (cw, ch, sw, sh) = ClientAreaAndScrollSize(frame);
+            // (a scrolled container's, from before its children moved)
+            let (cw, ch, sw, sh) = frames.mElementScrollSizes.get(&node).copied().unwrap_or_else(|| ClientAreaAndScrollSize(frame));
             (node, [x, y, w, h, cw, ch, sw, sh])
         })
         .collect()
@@ -1413,6 +1440,8 @@ fn layout_flush(state: &mut LayoutState, request: LayoutRequest) -> (LayoutReply
         let t1 = std::time::Instant::now();
         // the removals, with the styles and frames as they were (Gecko destroys frames at the removal)
         if let Some(f) = frames.as_mut() {
+            // (the scrolled children back in place while their frames are still those it moved)
+            f.UndoElementScroll();
             f.BeginChanges();
             for op in &request.frame_ops {
                 if let FrameOp::Removed(r) = op {
@@ -1439,6 +1468,7 @@ fn layout_flush(state: &mut LayoutState, request: LayoutRequest) -> (LayoutReply
         let f = frames.as_mut().unwrap();
         // (applied by ReflowDirty, after the reflow)
         f.mLayout.mRootScrollPosition = nsPoint::new(request.scroll.0, request.scroll.1);
+        f.mElementScrollPositions = request.element_scroll.iter().map(|&(n, (x, y))| (n, nsPoint::new(x, y))).collect();
         let counts = f.TakeDynamicChangeCounts();
         let t5 = std::time::Instant::now();
         f.ReflowDirty(full_reflow && !rebuilt);
@@ -1603,7 +1633,7 @@ pub fn replay_flushes(dir: &std::path::Path, range: std::ops::RangeInclusive<usi
                 let mut state = LayoutState::default();
                 for (i, &flush) in list.iter().enumerate() {
                     let r = crate::flushrec::read_flush(&dir, flush);
-                    let request = LayoutRequest { doc: mrt_style::mrt_dom::DOCUMENT, viewport: crate::viewport(), dom: r.dom, link_sheets: r.sheets, ops: r.ops, frame_ops: r.frame_ops, flush, scroll: (0, 0) };
+                    let request = LayoutRequest { doc: mrt_style::mrt_dom::DOCUMENT, viewport: crate::viewport(), dom: r.dom, link_sheets: r.sheets, ops: r.ops, frame_ops: r.frame_ops, flush, scroll: (0, 0), element_scroll: Vec::new() };
                     let (_, panicked) = layout_flush(&mut state, request);
                     if panicked {
                         return (i + 1, true);
@@ -2563,6 +2593,15 @@ extern "C" fn mrt_dom_window_document_changed(h: *mut c_void, old_doc: u32, doc:
 extern "C" fn mrt_dom_window_closed(h: *mut c_void, doc: u32) {
     let h = unsafe { host(h) };
     h.window_closed(doc);
+}
+
+/// An element scroll container's offset in CSS px (Host::set_element_scroll).
+#[unsafe(no_mangle)]
+extern "C" fn mrt_dom_set_element_scroll(h: *mut c_void, id: u32, x: f64, y: f64) {
+    let h = unsafe { host(h) };
+    if valid(h, id) {
+        h.set_element_scroll(id, x, y);
+    }
 }
 
 /// The page's root scroll offset in CSS px (Host::set_root_scroll).

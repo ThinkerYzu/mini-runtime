@@ -1,0 +1,37 @@
+<!doctype html><meta charset="utf-8"><title>Element scroll</title>
+<style>
+ body{margin:0;font:16px sans-serif}
+ #feed{position:absolute;top:40px;left:20px;width:300px;height:300px;overflow-y:scroll;scroll-snap-type:y mandatory}
+ #feed>div{height:300px;scroll-snap-align:start;background:#eef;border-bottom:1px solid #99c;box-sizing:border-box}
+ #controls{position:fixed;top:0;left:0}
+ #mse{position:absolute;top:40px;left:360px}
+</style>
+<div id="controls"><button id="next">Next</button><button id="play">Play</button><button id="reload">Reload</button></div>
+<div id="feed"><div>0</div><div>1</div><div>2</div><div>3</div><div>4</div></div>
+<video id="mse" muted loop width="320" height="180"></video>
+<pre id="state" style="position:absolute;top:360px;left:20px"></pre>
+<script>
+// Task 0bec4 (B208): YouTube's shorts feed is a snapping element scroll container, and its Next
+// button calls scrollIntoView({behavior: "smooth"}) on the next item, then reads the feed's offset.
+// The page's scroll of the feed must reach the viewer's copy, and the owner's scroll of the copy the
+// page. The next short plays in the same <video>, given a new MediaSource: the new load starts at 0.
+const feed=document.getElementById('feed'), video=document.getElementById('mse');
+const log=s=>console.log(s);
+const active=()=>Math.round(feed.scrollTop/300);
+document.getElementById('next').onclick=()=>feed.children[active()+1]?.scrollIntoView({behavior:'smooth',block:'nearest'});
+feed.addEventListener('scrollend',()=>log('FEED '+active()+' '+feed.scrollTop));
+const once=(o,t)=>new Promise(resolve=>o.addEventListener(t,resolve,{once:true}));
+async function load(){
+ const ms=new MediaSource();video.src=URL.createObjectURL(ms);await once(ms,'sourceopen');
+ const sb=ms.addSourceBuffer('video/mp4; codecs="avc1.42c01e"');
+ sb.appendBuffer(await fetch('../bridge-cases/media-v.mp4').then(r=>r.arrayBuffer()));await once(sb,'updateend');
+}
+load().then(()=>log('MEDIA_READY'),e=>log('MEDIA_ERROR '+e));
+document.getElementById('play').onclick=()=>video.play().then(()=>log('PLAY_OK'),e=>log('PLAY_ERROR '+e.name));
+document.getElementById('reload').onclick=()=>{
+ log('BEFORE_LOAD '+(video.currentTime>1));
+ load().then(()=>log('RELOADED'));
+ log('AFTER_LOAD '+video.currentTime+' '+video.paused);
+};
+setInterval(()=>document.getElementById('state').textContent=[active(),video.currentTime.toFixed(1),video.paused].join(' '),100);
+</script>

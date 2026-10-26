@@ -427,6 +427,12 @@ for (const op of ops) {
     globalThis.mirrorScrollEcho = before[0] === after[0] && before[1] === after[1] ? null : after;
     continue;
   }
+  if (kind === "escroll") {
+    // an element scroll container the page scrolled (id, x, y, seq): the tab's copy goes there
+    const el = nodes.get(id);
+    if (el) el.scrollTo({ left: arg, top: op[3], behavior: "instant" });
+    continue;
+  }
   if (kind === "m") {
     // what the page asked of its media (MEDIA_SETUP), after the nodes it names
     try { globalThis.mediaApply(id); } catch (e) { mediaRefused.count++; if (mediaRefused.examples.length < 5) mediaRefused.examples.push(id.o + " " + e.name + ": " + e.message); }

@@ -1192,6 +1192,8 @@ class Runtime(unittest.TestCase):
             page = "media-large-replay.html"
         if self._testMethodName == "test_browser_media_audible_resume":
             page = "media-audible-resume.html"
+        if self._testMethodName == "test_browser_element_scroll":
+            page = "element-scroll.html"
         if self._testMethodName.startswith(("test_navigation", "test_browser_navigation")):
             page = "nav-start"
         if self._testMethodName == "test_browser_images_journey":
@@ -2374,6 +2376,51 @@ class Runtime(unittest.TestCase):
             print("VIEWER STATUS", browser.execute_script(status), browser.execute_script(
                 f'const v={video};return v&&[v.paused,v.muted,v.currentTime,v.readyState,v.error&&v.error.message]'),
                 "RUNTIME MEDIA LOG", log.read_text()[-8000:]); raise
+        finally:
+            firefox_exit.close(browser)
+        self.call("stop", {})
+        self.proc.wait(timeout=20)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual((result["exit"], result["js_errors"]), (0, 0), result)
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_element_scroll(self):
+        # Task 0bec4 (B208): YouTube's Next short. The page scrolls a snapping element scroll
+        # container with scrollIntoView and reads its offset; the viewer's copy follows, and the
+        # owner's own scroll of the copy reaches the page. A new MediaSource on a playing <video>
+        # (the next short in the same element) starts at 0, paused, as Firefox's load does.
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        log = self.root / "logs" / "demo.log"
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        browser.start_session()
+        status = 'return document.getElementById("status").textContent'
+        feed = 'return document.getElementById("feed").scrollTop'
+        try:
+            browser.set_context("content"); browser.navigate(self.viewer_url)
+            self.until(lambda: "MEDIA_READY" in log.read_text(), timeout=20)
+            self.until(lambda: browser.execute_script(status).startswith("Connected"))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            self.until(lambda: browser.execute_script('return window.frameElement.style.pointerEvents === "auto"'))
+            browser.find_element("id", "next").click()
+            self.until(lambda: "FEED 1 300" in log.read_text())
+            self.until(lambda: browser.execute_script(feed) == 300)
+            # the owner scrolls the copy (a trusted scroll event in Firefox, snapped)
+            browser.execute_script('document.getElementById("feed").scrollTo(0, 600)')
+            self.until(lambda: "FEED 2 600" in log.read_text())
+            browser.find_element("id", "next").click()
+            self.until(lambda: "FEED 3 900" in log.read_text())
+            self.until(lambda: browser.execute_script(feed) == 900)
+            browser.find_element("id", "play").click()
+            self.until(lambda: "PLAY_OK" in log.read_text())
+            self.until(lambda: float(browser.execute_script('return document.getElementById("state").textContent').split()[1]) > 1.5)
+            browser.find_element("id", "reload").click()
+            self.until(lambda: "RELOADED" in log.read_text())
+            self.assertIn("BEFORE_LOAD true", log.read_text())
+            self.assertIn("AFTER_LOAD 0 true", log.read_text())
+        except Exception:
+            print("RUNTIME LOG", log.read_text()[-4000:]); raise
         finally:
             firefox_exit.close(browser)
         self.call("stop", {})

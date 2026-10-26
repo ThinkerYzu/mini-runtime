@@ -522,6 +522,53 @@
   }
   const scrollTo = (args, what) => { const [l, t] = scrollArgs(args, what); pageScrollTo(l ?? rootScroll.x, t ?? rootScroll.y); };
   const scrollBy = (args, what) => { const [l, t] = scrollArgs(args, what); pageScrollTo(rootScroll.x + (l ?? 0), rootScroll.y + (t ?? 0)); };
+  // Element scroll containers (task 0bec4): an element with a frame whose `overflow` is not `visible`
+  // or `clip` (other than the scrolling element) scrolls its content by its own offset in CSS px,
+  // kept here per element and shared by the windows (`byElement`: {x, y, seq, sent, posted}). Layout
+  // reads follow it (__mrtElementScroll: the container's children moved by minus it). A change by the
+  // page posts one `scroll` and `scrollend` at the element for the next refresh tick, not bubbling
+  // (ScrollContainerFrame::FireScrollEvent for an element), and numbers itself (`seq`) for the tab
+  // (mirrorFlush's "escroll" op); the tab's own scrolling of the element comes back as its scroll
+  // event with the offset (fireViewerInput). Instant only, no snapping (GAPS B155).
+  const elementScroll = share("elementScroll", () => ({ byElement: new Map(), seq: 0, changed: false }));
+  const isScrollContainer = el => {
+    if (isWorker || !el.isConnected || isScrollingElement(el) || __mrtBorderBox(el) === null) return false;
+    const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+    const scrolls = v => v !== "visible" && v !== "clip";
+    return !!style && (scrolls(style.overflowX) || scrolls(style.overflowY));
+  };
+  const elementOffset = el => elementScroll.byElement.get(el) || { x: 0, y: 0 };
+  const setElementScroll = (el, x, y) => {
+    let state = elementScroll.byElement.get(el);
+    if (!state) elementScroll.byElement.set(el, state = { x: 0, y: 0, seq: 0, sent: 0, posted: false });
+    state.x = x;
+    state.y = y;
+    __mrtElementScroll(el, x, y);
+    if (shared.intersectionObservers) shared.intersectionObservers.scheduled = true;
+    return state;
+  };
+  // ScrollContainerFrame::ScrollToCSSPixels on an element's, instant: clamped to its scroll range
+  // (scroll size less client size), whole pixels as pageScrollTo
+  function elementScrollTo(el, x, y, round = Math.round) {
+    const [cw, ch, sw, sh] = __mrtClientScroll(el);
+    x = round(Math.min(Math.max(0, x), Math.max(0, sw - cw)));
+    y = round(Math.min(Math.max(0, y), Math.max(0, sh - ch)));
+    const old = elementOffset(el);
+    if (x === old.x && y === old.y) return;
+    const state = setElementScroll(el, x, y);
+    state.seq = ++elementScroll.seq;
+    elementScroll.changed = true;
+    if (state.posted) return;
+    state.posted = true;
+    global.__mrt.requestScroll(() => {
+      state.posted = false;
+      for (const [type, cancelable] of [["scroll", true], ["scrollend", false]]) {
+        const e = new UIEvent(type, { bubbles: false, cancelable, view: null });
+        Object.assign(e, { isTrusted: true });
+        el.dispatchEvent(e);
+      }
+    });
+  }
   {
     // [Replaceable] attributes: a page's assignment makes an own value
     const replaceable = (name, get) => getter(global, name, get, v => define(global, name, v));
@@ -2584,20 +2631,53 @@
   });
   if (!isWorker) for (const p of ["clientTop", "clientLeft"]) getter(Element.prototype, p, () => 0, () => {});
   // The scrolling element scrolls the document (Element::GetScrollTop and SetScrollTop, Element::Scroll
-  // reach the root scroll frame); other elements do not scroll here: 0, and nothing moves (GAPS B155).
+  // reach the root scroll frame); an element scroll container scrolls by its own offset (elementScroll,
+  // task 0bec4); other elements read 0 and do not move.
   if (!isWorker) {
-    getter(Element.prototype, "scrollTop", function () { return isScrollingElement(this) ? rootScroll.y : 0; },
-      function (v) { if (isScrollingElement(this)) { const n = Number(v); pageScrollTo(rootScroll.x, Number.isFinite(n) ? n : 0); } });
-    getter(Element.prototype, "scrollLeft", function () { return isScrollingElement(this) ? rootScroll.x : 0; },
-      function (v) { if (isScrollingElement(this)) { const n = Number(v); pageScrollTo(Number.isFinite(n) ? n : 0, rootScroll.y); } });
-    define(Element.prototype, "scroll", function scroll() { if (isScrollingElement(this)) scrollTo(arguments, "Element.scroll"); });
-    define(Element.prototype, "scrollTo", function scrollTo_() { if (isScrollingElement(this)) scrollTo(arguments, "Element.scrollTo"); });
-    define(Element.prototype, "scrollBy", function scrollBy_() { if (isScrollingElement(this)) scrollBy(arguments, "Element.scrollBy"); });
-    // Element::ScrollIntoView: the root scroll frame moves so the border box is at the block's start
-    // (the default, and `true`), end (`false`), center or nearest edge, and likewise inline (nearest by
-    // default). Its box in client coordinates is read after a layout flush. Not done: scroll-margin,
-    // scroll-padding, the element's scroll containers (GAPS B155); an element of a frame's document
-    // does not scroll its parent's.
+    const toNumber = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+    getter(Element.prototype, "scrollTop", function () { return isScrollingElement(this) ? rootScroll.y : elementOffset(this).y; },
+      function (v) {
+        if (isScrollingElement(this)) pageScrollTo(rootScroll.x, toNumber(v));
+        else if (isScrollContainer(this)) elementScrollTo(this, elementOffset(this).x, toNumber(v));
+      });
+    getter(Element.prototype, "scrollLeft", function () { return isScrollingElement(this) ? rootScroll.x : elementOffset(this).x; },
+      function (v) {
+        if (isScrollingElement(this)) pageScrollTo(toNumber(v), rootScroll.y);
+        else if (isScrollContainer(this)) elementScrollTo(this, toNumber(v), elementOffset(this).y);
+      });
+    function elementScrollArgs(el, args, what, by) {
+      const [l, t] = scrollArgs(args, what), o = elementOffset(el);
+      if (by) elementScrollTo(el, o.x + (l ?? 0), o.y + (t ?? 0));
+      else elementScrollTo(el, l ?? o.x, t ?? o.y);
+    }
+    define(Element.prototype, "scroll", function scroll() {
+      if (isScrollingElement(this)) scrollTo(arguments, "Element.scroll");
+      else if (isScrollContainer(this)) elementScrollArgs(this, arguments, "Element.scroll", false);
+    });
+    define(Element.prototype, "scrollTo", function scrollTo_() {
+      if (isScrollingElement(this)) scrollTo(arguments, "Element.scrollTo");
+      else if (isScrollContainer(this)) elementScrollArgs(this, arguments, "Element.scrollTo", false);
+    });
+    define(Element.prototype, "scrollBy", function scrollBy_() {
+      if (isScrollingElement(this)) scrollBy(arguments, "Element.scrollBy");
+      else if (isScrollContainer(this)) elementScrollArgs(this, arguments, "Element.scrollBy", true);
+    });
+    // Element::ScrollIntoView: each scroll container the element is in, innermost first, then the root
+    // scroll frame, moves so the border box is at the block's start (the default, and `true`), end
+    // (`false`), center or nearest edge of its scroll port (an element's padding box), and likewise
+    // inline (nearest by default) (PresShell::ScrollFrameIntoView). Its box in client coordinates is
+    // read after a layout flush, so each container sees where the inner ones put it. Not done:
+    // scroll-margin, scroll-padding (GAPS B155); an element of a frame's document does not scroll its
+    // parent's.
+    // (the next ancestor in the flat tree, as the frames are built)
+    const flatParent = el => el.assignedSlot || el.parentElement || (el.parentNode?.nodeType === 11 ? el.parentNode.host : null);
+    const scrollParent = el => {
+      for (let p = flatParent(el); p; p = flatParent(p)) {
+        if (p === p.ownerDocument.documentElement || p === p.ownerDocument.body) return null;
+        if (isScrollContainer(p)) return p;
+      }
+      return null;
+    };
     const align = (pos, start, size, port, how) => {
       const end = start + size;
       if (how === "start") return pos + start;
@@ -2622,6 +2702,12 @@
         }
       }
       if (this.ownerDocument !== document || !this.isConnected || __mrtBorderBox(this) === null) return;
+      for (let c = scrollParent(this); c; c = scrollParent(c)) {
+        const r = this.getBoundingClientRect(), port = c.getBoundingClientRect(), style = c.ownerDocument.defaultView.getComputedStyle(c);
+        const [cw, ch] = __mrtClientScroll(c), o = elementOffset(c);
+        const left = r.left - port.left - (parseFloat(style.borderLeftWidth) || 0), top = r.top - port.top - (parseFloat(style.borderTopWidth) || 0);
+        elementScrollTo(c, align(o.x, left, r.width, cw, inline), align(o.y, top, r.height, ch, block), n => Math.ceil(n - 0.5));
+      }
       const r = this.getBoundingClientRect(), v = viewportSize();
       pageScrollTo(align(rootScroll.x, r.left, r.width, v.width, inline), align(rootScroll.y, r.top, r.height, v.height, block), v => Math.ceil(v - 0.5));
     });
@@ -4654,6 +4740,16 @@
     }
     return a;
   };
+  // HTMLMediaElement::AbortExistingLoads, at the start of a load (load(), a new src) of an element
+  // whose networkState is not EMPTY (a MediaSource attached, or a src): at 0, paused, not seeking,
+  // not ended, HAVE_NOTHING, as the tab's element is then (task 0bec4: YouTube's next short, a new
+  // MediaSource in the same <video>, read the last short's position and played from there). A load
+  // of an element with no source (YouTube's load() before it attaches one) leaves it as it is.
+  function abortExistingLoad(el) {
+    if (!el._mediaSource && !el._mediaBlob && !el.getAttribute("src")) return;
+    el._currentTime = 0; el._mediaAt = clockNow();
+    el._paused = true; el._seeking = false; el._ended = false; el._readyState = 0;
+  }
   // With the bridge tab as the page's screen (realsite --interactive), a media element plays in the
   // tab instead (SPEC decision 26): see "Media in the bridge tab" by the mirror, below.
   const mediaMethods = {
@@ -4665,7 +4761,7 @@
       return Promise.reject(e);
     },
     pause() { if (isMedia(this) && mediaLink.on()) mediaLink.pause(this); },
-    load() { if (isMedia(this) && mediaLink.on()) mediaLink.send(this, { o: "load" }); },
+    load() { if (isMedia(this) && mediaLink.on()) { abortExistingLoad(this); mediaLink.send(this, { o: "load" }); } },
     canPlayType(type) { return mediaTypeAnswer(type)[1]; },
   };
   if (!isWorker) for (const [name, fn] of Object.entries(mediaMethods)) {
@@ -4956,6 +5052,7 @@
         configurable: true, enumerable: true,
         get() { return desc.get.call(this); },
         set(v) {
+          if (mediaLink.on()) abortExistingLoad(this);
           desc.set.call(this, v);
           this._error = null;
           if (this._mediaSource) { this._mediaSource._detach(); this._mediaSource = null; this._readyState = 0; this._duration = NaN; }
@@ -8319,6 +8416,7 @@
   //   ["u", href]                   the document's URL, after pushState or replaceState
   //   ["history", index, count, ack] HTTP toolbar history availability and completed command task
   //   ["adopted", text]             the document's adopted sheets, as one <style> in the tab
+  //   ["escroll", id, x, y, seq]    an element scroll container the page scrolled (elementScroll)
   //   ["v", id, value, checked]     a form control's value and checkedness, once they are not what
   //                                 its attributes and text give
   //   ["f", id, spec or null]       (HTTP viewer) the document of a frame element now, or none
@@ -8581,6 +8679,17 @@
     if (adopted !== mirror.adopted) { mirror.adopted = adopted; ops.push(["adopted", adopted]); }
     // the page scrolled since: the tab moves there, after the nodes it scrolls to
     if (rootScroll.sent !== rootScroll.seq) { rootScroll.sent = rootScroll.seq; ops.push(["scroll", rootScroll.seq, rootScroll.x, rootScroll.y]); }
+    // and each element scroll container the page scrolled since, once the tab has the element
+    if (elementScroll.changed) {
+      elementScroll.changed = false;
+      for (const [el, state] of elementScroll.byElement) {
+        if (!el.isConnected) { elementScroll.byElement.delete(el); continue; }
+        const id = mirror.ids.get(el);
+        if (state.sent === state.seq || !id || !mirror.sent.has(el)) continue;
+        state.sent = state.seq;
+        ops.push(["escroll", id, state.x, state.y, state.seq]);
+      }
+    }
     // what the page asked of its media, once their elements are in the copy
     mediaLink.flush(ops);
     if (env.httpViewer) mediaResources.flush();
@@ -8909,7 +9018,9 @@
       const [x, y] = ev.scroll;
       if (x !== rootScroll.x || y !== rootScroll.y) setRootScroll(x, y);
     }
-    if ((ev.type === "scroll" || ev.type === "scrollend") && (ev.echo || ev.scrollSeq !== rootScroll.seq)) return;
+    // (an element's scroll, with its offset in the tab: `elementScroll`, below)
+    const elementScrolled = (ev.type === "scroll" || ev.type === "scrollend") && Array.isArray(ev.elementScroll);
+    if (!elementScrolled && (ev.type === "scroll" || ev.type === "scrollend") && (ev.echo || ev.scrollSeq !== rootScroll.seq)) return;
     const target = node(ev.target);
     if (!target) { input.missed++; return; }
     input.events++;
@@ -8922,6 +9033,14 @@
       return;
     }
     focus.element = node(ev.active);
+    // The owner scrolled an element scroll container in the tab (task 0bec4): it is at the tab's
+    // offset before its event, unless the page scrolled it since the tab last had its offset (`seq`).
+    if (elementScrolled) {
+      const [x, y, seq] = ev.elementScroll;
+      if ((elementScroll.byElement.get(target)?.seq ?? 0) !== seq || !isScrollContainer(target)) return;
+      const o = elementOffset(target);
+      if (Number.isFinite(x) && Number.isFinite(y) && (x !== o.x || y !== o.y)) setElementScroll(target, Math.max(0, x), Math.max(0, y));
+    }
     if (env.httpViewer && ev.type === "input" && Array.isArray(ev.editable) && ev.editSelection) {
       const host = node(ev.editSelection.host);
       if (host && host.isContentEditable && host.contains(target)) {
@@ -9214,6 +9333,8 @@
       mirror.href = ""; mirror.adopted = "";
       mirror.snapshot = session;
       rootScroll.sent = -1;
+      for (const state of elementScroll.byElement.values()) state.sent = -1;
+      elementScroll.changed = true;
       return mirrorFlush(true);
     },
     viewerMirror(enabled) {

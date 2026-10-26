@@ -2631,6 +2631,18 @@ NATIVE(Global_mrtRootScroll) {
   args.rval().setUndefined();
   return true;
 }
+// __mrtElementScroll(element, x, y): an element scroll container's scroll offset in CSS px, which
+// the next layout read flushes with (Host::set_element_scroll); 0, 0 when it is not scrolled
+NATIVE(Global_mrtElementScroll) {
+  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+  uint32_t id;
+  if (!ArgNode(cx, args, 0, &id)) return false;
+  double x = 0, y = 0;
+  if (!JS::ToNumber(cx, args.get(1), &x) || !JS::ToNumber(cx, args.get(2), &y)) return false;
+  mrt_dom_set_element_scroll(tJs->host, id, x, y);
+  args.rval().setUndefined();
+  return true;
+}
 // __mrtViewport(document): [width, height] of the document's viewport in CSS px, or null when it has
 // none (a frame element without a frame): nsGlobalWindowOuter::GetInnerSize's visible area. A frame's
 // is its frame element's content box: its parent's layout is flushed first.
@@ -5124,6 +5136,7 @@ static bool InitGlobal(JSContext* cx, JS::HandleObject global, uint32_t doc = 1)
       !JS_DefineFunction(cx, global, "__mrtClientScroll", Global_mrtClientScroll, 1, 0) ||
       !JS_DefineFunction(cx, global, "__mrtViewport", Global_mrtViewport, 1, 0) ||
       !JS_DefineFunction(cx, global, "__mrtRootScroll", Global_mrtRootScroll, 2, 0) ||
+      !JS_DefineFunction(cx, global, "__mrtElementScroll", Global_mrtElementScroll, 3, 0) ||
       !JS_DefineFunction(cx, global, "__mrtRefresh", Global_mrtRefresh, 1, 0) ||
       !JS_DefineFunction(cx, global, "__mrtEachWindow", Global_mrtEachWindow, 1, 0) ||
       !JS_DefineFunction(cx, global, "__mrtResizeBoxes", Global_mrtResizeBoxes, 2, 0) ||

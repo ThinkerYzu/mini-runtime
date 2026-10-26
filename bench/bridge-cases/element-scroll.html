@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>element-scroll</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  /* a scroll container with a border and padding, ten 100 px items, the sixth holding a second one
+     (overflow: hidden) whose target is below its port; a snapping one like YouTube's shorts feed */
+  #c { position: absolute; top: 20px; left: 20px; width: 300px; height: 200px; overflow: auto; border: 5px solid #888; padding: 10px; }
+  #c > div { height: 100px; background: #eef; border-bottom: 1px solid #aac; box-sizing: border-box; }
+  #n { height: 60px !important; overflow: hidden; background: #fee !important; }
+  #n > div { height: 50px; }
+  #s { position: absolute; top: 20px; left: 400px; width: 200px; height: 300px; overflow-y: scroll; scroll-snap-type: y mandatory; }
+  #s > div { height: 300px; scroll-snap-align: start; }
+  #v { position: absolute; top: 400px; left: 20px; width: 100px; height: 50px; }
+</style>
+<!-- Element scroll containers (task 0bec4, GAPS B155): the page's scrollTop, scrollBy, scrollTo and
+     scroll on an element, clamped; scrollIntoView through two nested containers; scrollIntoView
+     in a snapping container (YouTube's Next short). Logged after each step's
+     scrollend: the offsets, scroll and client sizes, client rectangles, elementFromPoint and
+     IntersectionObserver entries with the container as root; and each step's first scroll and
+     scrollend event at the containers, and whether the window saw one. -->
+<div id="c">
+  <div id="i0">0</div><div id="i1">1</div><div id="i2">2</div><div id="i3">3</div><div id="i4">4</div>
+  <div id="n"><div>n0</div><div>n1</div><div>n2</div><div id="t">target</div></div>
+  <div id="i6">6</div><div id="i7">7</div><div id="i8">8</div><div id="i9">9</div>
+</div>
+<div id="s"><div id="s0">s0</div><div id="s1">s1</div><div id="s2">s2</div></div>
+<div id="v">visible</div>
+<script>
+window.__log = [];
+const log = s => window.__log.push(s);
+const $ = id => document.getElementById(id);
+const desc = n => !n ? String(n) : n === window ? "window" : n === document ? "document" : n.id ? "#" + n.id : n.localName || n.nodeName;
+const top_ = id => Math.round($(id).getBoundingClientRect().top);
+let step = "load", seen = new Set();
+const state = what => log(`${what}: c.scrollTop=${$("c").scrollTop} c.scrollLeft=${$("c").scrollLeft} n.scrollTop=${$("n").scrollTop} s.scrollTop=${$("s").scrollTop}`
+  + ` c.scroll=${$("c").scrollWidth}x${$("c").scrollHeight} c.client=${$("c").clientWidth}x${$("c").clientHeight}`
+  + ` i2.top=${top_("i2")} t.top=${top_("t")} s1.top=${top_("s1")} c.top=${top_("c")}`
+  + ` at(100,100)=${desc(document.elementFromPoint(100, 100))} at(450,100)=${desc(document.elementFromPoint(450, 100))}`);
+for (const target of [window, $("c"), $("n"), $("s")]) {
+  for (const type of ["scroll", "scrollend"]) {
+    target.addEventListener(type, e => {
+      const key = desc(target) + " " + type;
+      if (seen.has(key)) return;
+      seen.add(key);
+      log(`${step}: ${key} target=${desc(e.target)} phase=${e.eventPhase} bubbles=${e.bubbles} cancelable=${e.cancelable} isTrusted=${e.isTrusted}`);
+    });
+  }
+}
+new IntersectionObserver(entries => {
+  for (const e of entries) log(`${step}: io ${desc(e.target)} isIntersecting=${e.isIntersecting} ratio=${e.intersectionRatio > 0.99 ? 1 : e.intersectionRatio > 0 ? ">0" : 0}`);
+}, { root: $("c") }).observe($("i4"));
+// one step at a time: the offsets right after the call, then the state once the scrolling ended
+// (or 500 ms later, when nothing scrolled)
+const steps = [
+  ["c.scrollTop = 150.4", () => { $("c").scrollTop = 150.4; }],
+  ["c.scrollBy({top: 100})", () => $("c").scrollBy({ top: 100 })],
+  ["c.scrollTo({top: 99999})", () => $("c").scrollTo({ top: 99999 })],
+  ["c.scrollTo(NaN, 40)", () => $("c").scrollTo(NaN, 40)],
+  ["i3.scrollIntoView()", () => $("i3").scrollIntoView()],
+  ["i8.scrollIntoView(nearest)", () => $("i8").scrollIntoView({ block: "nearest" })],
+  ["t.scrollIntoView(center)", () => $("t").scrollIntoView({ block: "center" })],
+  ["c.scroll(0, 0)", () => $("c").scroll(0, 0)],
+  ["c.scrollTop = 0 (unchanged)", () => { $("c").scrollTop = 0; }],
+  ["v.scrollTop = 50", () => { $("v").scrollTop = 50; }],
+  // (YouTube's Next asks for behavior: "smooth", which the runtime does at once, GAPS B155)
+  ["s1.scrollIntoView(nearest)", () => $("s1").scrollIntoView({ block: "nearest", inline: "center" })],
+];
+let i = 0, timer = 0;
+const next = () => {
+  clearTimeout(timer);
+  if (step !== "load") state(`${step} end`);
+  if (i === steps.length) { log("done"); step = "done"; return; }
+  const [name, fn] = steps[i++];
+  step = name; seen = new Set();
+  fn();
+  log(`${name}: right after c.scrollTop=${$("c").scrollTop} n.scrollTop=${$("n").scrollTop} s.scrollTop=${$("s").scrollTop} v.scrollTop=${$("v").scrollTop}`);
+  timer = setTimeout(next, 500);
+};
+// (the step's last scrollend: the window's are none, the containers' one each, nested ones together)
+for (const el of [$("c"), $("s")]) el.addEventListener("scrollend", () => { clearTimeout(timer); timer = setTimeout(next, 100); });
+addEventListener("load", () => { state("load"); setTimeout(next, 100); });
+</script>

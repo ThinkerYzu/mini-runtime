@@ -153,6 +153,13 @@ fn CodePointIsRTL(aCodePoint: u32) -> bool {
 pub struct PresShellFrames {
     pub mFrameConstructor: nsCSSFrameConstructor,
     pub mLayout: PageLayout,
+    /// The scroll offset of each element scroll container that is scrolled, in app units (bridge.js's
+    /// element scroll state, task 0bec4): applied by ReflowDirty, after the reflow.
+    pub mElementScrollPositions: Vec<(NodeId, nsPoint)>,
+    /// What ApplyElementScroll moved: each container's frame and the offset its children are moved by.
+    mAppliedElementScroll: Vec<(NodeId, nsIFrame, nsPoint)>,
+    /// Each scrolled container's ClientAreaAndScrollSize, read before its children were moved.
+    pub mElementScrollSizes: BTreeMap<NodeId, (f64, f64, f64, f64)>,
 }
 
 impl PresShellFrames {
@@ -160,7 +167,41 @@ impl PresShellFrames {
     /// as ConstructFrames; ReflowDirty lays them out.
     pub fn new(aStyleDom: &StyleDom, aWidthPx: i32, aHeightPx: i32) -> PresShellFrames {
         let (layout, frameConstructor) = ConstructFramesKeeping(aStyleDom, aWidthPx, aHeightPx, false, false);
-        PresShellFrames { mFrameConstructor: frameConstructor, mLayout: layout }
+        PresShellFrames {
+            mFrameConstructor: frameConstructor,
+            mLayout: layout,
+            mElementScrollPositions: Vec::new(),
+            mAppliedElementScroll: Vec::new(),
+            mElementScrollSizes: BTreeMap::new(),
+        }
+    }
+
+    /// Scrolls the element scroll containers to mElementScrollPositions, after a reflow: the children
+    /// of each container's frame (all its child lists) move by minus its offset, as Gecko's scrolled
+    /// frame moves inside its ScrollContainerFrame (ScrollContainerFrame::ScrollToImpl), so the boxes,
+    /// hit testing and the intersection walks below it read scrolled.
+    /// ADAPTER: the port has no scroll container frames (GAPS B155): the container's own frame stands
+    /// for both the scroll container and its scrolled frame. The offset is the page's, not clamped
+    /// here; UndoElementScroll puts the children back before the frames change again.
+    pub fn ApplyElementScroll(&mut self) {
+        self.mElementScrollSizes.clear();
+        for &(node, offset) in &self.mElementScrollPositions {
+            let Some(frame) = nsIContent::FromNodeId(node).GetPrimaryFrame() else { continue };
+            // (the scroll size is that of the content where the reflow put it)
+            self.mElementScrollSizes.insert(node, ClientAreaAndScrollSize(frame));
+            ShiftChildFrames(frame, nsPoint::new(-offset.x, -offset.y));
+            self.mAppliedElementScroll.push((node, frame, offset));
+        }
+    }
+
+    /// Puts back the children ApplyElementScroll moved: called before the frames change (removals,
+    /// reframes, reflow), while every frame it moved is still the primary frame of its element.
+    pub fn UndoElementScroll(&mut self) {
+        for (node, frame, offset) in std::mem::take(&mut self.mAppliedElementScroll) {
+            if nsIContent::FromNodeId(node).GetPrimaryFrame() == Some(frame) {
+                ShiftChildFrames(frame, offset);
+            }
+        }
     }
 
     /// Before the changes of a flush: what was read from the DOM before it changed is forgotten (text
@@ -249,6 +290,8 @@ impl PresShellFrames {
     /// and nsIFrame::MarkSubtreeDirty on the root: a dirty frame alone reflows only what it must).
     pub fn ReflowDirty(&mut self, aEverything: bool) {
         let viewport = self.mLayout.mViewport;
+        // (the children reflow where they are not scrolled)
+        self.UndoElementScroll();
         if aEverything {
             // (MarkSubtreeDirty first: it stops at a frame that is dirty already)
             viewport.MarkSubtreeDirty();
@@ -261,6 +304,7 @@ impl PresShellFrames {
             self.mLayout.mViewportSize = desired.PhysicalSize();
         }
         self.SetRootScrollPosition(self.mLayout.mRootScrollPosition);
+        self.ApplyElementScroll();
         // the text buffers made from the DOM while reflowing are not needed any more (see nsIContent)
         nsIContent::ClearContentCaches();
     }
@@ -1182,6 +1226,21 @@ fn UnionChildOverflow(aFrame: nsIFrame, aOverflowAreas: &mut OverflowAreas, aAsI
         flex.UnionChildOverflow(aOverflowAreas, aAsIfScrolled);
     } else {
         nsLayoutUtils::UnionChildOverflow(aFrame, aOverflowAreas, &[]);
+    }
+}
+
+/// Moves every child frame of `aFrame`, in each of its child lists, by `aDelta` (app units).
+fn ShiftChildFrames(aFrame: nsIFrame, aDelta: nsPoint) {
+    let mut lists = Vec::new();
+    aFrame.GetChildLists(&mut lists);
+    aFrame.nsIFrame_GetChildLists(&mut lists);
+    let mut seen = std::collections::HashSet::new();
+    for list in &lists {
+        for child in &list.mList {
+            if seen.insert(child) {
+                child.SetPosition__nsPoint(child.GetPosition() + aDelta);
+            }
+        }
     }
 }
 

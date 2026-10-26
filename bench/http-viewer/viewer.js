@@ -55,6 +55,17 @@ let syncedViewport = null, inputPending = false;
 let nodes = new Map(), ids = new WeakMap(), rules = new Map(), watched = new WeakSet();
 let scrollSeq = 0, scrollEcho = null, pageURL = "", failures = 0;
 let restoring = null, restoreFrame = false;
+// Element scroll containers the page scrolled (task 0bec4, the "escroll" op): per element of the copy,
+// the page's last scroll number (sent back with the owner's scroll of it), the offset applied whose
+// scroll event is the echo, and an offset not reached yet (the content not laid out), tried again
+// after each batch until it is or the owner scrolls the element.
+let elementSeqs = new WeakMap(), elementEchoes = new WeakMap(), elementWanted = new Map();
+function scrollElement(node, x, y) {
+  node.scrollTo({left: x, top: y, behavior: "instant"});
+  const reached = node.scrollLeft === x && node.scrollTop === y;
+  elementEchoes.set(node, [node.scrollLeft, node.scrollTop]);
+  if (reached) elementWanted.delete(node); else elementWanted.set(node, [x, y]);
+}
 // a navigation of the runtime's page: the URL loading (no input meanwhile), the last notice (a failed
 // or refused navigation) and its number
 let navigating = null, notice = "", noticeSeq = 0;
@@ -445,9 +456,10 @@ function apply(batch) {
     historyState = null;
     holdScroll(0, 0);
     nodes = new Map([[0, doc]]); ids = new WeakMap([[doc, 0]]); rules = new Map();
+    elementWanted = new Map();
     frameStates = new WeakMap(); docStates = new Map(); pendingFrames = new Set();
   }
-  for (const [kind, id, arg, fourth] of batch.ops) {
+  for (const [kind, id, arg, fourth, fifth] of batch.ops) {
     if (kind === "u") { pageURL = id; continue; }
     if (kind === "history") {
       historyState = {index: id, count: arg};
@@ -479,6 +491,10 @@ function apply(batch) {
     else if (kind === "adopted-root") mirrorAdoptedSheets(node, arg);
     else if (kind === "v") { if (node.value !== arg) node.value = arg; if (node.localName === "input") node.checked = fourth; }
     else if (kind === "s") { rules.set(id, arg); setRules(node, arg); }
+    else if (kind === "escroll") { elementSeqs.set(node, fifth); scrollElement(node, arg, fourth); }
+  }
+  for (const [node, [x, y]] of elementWanted) {
+    if (node.isConnected) scrollElement(node, x, y); else elementWanted.delete(node);
   }
   if (doc.head) resourceBase(doc.head);
   attachFrames();
@@ -504,7 +520,14 @@ function capture(e) {
   if (e.type === "submit" || (e.type === "click" && path.some(n => ["a", "area"].includes(n.localName) || (n.localName === "button" && n.form)))) e.preventDefault();
   if (inputPending && ["keydown", "keypress", "beforeinput"].includes(e.type)) e.preventDefault();
   if (!ready || !session) return;
-  if ((e.type === "scroll" || e.type === "scrollend") && target !== 0) return;
+  // (an element's scroll goes with its offset, unless it is the echo of the page's: elementScroll)
+  const scrolled = e.type === "scroll" || e.type === "scrollend", element = scrolled && path[0].nodeType === 1 ? path[0] : null;
+  if (scrolled && target !== 0 && !element) return;
+  if (element) {
+    const echo = elementEchoes.get(element), offset = [element.scrollLeft, element.scrollTop];
+    if (echo && echo[0] === offset[0] && echo[1] === offset[1]) return;
+    elementEchoes.delete(element); elementWanted.delete(element);
+  }
   if (restatesHover(e.type, path[0])) return;
   // (the page's document, or a frame's: its own focus and selection; the page's scroll)
   const top = frame.contentDocument, win = frame.contentWindow;
@@ -514,7 +537,8 @@ function capture(e) {
   const ev = {type: e.type, iface, target, active: idOf(doc.activeElement), task: ++task, bubbles: e.bubbles,
     cancelable: e.cancelable, composed: e.composed, fields, scroll: [win.scrollX, win.scrollY], scrollSeq, at: Date.now()};
   if (doc !== top) ev.outerActive = idOf(top.activeElement);
-  if ((e.type === "scroll" || e.type === "scrollend") && scrollEcho) {
+  if (element) ev.elementScroll = [element.scrollLeft, element.scrollTop, elementSeqs.get(element) ?? 0];
+  else if ((e.type === "scroll" || e.type === "scrollend") && scrollEcho) {
     if (scrollEcho[0] === win.scrollX && scrollEcho[1] === win.scrollY) return;
     scrollEcho = null;
   }

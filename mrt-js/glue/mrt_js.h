@@ -139,6 +139,7 @@ void mrt_dom_window_document_changed(void* host, uint32_t old_doc, uint32_t doc)
 void mrt_dom_window_closed(void* host, uint32_t doc);
 int32_t mrt_dom_viewport(void* host, uint32_t doc, int32_t out[2]);
 void mrt_dom_set_root_scroll(void* host, double x, double y);
+void mrt_dom_set_element_scroll(void* host, uint32_t id, double x, double y);
 double mrt_dom_refresh(void* host, int32_t op, uint32_t* out, size_t max);
 // A node's document (nsINode::OwnerDoc), its document set (a node just made), and a subtree adopted
 // into a document (src/host.rs; mrt_dom::Dom::node_document, set_node_document, adopt).
