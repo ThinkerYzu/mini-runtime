@@ -69,6 +69,9 @@ class Viewer:
         self.runtime_pid = None
         self.media_epoch = 0
         self.media_query = None
+        # whether a viewer has attached since this document began: until one has, a capability
+        # query waits for it instead of answering negative (task 6416e)
+        self.document_attached = False
         self.media_next = 0
         self.media_events = []
         self.media_bytes = 0
@@ -103,7 +106,7 @@ class Viewer:
         self.committed_at = None
         self.polled_notice = 0
         self.polled_navigating = None
-        self.stats = {"media_resources": 0, "media_resource_requests": 0, "media_resource_bytes": 0, "media_resource_chunks": 0, "media_resource_cancels": 0, "media_ops": 0, "media_replays": 0, "media_bytes": 0, "media_events": 0, "media_queries": 0, "media_resets": 0, "webgl_jobs": 0, "webgl_timeouts": 0, "webgl_dummy": 0, "webgl_native": 0, "webgl_replays": 0, "webgl_overflows": 0, "attachments": 0, "snapshots": 0, "resyncs": 0, "events": 0,
+        self.stats = {"media_resources": 0, "media_resource_requests": 0, "media_resource_bytes": 0, "media_resource_chunks": 0, "media_resource_cancels": 0, "media_ops": 0, "media_replays": 0, "media_bytes": 0, "media_events": 0, "media_queries": 0, "media_attach_waits": 0, "media_resets": 0, "webgl_jobs": 0, "webgl_timeouts": 0, "webgl_dummy": 0, "webgl_native": 0, "webgl_replays": 0, "webgl_overflows": 0, "attachments": 0, "snapshots": 0, "resyncs": 0, "events": 0,
                       "navigations": 0, "navigation_failures": 0, "navigation_refusals": 0, "navigation_input_dropped": 0,
                       "http_api_calls": 0, "http_api_bytes_in": 0, "http_api_bytes_out": 0,
                       "ws_connections": 0, "ws_calls": 0, "ws_bytes_in": 0, "ws_bytes_out": 0}
@@ -164,6 +167,7 @@ class Viewer:
             self.viewport = viewport
             self.visible = True
             self._resync()
+            self.document_attached = True
             self.stats["attachments"] += 1
             self.committed_at = None
             return {"session": self.session, "runtime": self.name, "url": self.page_url, "pid": self.runtime_pid, "mediaEpoch": self.media_epoch}
@@ -274,6 +278,7 @@ class Viewer:
             self.gl_bytes = 0
             self.gl_lost.clear()
             self.page_url, self.runtime_pid = url, pid
+            self.document_attached = False
             self.navigating = None
             self.notice = None
             self.committed_at = time.monotonic()
@@ -318,11 +323,20 @@ class Viewer:
             return {"ready": self.ready and not pending, "inputPending": pending}
 
     def media_type(self, req, timeout=5):
+        """A media capability query of the runtime ([isTypeSupported, canPlayType, epoch, attached]),
+        answered by the attached viewer's browser. A document that no viewer has attached to yet waits
+        for the first one: a page opened at its URL checks its codecs while it loads, before anyone
+        opens the viewer, and a player that hears "nothing plays" then never asks again (YouTube,
+        task 6416e). Once a viewer has attached, a detached query is answered negative at once."""
         kind = req.get("type", "")
         if not isinstance(kind, str) or len(kind) > 4096:
             return {"err": "Invalid media type"}
         with self.lock:
             self._expire()
+            if not self.document_attached and not self.stop_requested:
+                self.stats["media_attach_waits"] += 1
+                while not self.document_attached and not self.stop_requested:
+                    self.lock.wait(1)
             epoch, session = self.media_epoch, self.session
             if not session or self.stop_requested:
                 return {"ok": [False, "", epoch, False]}

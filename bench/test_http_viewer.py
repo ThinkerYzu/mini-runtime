@@ -794,9 +794,34 @@ class Protocol(unittest.TestCase):
         self.assertEqual(v.wait({"now": 0, "busy": True})["ok"]["webgl"]["lost"], [])
 
 
+    def test_media_query_before_first_attachment_waits_for_viewer(self):
+        # a page opened at its URL checks its codecs before any viewer attaches (YouTube, task 6416e)
+        v = Viewer("demo", "http://example.test/", [800, 600])
+        results = []
+        thread = threading.Thread(target=lambda: results.append(v.media_type({"type":"video/mp4"})))
+        thread.start(); thread.join(.2)
+        self.assertTrue(thread.is_alive()); self.assertEqual(v.stats["media_attach_waits"], 1)
+        session = v.attach([800, 600])["session"]
+        query = v.poll(session, 0)["mediaType"]
+        v.media_type_reply(session, query["id"], [True, "probably"])
+        thread.join(1); self.assertFalse(thread.is_alive())
+        self.assertEqual(results[0]["ok"][1:], ["probably", v.media_epoch, True])
+        # a new document waits for the viewer's next attachment too
+        v.navigation_committed("http://example.test/next", 2)
+        thread = threading.Thread(target=lambda: results.append(v.media_type({"type":"audio/mp4"})))
+        thread.start(); thread.join(.2); self.assertTrue(thread.is_alive())
+        session = v.attach([800, 600])["session"]
+        v.media_type_reply(session, v.poll(session, 0)["mediaType"]["id"], [False, "maybe"])
+        thread.join(1); self.assertFalse(thread.is_alive())
+        self.assertEqual(results[1]["ok"][:2], [False, "maybe"])
+        # stopping the service ends a wait with no viewer
+        v.navigation_committed("http://example.test/last", 3)
+        thread = threading.Thread(target=lambda: results.append(v.media_type({"type":"audio/mp4"})))
+        thread.start(); v.stop(); thread.join(2); self.assertFalse(thread.is_alive())
+        self.assertEqual(results[2]["ok"][:2], [False, ""])
+
     def test_media_capabilities_and_event_epochs(self):
         v = Viewer("demo", "http://example.test/", [800, 600])
-        self.assertEqual(v.media_type({"type":"video/mp4"})["ok"][:2], [False, ""])
         session = v.attach([800, 600])["session"]
         results = []
         thread = threading.Thread(target=lambda: results.append(v.media_type({"type":"video/mp4"})))
@@ -1421,10 +1446,20 @@ class Runtime(unittest.TestCase):
 
 
     def test_media_types_before_attachment(self):
-        # These queries precede attachment, so the recorded output is negative.
-        # Later protocol-only sessions do not rerun the page's initial queries.
+        # The page checks its codecs while it loads, before any viewer attaches: the queries wait for
+        # the first viewer, which answers them (task 6416e). Later sessions do not rerun them.
         log_path = self.root / "logs" / "demo.log"
-        self.until(lambda: log_path.exists() and "MEDIA_TYPES " in log_path.read_text())
+        time.sleep(1)
+        self.assertNotIn("MEDIA_TYPES ", log_path.read_text() if log_path.exists() else "")
+        answer = lambda kind: [kind == "video/mp4", "maybe" if kind.startswith("video/mp4") else ""]
+        session = self.call("attach", {"runtime": "demo", "viewport": [800, 600]})["session"]
+        end = time.monotonic() + 30
+        while not (log_path.exists() and "MEDIA_TYPES " in log_path.read_text()):
+            self.assertLess(time.monotonic(), end, "the page's capability queries were not answered")
+            query = self.call("poll?session=" + session + "&after=0").get("mediaType")
+            if query:
+                self.call("media-type", {"session": session, "id": query["id"], "reply": answer(query["type"])})
+        self.call("detach", {"session": session})
         pid = self.call("runtimes")[0]["pid"]
         previous = None
         for turn in range(3):
@@ -1435,7 +1470,9 @@ class Runtime(unittest.TestCase):
             lines = json.loads(text)
             self.assertGreater(len(lines), 30)
             for line in lines:
-                self.assertEqual(json.loads(line)[1:], [False, "", ""])
+                kind, *found = json.loads(line)
+                supported, verdict = answer(kind)
+                self.assertEqual(found, [supported and kind != "", verdict, verdict])
             self.assertEqual(self.call("runtimes")[0]["pid"], pid)
             if previous:
                 with self.assertRaises(HTTPError) as error:
@@ -2069,14 +2106,16 @@ class Runtime(unittest.TestCase):
         from marionette_driver.marionette import Marionette
         import firefox_exit
         log = self.root / "logs" / "demo.log"
-        self.until(lambda: log.exists() and "MEDIA_INITIAL" in log.read_text())
-        self.assertIn("MEDIA_INITIAL false", log.read_text())
+        # the page's first capability check waits for the first viewer (task 6416e)
+        time.sleep(1)
+        self.assertNotIn("MEDIA_INITIAL", log.read_text() if log.exists() else "")
         browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
             "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
         browser.start_session()
         try:
             browser.set_context("content"); browser.navigate(self.viewer_url)
             self.until(lambda: browser.execute_script('return document.getElementById("status").textContent.startsWith("Connected")'))
+            self.until(lambda: "MEDIA_INITIAL true" in log.read_text())
             browser.switch_to_frame(browser.find_element("id", "page"))
             self.until(lambda: browser.execute_script('return document.getElementById("log").textContent.includes("MSE_READY")'), timeout=20)
             browser.find_element("id", "play").click()

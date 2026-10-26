@@ -45,7 +45,7 @@ Standalone and HTTP viewer modes require `API_PROCESS=all`, which is their defau
 | Images | PNG, JPEG, GIF, WebP, BMP, ICO, AVIF metadata and SVG intrinsic sizes are supported. Raster sizing uses metadata rather than decoding all pixels. Displayed images still load separately in the viewer browser. Some intrinsic-size and painted-image behavior remains incomplete. |
 | Permissions | Saved profile decisions, inherited host decisions and relevant default preferences seed API answers. Queries do not create grants or display original-site prompts in the viewer. Storage estimates cover localStorage payloads, not total browser quota usage. Frame policies, permission-change events and quota accounting remain incomplete; the origin-private file system (OPFS) is unavailable. |
 | WebGL | Real OpenGL ES contexts execute in the API process, including while detached. The viewer replays a bounded command journal to display the result. Native calls do not depend on viewer attachment; detached execution is not a black-pixel dummy in this mode. |
-| Media | Plain standalone mode has no playback decoder and reports negative media capabilities. HTTP viewer mode uses the attached browser's codecs, media elements and MediaSource backend. Capabilities are negative while detached; backend changes invalidate runtime caches. |
+| Media | Plain standalone mode has no playback decoder and reports negative media capabilities. HTTP viewer mode uses the attached browser's codecs, media elements and MediaSource backend. A document's capability checks made before any viewer has attached to it wait for the first viewer, which answers them; after that, capabilities are negative while detached. Backend changes invalidate runtime caches. |
 
 ## Local demo service
 
@@ -89,7 +89,7 @@ Longer playback stops once the default media replay retention quota (32 MiB, 10,
 
 Reattaching a playing YouTube page can still disconnect with **Stale media backend**. This is tracked separately from the search-to-video stall. Restarting the service starts a fresh live page.
 
-Starting the viewer directly at a YouTube watch URL does not play: the page loads before any viewer attaches, while media capabilities are negative, and the player shows **Your browser can't play this video** (its Learn more link opens YouTube's supported-browsers page). Start at YouTube's home or a results page and open the video from there. After a search the results appear, but the status line and Back still show the home page.
+Starting the viewer directly at a YouTube watch URL plays after one click on the player: the page's codec checks wait for the first viewer instead of hearing that nothing plays. After a search the results appear, but the status line and Back still show the home page.
 
 ### Navigation and history
 
