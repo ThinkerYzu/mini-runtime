@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><video id="video" muted></video>
+<script>
+// Runtime protocol fixture (task f03f2): the test sends the tab's media events. Once the source
+// plays, the page replaces it, as YouTube does when an ad ends; the old source's pause and ended,
+// which the tab fired before it saw the load, must not reach the page after its load().
+const video=document.getElementById('video'), type='video/mp4; codecs="avc1.42c01e"';
+let loaded=false;
+for(const t of ['playing','pause','ended','abort','emptied'])video.addEventListener(t,()=>{
+ console.log('EVENT '+t+(loaded?' after load':''));
+ if(t==='playing'&&!loaded){loaded=true;video.removeAttribute('src');video.load();console.log('LOADED');}
+ if(t==='emptied'&&loaded)console.log('STALE_DONE ended='+video.ended+' paused='+video.paused);
+});
+const ms=new MediaSource();video.src=URL.createObjectURL(ms);
+ms.addEventListener('sourceopen',()=>{ms.addSourceBuffer(type).appendBuffer(new Uint8Array(8));console.log('STALE_READY');},{once:true});
+</script>

@@ -847,18 +847,22 @@
     return obj;
   };
 
-  // ElementCSSInlineStyle: [SameObject, PutForwards=cssText] style, one object per element
+  // ElementCSSInlineStyle: [SameObject, PutForwards=cssText] style, one object per element; HTML,
+  // SVG and MathML elements include it (YouTube sets the style of its SVG icons and ad controls)
   const styles = share("styles", () => new WeakMap());
-  if (!isWorker) Object.defineProperty(HTMLElement.prototype, "style", {
-    configurable: true,
-    enumerable: true,
-    get() {
-      let style = styles.get(this);
-      if (!style) styles.set(this, (style = makeDeclaration(inlineDeclaration(this))));
-      return style;
-    },
-    set(text) { this.style.cssText = text; },
-  });
+  if (!isWorker) for (const iface of [HTMLElement, global.SVGElement, global.MathMLElement]) {
+    if (!iface) continue;
+    Object.defineProperty(iface.prototype, "style", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        let style = styles.get(this);
+        if (!style) styles.set(this, (style = makeDeclaration(inlineDeclaration(this))));
+        return style;
+      },
+      set(text) { this.style.cssText = text; },
+    });
+  }
 
   define(global, "getComputedStyle", function getComputedStyle(elt, pseudoElt) {
     if (!(elt instanceof Element)) throw new TypeError("Window.getComputedStyle: Argument 1 does not implement interface Element.");

@@ -8658,6 +8658,8 @@
       }
       if (op.b64) this.pendingBytes += op.b64.length * 3 / 4;
       op.seq = el._mediaSeq = ++this.seq;
+      // a new load (AbortExistingLoads): the tab's events for the element from before it are dropped
+      if (op.o === "load" || op.o === "attach" || op.o === "detach") el._mediaLoadSeq = op.seq;
       let q = this.queues.get(el);
       if (!q) this.queues.set(el, q = []);
       q.push(op);
@@ -8727,7 +8729,7 @@
           if (!el) { this.els.delete(id); continue; }
           // (a runtime Blob's src loads in the viewer too, GAPS B172: only a MediaSource's is rebuilt)
           if (el._mediaSource) continue;
-          ops.push(["m", {o:"restore", el:id, currentTime:this.currentTime(el), volume:el.volume,
+          ops.push(["m", {o:"restore", el:id, seq:el._mediaSeq || 0, currentTime:this.currentTime(el), volume:el.volume,
             muted:el.muted, playbackRate:el.playbackRate, defaultPlaybackRate:el.defaultPlaybackRate}]);
         }
       }
@@ -8779,6 +8781,9 @@
         queueMedia(() => {
           const el = mirror.byId.get(m.el) || mediaLink.els.get(m.el)?.deref();
           if (!el || !isMedia(el)) return;
+          // fired for a load the page has since replaced: Gecko cancels such events (mCurrentLoadID),
+          // and a page that already moved on would take an old resource's ended for the new one's
+          if (m.seq < (el._mediaLoadSeq || 0)) return;
           if (m.resumed) el._mediaSuspended = false;
           const stale = m.seq < (el._mediaSeq || 0);
           for (const [k, v] of Object.entries(m.s)) {

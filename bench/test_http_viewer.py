@@ -1149,6 +1149,8 @@ class Runtime(unittest.TestCase):
             page = "media-replay-quota.html"
             if self._testMethodName == "test_media_replay_unlimited":
                 page += "?unlimited=1"
+        if self._testMethodName == "test_media_events_before_load_dropped":
+            page = "media-stale-events.html"
         if self._testMethodName == "test_browser_media":
             page = "media-demo.html"
         if self._testMethodName.startswith(("test_navigation", "test_browser_navigation")):
@@ -1444,6 +1446,56 @@ class Runtime(unittest.TestCase):
         self.assertEqual(result["bridge_tab"], {"made": False})
         self.assertFalse(result["unsupported_ops"])
 
+
+    def test_media_events_before_load_dropped(self):
+        # The tab's pause and ended for a source the page has replaced arrive after the page's load():
+        # they are dropped, as Gecko's load drops them, or YouTube takes an ad's end for the video's
+        # (task f03f2). The new load's abort and emptied still arrive.
+        session = self.call("attach", {"runtime":"demo", "viewport":[800,600]})["session"]
+        after, el, seq, sent_playing, sent_stale, load_seq = 0, None, 0, False, False, None
+        log = self.root / "logs" / "demo.log"
+        end = time.monotonic() + 30
+        while time.monotonic() < end:
+            reply = self.call("poll?session=" + session + "&after=" + str(after))
+            if reply.get("mediaType"):
+                self.call("media-type", {"session":session, "id":reply["mediaType"]["id"], "reply":[True,"probably"]})
+            events = []
+            for batch in reply["batches"]:
+                after = batch["seq"]
+                for op in batch["ops"]:
+                    if op[0] != "m": continue
+                    m = op[1]
+                    if m["o"] in ("load", "detach") and load_seq is None:
+                        load_seq = m["seq"]
+                    elif load_seq is None:
+                        el, seq = m["el"], m["seq"]
+                    if m["o"] == "attach": events.append({"k":"ms", "ms":m["ms"], "ev":"sourceopen"})
+                    elif m["o"] == "append": events.append({"k":"sb", "sb":m["sb"], "n":m["n"], "buffered":[[0, 4]], "dur":4})
+            text = log.read_text() if log.exists() else ""
+            if "STALE_READY" in text and not sent_playing:
+                sent_playing = True
+                events.append({"k":"el", "el":el, "ev":"playing", "seq":seq, "s":{"readyState":4, "paused":False, "ended":False, "currentTime":1}})
+            if load_seq is not None and not sent_stale:
+                sent_stale = True
+                ended = {"readyState":2, "paused":True, "ended":True, "currentTime":4}
+                emptied = {"readyState":0, "networkState":0, "paused":True, "ended":False, "currentTime":0}
+                events += [{"k":"el", "el":el, "ev":"pause", "seq":seq, "s":ended}, {"k":"el", "el":el, "ev":"ended", "seq":seq, "s":ended},
+                           {"k":"el", "el":el, "ev":"abort", "seq":load_seq, "s":emptied}, {"k":"el", "el":el, "ev":"emptied", "seq":load_seq, "s":emptied}]
+            if events:
+                self.call("media-events", {"session":session, "epoch":reply["mediaEpoch"], "events":events})
+            if after: self.call("input", {"session":session, "ack":after, "events":[]})
+            if "STALE_DONE" in text:
+                break
+        else:
+            self.fail("stale-event fixture timed out: " + (log.read_text() if log.exists() else ""))
+        text = log.read_text()
+        self.assertIn("LOADED", text)
+        self.assertIn("EVENT abort after load", text)
+        self.assertIn("STALE_DONE ended=false paused=true", text)
+        self.assertNotIn("EVENT pause after load", text)
+        self.assertNotIn("EVENT ended after load", text)
+        self.call("stop", {})
+        self.proc.wait(timeout=10)
 
     def test_media_types_before_attachment(self):
         # The page checks its codecs while it loads, before any viewer attaches: the queries wait for

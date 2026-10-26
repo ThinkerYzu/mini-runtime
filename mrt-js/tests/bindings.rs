@@ -53,6 +53,24 @@ const CASES: &[(&str, &str, &[&str])] = &[
         ],
     ),
     (
+        "an SVG element's style",
+        // SVGElement includes ElementCSSInlineStyle (YouTube styles its SVG icons, task f03f2); the
+        // expected lines are release Firefox 157's
+        r#"<script>
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = document.createElementNS(NS, "svg");
+        svg.style.pointerEvents = "none";
+        svg.style.height = "12px";
+        console.log(typeof svg.style, svg.style === svg.style, svg.getAttribute("style"), "style" in SVGElement.prototype);
+        const path = svg.appendChild(document.createElementNS(NS, "path"));
+        path.setAttribute("style", "fill: red");
+        console.log(path.style.fill, path.style.cssText);
+        path.style = "opacity: 0.5";
+        console.log(path.getAttribute("style"), path.style.opacity);
+        </script>"#,
+        &["object true pointer-events: none; height: 12px; true", "red fill: red;", "opacity: 0.5; 0.5"],
+    ),
+    (
         "doctype and compatMode",
         r#"<script>
         const t = document.doctype;
