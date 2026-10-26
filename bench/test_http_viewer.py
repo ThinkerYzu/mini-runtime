@@ -1128,6 +1128,8 @@ class Runtime(unittest.TestCase):
             page = "media-demo.html"
         if self._testMethodName.startswith(("test_navigation", "test_browser_navigation")):
             page = "nav-start"
+        if self._testMethodName == "test_browser_images_journey":
+            page = "images-journey.html"
         if self._testMethodName in ("test_frames", "test_browser_frames"):
             page = "frames.html"
         if self._testMethodName in ("test_fragment_scroll", "test_browser_fragment_scroll"):
@@ -2719,6 +2721,127 @@ class Runtime(unittest.TestCase):
         self.assertEqual(result["js_errors"],0,result)
         self.assertFalse(result["unsupported_ops"],result)
         self.assertEqual(result["bridge_tab"],{"made":False})
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_images_journey(self):
+        """Google Images' journey through the real driver, runtime and API process (task 9316e):
+        previews whose CSS is parsed in a temporary document (4215c) and edited through
+        CSSStyleRule.style with the panel left open (4336d), a reconnect midway, a pointer burst
+        over 160 nested boxes (7c92c, 52da0), then All: a real navigation, reattached on its own"""
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        browser.start_session()
+        local = f"http://localhost:{self.server.server_port}"
+        status = lambda: browser.execute_script('return document.getElementById("status").textContent')
+        titles = {1: "Red fox", 2: "Green frog", 3: "Blue whale", 4: "Orange cat", 5: "Purple finch"}
+        colors = {1: "red", 2: "green", 3: "blue", 4: "orange", 5: "purple"}
+        accepted = []  # what the page's handlers should have logged, in order
+
+        def shown(condition, timeout=10):
+            """Wait until the viewer is connected, takes input, and its frame passes `condition`
+            (a JS expression over `d`, the frame's document); ends in the outer document"""
+            browser.switch_to_frame()
+            try:
+                self.until(lambda: browser.execute_script(
+                    'const f=document.getElementById("page"),d=f.contentDocument;return '
+                    'document.getElementById("status").textContent.startsWith("Connected") && '
+                    'f.style.pointerEvents === "auto" && !!d.documentElement && (' + condition + ')'), timeout)
+            except AssertionError:
+                seen = browser.execute_script('const d=document.getElementById("page").contentDocument;'
+                    'return [document.getElementById("status").textContent, window.wrappedJSObject.__statuses,'
+                    '[...d.querySelectorAll("output,pre,h2")].map(e => e.id + "=" + e.textContent)]')
+                raise AssertionError(f"waited for {condition}; viewer saw {seen!r}")
+
+        def page_click(element_id):
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", element_id).click()
+            browser.switch_to_frame()
+
+        def typed(element_id, text):
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", element_id).send_keys(text)
+            browser.switch_to_frame()
+
+        def select(n):
+            """Select thumbnail n with the preview open: the mirrored title, image, the size the
+            rule's declarations give in both the runtime's layout and the viewer's, and the log"""
+            page_click(f"t{n}")
+            accepted.append(f"t{n}")
+            w, h = 200 + 10 * n, 120 + 5 * n
+            shown(f'd.getElementById("title").textContent === {json.dumps(titles[n])} && '
+                  f'decodeURIComponent(d.getElementById("preview").getAttribute("src")).includes(\'fill="{colors[n]}"\') && '
+                  f'd.getElementById("size").textContent === "{w}x{h}" && '
+                  f'getComputedStyle(d.getElementById("panel")).width === "{w}px" && '
+                  f'd.getElementById("log").textContent === {json.dumps(" ".join(accepted))}')
+            self.assertEqual(browser.execute_script('return document.getElementById("page").contentDocument.getElementById("error").textContent'), "")
+
+        try:
+            browser.set_context("content")
+            browser.navigate(self.viewer_url)
+            shown('!!d.getElementById("t1")')
+            # Every status line the viewer shows, to check that none asked for Connect.
+            browser.execute_script("""const w = window.wrappedJSObject, s = document.getElementById("status");
+                w.__statuses = [s.textContent];
+                new MutationObserver(() => { if (w.__statuses.at(-1) !== s.textContent) w.__statuses.push(s.textContent); })
+                    .observe(s, {subtree: true, childList: true, characterData: true});""")
+            pid = self.call("runtimes")[0]["pid"]
+            select(1)
+            select(3)
+            typed("q", "x")
+            accepted.append("q:catsx")
+            shown(f'd.getElementById("log").textContent === {json.dumps(" ".join(accepted))}')
+            select(2)
+            # Reconnect midway: the same runtime, the selection kept, input still works.
+            browser.find_element("id", "detach").click()
+            browser.find_element("id", "attach").click()
+            shown('d.getElementById("title").textContent === "Green frog" && getComputedStyle(d.getElementById("panel")).width === "220px"')
+            self.assertEqual(self.call("runtimes")[0]["pid"], pid)
+            select(5)
+            select(4)
+            # The pointer onto All crosses 161 boxes at once: more enter records than the
+            # viewer's 256-record local queue holds. Input pauses and resumes on its own.
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            link = browser.find_element("id", "all")
+            browser.actions.perform([browser.actions.sequence("pointer", "mouse", {"pointerType": "mouse"})
+                                     .pointer_move(0, 0, origin=link).dict])
+            browser.switch_to_frame()
+            shown('d.getElementById("enters").textContent === "161 1"')
+            self.assertIn("Processing input…", browser.execute_script('return window.wrappedJSObject.__statuses'))
+            page_click("all")
+            accepted.append("all")
+            shown('!!d.getElementById("info")', 30)
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            info = json.loads(browser.find_element("id", "info").text)
+            browser.switch_to_frame()
+            self.assertEqual(info, {"href": f"{local}/images-all.html?q=cats", "length": 3, "journey": accepted, "enters": "161 1"})
+            self.assertIn(f"{local}/images-all.html?q=cats", status())
+            self.assertFalse(browser.execute_script('return document.getElementById("back").disabled'))
+            self.assertEqual(browser.execute_script('return document.getElementById("page").contentWindow.location.pathname'), "/frame")
+            self.assertNotEqual(self.call("runtimes")[0]["pid"], pid)
+            # The destination takes typing and clicks without a manual Connect.
+            typed("field", "ok")
+            page_click("more")
+            shown('d.getElementById("echo").textContent === "ok" && d.getElementById("count").textContent === "1"')
+            statuses = browser.execute_script('return window.wrappedJSObject.__statuses')
+            self.assertFalse([s for s in statuses if "Click Connect" in s or "queue full" in s.lower()], statuses)
+            children = self.children(self.proc.pid)
+            self.assertEqual(sorted(children), ["mrt-api", "realsite"], children)
+        finally:
+            firefox_exit.close(browser)
+        self.call("stop", {})
+        self.proc.wait(timeout=20)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual(self.proc.returncode, 0, result)
+        self.assertEqual(result["exit"], 0, result)
+        self.assertEqual(result["js_errors"], 0, result)
+        self.assertFalse(result["unsupported_ops"], result)
+        self.assertEqual(result["bridge_tab"], {"made": False})
+        self.assertEqual(result["final_url"], f"{local}/images-all.html?q=cats")
+        # the first attachment, the manual reconnect, and the destination's own
+        self.assertEqual((result["viewer"]["attachments"], result["viewer"]["navigations"]), (3, 1), result["viewer"])
+        self.assertEqual((result["viewer"]["navigation_input_dropped"], result["viewer"]["resyncs"]), (0, 0), result["viewer"])
 
     def until(self, predicate, timeout=10):
         end = time.monotonic() + timeout

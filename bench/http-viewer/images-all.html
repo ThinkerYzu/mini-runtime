@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Images journey: All</title>
+<!-- The All destination of images-journey.html (task 9316e): it reports what the images page
+     accepted, from sessionStorage, and takes typing and clicks of its own. -->
+<pre id="info"></pre>
+<p><input id="field"> <output id="echo"></output> <button id="more">More</button> <output id="count">0</output></p>
+<script>
+document.getElementById("info").textContent = JSON.stringify({ href: location.href, length: history.length,
+  journey: JSON.parse(sessionStorage.getItem("journey") || "null"), enters: sessionStorage.getItem("enters") });
+document.getElementById("field").addEventListener("input", e => { document.getElementById("echo").textContent = e.target.value; });
+let count = 0;
+document.getElementById("more").addEventListener("click", () => { document.getElementById("count").textContent = String(++count); });
+</script>

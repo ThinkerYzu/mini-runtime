@@ -1,0 +1,92 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Images journey</title>
+<!-- A Google Images-like page (task 9316e): the first thumbnail click parses its preview CSS
+     in a temporary document (4215c), each selection edits that rule's declarations with the
+     preview left open (4336d), and the All link sits under 160 nested boxes, so moving the
+     pointer onto it is one burst of enter events (7c92c). -->
+<style id="sheet">
+body { margin: 0; font: 14px sans-serif; }
+.grid { display: flex; gap: 8px; padding: 8px; }
+.thumb { width: 60px; height: 40px; }
+#panel { display: none; background: #eee; }
+#panel.open { display: block; }
+#deep div { padding: 0; }
+</style>
+<div class="grid">
+  <button class="thumb" id="t1" data-title="Red fox" data-color="red">1</button>
+  <button class="thumb" id="t2" data-title="Green frog" data-color="green">2</button>
+  <button class="thumb" id="t3" data-title="Blue whale" data-color="blue">3</button>
+  <button class="thumb" id="t4" data-title="Orange cat" data-color="orange">4</button>
+  <button class="thumb" id="t5" data-title="Purple finch" data-color="purple">5</button>
+</div>
+<p><input id="q" value="cats"> <output id="log"></output></p>
+<section id="panel"><h2 id="title"></h2><img id="preview" alt="" width="40" height="30"><output id="size"></output></section>
+<p><output id="enters">0 0</output> <output id="error"></output></p>
+<div id="deep"></div>
+<script>
+const log = [], enters = new Map();
+const show = () => {
+  document.getElementById("log").textContent = log.join(" ");
+  sessionStorage.setItem("journey", JSON.stringify(log));
+};
+let rule = null;
+// Google's preview code parses CSS in an inert document; a null sheet there threw before 4215c.
+function init() {
+  const scratch = document.implementation.createHTMLDocument("");
+  const style = scratch.createElement("style");
+  scratch.head.appendChild(style);
+  style.sheet.insertRule("#panel.open { width: 200px; height: 120px; }", 0);
+  const sheet = document.getElementById("sheet").sheet;
+  rule = sheet.cssRules[sheet.insertRule(style.sheet.cssRules[0].cssText, sheet.cssRules.length)];
+}
+let opened = false;
+for (const thumb of document.querySelectorAll(".thumb")) thumb.addEventListener("click", () => {
+  try {
+    if (!rule) init();
+    const n = Number(thumb.id.slice(1));
+    // _.Ogu's write; CSSStyleRule.style was missing before 4336d
+    rule.style.viewTransitionName = "preview-" + n;
+    rule.style.width = (200 + 10 * n) + "px";
+    rule.style.height = (120 + 5 * n) + "px";
+    const panel = document.getElementById("panel");
+    panel.className = "open";
+    document.getElementById("title").textContent = thumb.dataset.title;
+    document.getElementById("preview").src = "data:image/svg+xml," + encodeURIComponent(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="${thumb.dataset.color}"/></svg>`);
+    document.getElementById("size").textContent = panel.offsetWidth + "x" + panel.offsetHeight;
+    // the first preview is a history entry of its own; later selections replace it
+    history[opened ? "replaceState" : "pushState"](null, "", "?q=cats&preview=" + n);
+    opened = true;
+    log.push(thumb.id);
+    show();
+  } catch (e) {
+    document.getElementById("error").textContent = e.name + ": " + e.message;
+  }
+});
+document.getElementById("q").addEventListener("input", e => { log.push("q:" + e.target.value); show(); });
+let box = document.getElementById("deep");
+box.dataset.depth = 0;
+for (let i = 1; i < 160; i++) {
+  const inner = document.createElement("div");
+  inner.dataset.depth = i;
+  box.appendChild(inner);
+  box = inner;
+}
+const all = document.createElement("a");
+all.id = "all";
+all.href = "images-all.html?q=cats";
+all.textContent = "All";
+all.dataset.depth = 160;
+box.appendChild(all);
+// Each nested box should see the pointer enter once (a resume repeated them before 52da0).
+document.addEventListener("pointerenter", e => {
+  if (e.target.dataset && e.target.dataset.depth !== undefined) {
+    enters.set(e.target, (enters.get(e.target) || 0) + 1);
+    const text = enters.size + " " + Math.max(...enters.values());
+    document.getElementById("enters").textContent = text;
+    sessionStorage.setItem("enters", text);
+  }
+}, true);
+all.addEventListener("click", () => { log.push("all"); show(); });
+</script>
