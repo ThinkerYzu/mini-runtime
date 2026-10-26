@@ -671,6 +671,21 @@ console.log(c.playState, c.currentTime);
         ],
     ),
     (
+        "Element.animate with the page's Animation replaced",
+        // animate builds the runtime's own KeyframeEffect and Animation, not whatever the page put in
+        // the globals (YouTube's web-animations polyfill, task c5403); release Firefox 157's lines
+        r#"<div id=t></div>
+<script>
+const el = document.getElementById("t");
+const NativeAnimation = Animation, NativeEffect = KeyframeEffect;
+window.Animation = function () { throw new Error("page Animation"); };
+window.KeyframeEffect = function () { throw new Error("page KeyframeEffect"); };
+const a = el.animate([{ opacity: 0 }, { opacity: 1 }], 100);
+console.log(a instanceof NativeAnimation, a.effect instanceof NativeEffect, a.playState, el.getAnimations().length);
+</script>"#,
+        &["true true running 1"],
+    ),
+    (
         "streams and text decoding",
         // the Streams standard (ReadableStream, its reader, pulls, WritableStream, TransformStream,
         // pipes, tee, async iteration, errors, cancel), streaming UTF-8 decoding and TextDecoderStream;

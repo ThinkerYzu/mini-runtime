@@ -1893,6 +1893,10 @@
     compressionInterface("DecompressionStream", true);
   });
 
+  // The runtime's own KeyframeEffect and Animation, for Element.animate: a page may replace the
+  // globals (YouTube's web-animations polyfill does, and its Animation calls animate), and Gecko's
+  // animate never looks them up (task c5403)
+  let NativeKeyframeEffect = null, NativeAnimation = null;
   const ensureAnimations = lazyGlobals(["KeyframeEffect", "Animation"], () => {
     // ---- Element.animate (dom/animation): the timing, and some properties' values ----
     //
@@ -2016,6 +2020,8 @@
       persist() { this._replaceState = "persisted"; }
       commitStyles() {}
     }
+    NativeKeyframeEffect = KeyframeEffect;
+    NativeAnimation = Animation;
     define(global, "KeyframeEffect", KeyframeEffect);
     define(global, "Animation", Animation);
   });
@@ -2257,7 +2263,7 @@
   }
   if (!isWorker) define(Element.prototype, "animate", function (keyframes, options) {
     ensureAnimations();
-    const animation = new global.Animation(new global.KeyframeEffect(this, keyframes, options));
+    const animation = new NativeAnimation(new NativeKeyframeEffect(this, keyframes, options));
     if (options && typeof options === "object" && options.id !== undefined) animation.id = String(options.id);
     animation.play();
     return animation;
