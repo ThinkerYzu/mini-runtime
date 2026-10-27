@@ -433,6 +433,18 @@ for (const op of ops) {
     if (el) el.scrollTo({ left: arg, top: op[3], behavior: "instant" });
     continue;
   }
+  if (kind === "focus") {
+    // the element the page focused (id, or 0 for none, then seq): the tab's copy takes the focus; its
+    // focus and blur events are not the owner's (INPUT_CAPTURE)
+    globalThis.mirrorFocusSeq = arg;
+    const el = id ? nodes.get(id) : null, active = doc.activeElement;
+    globalThis.mirrorPageFocus = true;
+    try {
+      if (el) el.focus({ preventScroll: true });
+      else if (active && active !== doc.body) active.blur();
+    } finally { globalThis.mirrorPageFocus = false; }
+    continue;
+  }
   if (kind === "m") {
     // what the page asked of its media (MEDIA_SETUP), after the nodes it names
     try { globalThis.mediaApply(id); } catch (e) { mediaRefused.count++; if (mediaRefused.examples.length < 5) mediaRefused.examples.push(id.o + " " + e.name + ": " + e.message); }
@@ -543,6 +555,7 @@ const isSubmit = n => (n.localName === "button" && (n.getAttribute("type") || "s
   || (n.localName === "input" && ["submit", "image"].includes((n.getAttribute("type") || "").toLowerCase()) && n.form);
 const listener = e => {
   if (!e.isTrusted) return;
+  if (globalThis.mirrorPageFocus && ["focus", "blur", "focusin", "focusout"].includes(e.type)) return;
   const path = e.composedPath();
   const target = idOf(path[0]);
   if (target === null) return;
@@ -556,7 +569,7 @@ const listener = e => {
   // the tab's scroll offset with every event, and the page's last scroll the tab has applied
   const ev = { type: e.type, iface, target, active: idOf(doc.activeElement), task, bubbles: e.bubbles,
     cancelable: e.cancelable, composed: e.composed, fields, scroll: [window.scrollX, window.scrollY],
-    scrollSeq: globalThis.mirrorScrollSeq || 0, at: Date.now() };
+    scrollSeq: globalThis.mirrorScrollSeq || 0, focusSeq: globalThis.mirrorFocusSeq || 0, at: Date.now() };
   // the tab's events of the page's own scroll (MIRROR_APPLY), which the runtime fired itself: the
   // first scroll at the offset it went to, and the scrollend after it
   const echo = globalThis.mirrorScrollEcho;

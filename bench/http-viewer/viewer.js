@@ -60,6 +60,20 @@ let restoring = null, restoreFrame = false;
 // scroll event is the echo, and an offset not reached yet (the content not laid out), tried again
 // after each batch until it is or the owner scrolls the element.
 let elementSeqs = new WeakMap(), elementEchoes = new WeakMap(), elementWanted = new Map();
+// The element the page focused (the "focus" op): its number, sent back with the owner's input, and
+// the element while it cannot take the focus yet (not laid out), tried again after each batch until
+// it has it or the owner moves the focus. Its focus and blur events here are not the owner's.
+let focusSeq = 0, focusWanted = null, pageFocusing = false;
+function pageFocus() {
+  const doc = frame.contentDocument, node = focusWanted, active = doc.activeElement;
+  if (node && !node.isConnected) { focusWanted = null; return; }
+  pageFocusing = true;
+  try {
+    if (node) node.focus({preventScroll: true});
+    else if (active && active !== doc.body) active.blur();
+  } finally { pageFocusing = false; }
+  if (!node || doc.activeElement === node) focusWanted = null;
+}
 function scrollElement(node, x, y) {
   node.scrollTo({left: x, top: y, behavior: "instant"});
   const reached = node.scrollLeft === x && node.scrollTop === y;
@@ -470,6 +484,7 @@ function apply(batch) {
     if (kind === "adopted") { adoptedStyle(doc, id); continue; }
     if (kind === "scroll") { scrollSeq = id; holdScroll(arg, fourth); continue; }
     if (kind === "m") { media?.apply(id); continue; }
+    if (kind === "focus") { focusSeq = arg; focusWanted = id ? nodes.get(id) ?? null : null; pageFocus(); continue; }
     const node = nodes.get(id);
     if (!node) throw new Error("Unknown mirror node " + id);
     if (kind === "c") {
@@ -496,6 +511,7 @@ function apply(batch) {
   for (const [node, [x, y]] of elementWanted) {
     if (node.isConnected) scrollElement(node, x, y); else elementWanted.delete(node);
   }
+  if (focusWanted) pageFocus();
   if (doc.head) resourceBase(doc.head);
   attachFrames();
   // Moving a stylesheet reparses it; restore script-inserted rules after moves.
@@ -529,13 +545,17 @@ function capture(e) {
     elementEchoes.delete(element); elementWanted.delete(element);
   }
   if (restatesHover(e.type, path[0])) return;
+  if (["focus", "blur", "focusin", "focusout"].includes(e.type)) {
+    if (pageFocusing) return;
+    focusWanted = null;
+  }
   // (the page's document, or a frame's: its own focus and selection; the page's scroll)
   const top = frame.contentDocument, win = frame.contentWindow;
   const doc = path[0].nodeType === 9 ? path[0] : path[0].ownerDocument, view = doc.defaultView || win;
   const iface = Object.prototype.toString.call(e).slice(8, -1), fields = {};
   for (let i = iface; OWN[i]; i = OWN[i][0]) for (const f of OWN[i][1]) fields[f] = e[f];
   const ev = {type: e.type, iface, target, active: idOf(doc.activeElement), task: ++task, bubbles: e.bubbles,
-    cancelable: e.cancelable, composed: e.composed, fields, scroll: [win.scrollX, win.scrollY], scrollSeq, at: Date.now()};
+    cancelable: e.cancelable, composed: e.composed, fields, scroll: [win.scrollX, win.scrollY], scrollSeq, focusSeq, at: Date.now()};
   if (doc !== top) ev.outerActive = idOf(top.activeElement);
   if (element) ev.elementScroll = [element.scrollLeft, element.scrollTop, elementSeqs.get(element) ?? 0];
   else if ((e.type === "scroll" || e.type === "scrollend") && scrollEcho) {
@@ -588,6 +608,7 @@ function watch(root) {
 async function attach() {
   if (session) await api("detach", {session}).catch(() => {});
   ready = false; inputPending = false; events = []; hover = {}; after = 0; syncedViewport = null; restoring = null; scrollEcho = null;
+  focusSeq = 0; focusWanted = null;
   navigating = null; notice = ""; noticeSeq = 0;
   historyState = null; historyPending = null; historyControls();
   let current = null;

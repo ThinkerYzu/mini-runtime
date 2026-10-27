@@ -126,6 +126,9 @@ from a local server, and the two logs it writes to `window.__log` are diffed. Th
   select-options  <select> and <option> (Gecko's HTMLSelectElement and HTMLOptionsCollection, GAPS B211): the
                 options list, each option's text, value, label and selectedness, selectedIndex and value set
                 by script, add, remove, length, the Option factory, valueMissing, React-DOM's updateOptions
+  focus-method  the page's focus() and blur() (GAPS B153, task 0f376): focus, blur, focusin and focusout
+                with their related targets, the active element, which elements are focusable, focus()
+                scrolling an element out of view to the center unless preventScroll
 
 usage (from a Firefox source tree):
   FIREFOX_BIN=.../firefox xvfb-run -a ./mach python /path/to/bench/compare_bridge.py [CASE ...]

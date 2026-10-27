@@ -2596,7 +2596,7 @@
   if (!isWorker) Object.assign(Node, { ELEMENT_NODE: 1, ATTRIBUTE_NODE: 2, TEXT_NODE: 3, CDATA_SECTION_NODE: 4, COMMENT_NODE: 8, DOCUMENT_NODE: 9,
     DOCUMENT_TYPE_NODE: 10, DOCUMENT_FRAGMENT_NODE: 11, DOCUMENT_POSITION_DISCONNECTED: 1, DOCUMENT_POSITION_PRECEDING: 2,
     DOCUMENT_POSITION_FOLLOWING: 4, DOCUMENT_POSITION_CONTAINS: 8, DOCUMENT_POSITION_CONTAINED_BY: 16 });
-  if (!isWorker) for (const m of ["focus", "blur", "setPointerCapture", "releasePointerCapture"]) {
+  if (!isWorker) for (const m of ["setPointerCapture", "releasePointerCapture"]) {
     define(Element.prototype, m, function () {});
   }
   // (its activation: a link followed, a submit button's form submitted; bridge.js activate, below)
@@ -3195,11 +3195,72 @@
   if (!isWorker) getter(Document.prototype, "title", function () { const t = this.querySelector("title"); return t ? t.textContent.trim() : ""; },
     function (v) { let t = this.querySelector("title"); if (!t && this.head) { t = this.createElement("title"); this.head.appendChild(t); } if (t) t.textContent = String(v); });
   // the focused element: the bridge tab's, as the owner's input moves it (realsite --interactive,
-  // inputEvents); else, and once it has left the document, the body (element.focus() does nothing yet)
-  const focus = { element: null };
+  // inputEvents), or the one the page's focus() moved it to; once it has left the document, the body.
+  // A focus() or blur() of the page's numbers itself (`seq`) and goes to the tab (mirrorFlush's
+  // "focus" op); until the tab has it, its input does not take the focus back (fireInput).
+  const focus = { element: null, seq: 0, sent: 0 };
   if (!isWorker) getter(Document.prototype, "activeElement", function () {
     const el = focus.element;
     return el && this === global.document && el.isConnected && el.ownerDocument === this ? el : this.body;
+  });
+  // Element::IsFocusableWithoutStyle and nsIFrame::IsFocusable, as far as the runtime has them: an
+  // element with a frame and visible, with a tabindex, an editing host, a link, an enabled form
+  // control, a frame element, a details' summary or a media element with controls. Not done:
+  // the frame's -moz-user-focus, an <object>, an image map's areas need no frame (GAPS B153).
+  const isFocusable = el => {
+    if (!el.isConnected || __mrtBorderBox(el) === null) return false;
+    if (el.ownerDocument.defaultView?.getComputedStyle(el).visibility !== "visible") return false;
+    if (/^\s*[+-]?\d/.test(el.getAttribute("tabindex") ?? "")) return true;
+    if (el.namespaceURI === "http://www.w3.org/2000/svg") return el.localName === "a" && (el.hasAttribute("href") || el.hasAttribute("xlink:href"));
+    if (el.namespaceURI !== XHTML_NS) return false;
+    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    // (not disabled, by itself or by a disabled fieldset outside its first legend)
+    const enabled = () => {
+      if (el.hasAttribute("disabled")) return false;
+      const set = el.parentElement?.closest("fieldset[disabled]");
+      return !set || !!set.querySelector(":scope > legend")?.contains(el);
+    };
+    switch (el.localName) {
+      case "a": case "area": return el.hasAttribute("href");
+      case "input": return (el.getAttribute("type") || "").toLowerCase() !== "hidden" && enabled();
+      case "button": case "select": case "textarea": return enabled();
+      case "iframe": case "frame": return true;
+      case "summary": return el.parentElement?.localName === "details" && el.parentElement.querySelector(":scope > summary") === el;
+      case "audio": case "video": return el.hasAttribute("controls");
+    }
+    return false;
+  };
+  // nsFocusManager::Blur then Focus: blur and focusout at the element losing the focus, then focus
+  // and focusin at the one gaining it, each naming the other (relatedTarget), at once and trusted
+  const fireFocus = (el, type, related) => {
+    const bubbles = type === "focusin" || type === "focusout";
+    el.dispatchEvent(Object.assign(new FocusEvent(type, { bubbles, composed: true, view: global, relatedTarget: related }), { isTrusted: true }));
+  };
+  const ownScrollIntoView = isWorker ? null : Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView").value;
+  const moveFocus = to => {
+    const from = global.document.activeElement;
+    const old = from && from !== global.document.body ? from : null;
+    focus.element = to;
+    focus.seq++;
+    if (old) { fireFocus(old, "blur", to); fireFocus(old, "focusout", to); }
+    if (to) { fireFocus(to, "focus", old); fireFocus(to, "focusin", old); }
+  };
+  // HTMLOrSVGElement focus(): a focusable element of the window's document takes the focus; unless
+  // `preventScroll`, an axis on which no part of it is in the viewport scrolls to its center
+  // (nsFocusManager::ScrollIntoView: ScrollAxis(Center, IfNotVisible), less the line size). blur()
+  // of the focused element gives it back to the body. Not done: the window's own focus event at the
+  // first focus(), visibility within element scroll containers; a frame's document keeps its own
+  // focus, which the tab does not get (GAPS B153).
+  if (!isWorker) define(Element.prototype, "focus", function focus_(options) {
+    if (this.ownerDocument !== global.document || !isFocusable(this)) return;
+    if (global.document.activeElement !== this) moveFocus(this);
+    if (options !== null && typeof options === "object" && options.preventScroll) return;
+    const r = this.getBoundingClientRect();
+    const block = r.bottom <= 0 || r.top >= global.innerHeight, inline = r.right <= 0 || r.left >= global.innerWidth;
+    if (block || inline) ownScrollIntoView.call(this, { block: block ? "center" : "nearest", inline: inline ? "center" : "nearest" });
+  });
+  if (!isWorker) define(Element.prototype, "blur", function blur() {
+    if (this.ownerDocument === global.document && global.document.activeElement === this) moveFocus(null);
   });
   // Document::GetDefaultView: the window whose document this is; null for one that has no window
   // (DOMParser's, createHTMLDocument's, XHR's)
@@ -8611,6 +8672,7 @@
   //   ["history", index, count, ack] HTTP toolbar history availability and completed command task
   //   ["adopted", text]             the document's adopted sheets, as one <style> in the tab
   //   ["escroll", id, x, y, seq]    an element scroll container the page scrolled (elementScroll)
+  //   ["focus", id, seq]            the element the page focused, or 0 for none (focus)
   //   ["v", id, value, checked]     a form control's value and checkedness, once they are not what
   //                                 its attributes and text give
   //   ["f", id, spec or null]       (HTTP viewer) the document of a frame element now, or none
@@ -8887,6 +8949,12 @@
         state.sent = state.seq;
         ops.push(["escroll", id, state.x, state.y, state.seq]);
       }
+    }
+    // the element the page focused since (or the body, after a blur()), once the tab has it; a new
+    // tab gets the focused element with its snapshot
+    if (focus.sent !== focus.seq || mirror.snapshot) {
+      const el = global.document.activeElement, id = el === global.document.body ? 0 : mirror.ids.get(el);
+      if (id === 0 || (id && mirror.sent.has(el))) { focus.sent = focus.seq; ops.push(["focus", id, focus.seq]); }
     }
     // what the page asked of its media, once their elements are in the copy
     mediaLink.flush(ops);
@@ -9200,6 +9268,10 @@
       }
     }, inputGroups[0].ahead);
   }
+  // The tab's focused element is the page's once the tab has the page's last focus() or blur()
+  // (`focusSeq`, the "focus" op): before, it is the one the page moved the focus from. A frame's
+  // window keeps its own focus, which is not sent (focus).
+  const tabHasFocus = ev => isFrameWindow || (ev.focusSeq ?? 0) === focus.seq;
   function fireInput(ev) {
     if (env.httpViewer && ev.type === "viewer-history") {
       if ((ev.delta !== -1 && ev.delta !== 1) || !Number.isSafeInteger(ev.task) || ev.task < 1) return;
@@ -9231,11 +9303,11 @@
     // and default actions (the frame element is focused here); not the page's scroll
     const owner = mirror.windows.get(target);
     if (owner && owner !== global) {
-      if ("outerActive" in ev) focus.element = node(ev.outerActive);
+      if ("outerActive" in ev && tabHasFocus(ev)) focus.element = node(ev.outerActive);
       owner.__mrt.fireViewerInput(Object.assign({}, ev, { scroll: null }));
       return;
     }
-    focus.element = node(ev.active);
+    if (tabHasFocus(ev)) focus.element = node(ev.active);
     // The owner scrolled an element scroll container in the tab (task 0bec4): it is at the tab's
     // offset before its event, unless the page scrolled it since the tab last had its offset (`seq`).
     if (elementScrolled) {

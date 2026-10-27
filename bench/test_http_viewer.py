@@ -1196,6 +1196,8 @@ class Runtime(unittest.TestCase):
             page = "media-audible-resume.html"
         if self._testMethodName == "test_browser_element_scroll":
             page = "element-scroll.html"
+        if self._testMethodName == "test_browser_page_focus":
+            page = "page-focus.html"
         if self._testMethodName.startswith(("test_navigation", "test_browser_navigation")):
             page = "nav-start"
         if self._testMethodName == "test_browser_images_journey":
@@ -2461,6 +2463,49 @@ class Runtime(unittest.TestCase):
             self.until(lambda: "RELOADED" in log.read_text())
             self.assertIn("BEFORE_LOAD true", log.read_text())
             self.assertIn("AFTER_LOAD 0 true", log.read_text())
+        except Exception:
+            print("RUNTIME LOG", log.read_text()[-4000:]); raise
+        finally:
+            firefox_exit.close(browser)
+        self.call("stop", {})
+        self.proc.wait(timeout=20)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual((result["exit"], result["js_errors"]), (0, 0), result)
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_page_focus(self):
+        # Task 0f376 (B213): Instagram's reels. The page focuses its feed (a div with tabindex -1)
+        # with focus({preventScroll: true}); the viewer's copy takes the focus, so ArrowDown sent to
+        # the frame goes to the feed's keydown handler, which moves to the next item. The page's
+        # focus() of a text field takes the owner's typing, and its blur() gives the focus back.
+        from marionette_driver.marionette import Marionette
+        from marionette_driver.keys import Keys
+        import firefox_exit
+        log = self.root / "logs" / "demo.log"
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        browser.start_session()
+        status = 'return document.getElementById("status").textContent'
+        active = 'return document.activeElement.id || document.activeElement.localName'
+        try:
+            browser.set_context("content"); browser.navigate(self.viewer_url)
+            self.until(lambda: browser.execute_script(status).startswith("Connected"))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            self.until(lambda: browser.execute_script('return window.frameElement.style.pointerEvents === "auto"'))
+            self.until(lambda: "FOCUSED feed" in log.read_text())
+            self.until(lambda: browser.execute_script(active) == "feed")
+            browser.find_element("css selector", "body").send_keys(Keys.ARROW_DOWN)
+            self.until(lambda: "FEED 1" in log.read_text())
+            self.assertIn("KEY ArrowDown feed true", log.read_text())
+            self.until(lambda: browser.execute_script('return document.getElementById("feed").scrollTop') == 300)
+            browser.find_element("id", "search").click()
+            self.until(lambda: "ACTIVE q" in log.read_text())
+            self.until(lambda: browser.execute_script(active) == "q")
+            browser.find_element("css selector", "body").send_keys("ab")
+            self.until(lambda: "INPUT ab" in log.read_text())
+            browser.find_element("css selector", "body").send_keys(Keys.ENTER)
+            self.until(lambda: "ACTIVE body" in log.read_text())
+            self.until(lambda: browser.execute_script(active) == "body")
         except Exception:
             print("RUNTIME LOG", log.read_text()[-4000:]); raise
         finally:

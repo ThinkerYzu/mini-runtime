@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><title>Page focus</title>
+<style>
+ body{margin:0;font:16px sans-serif}
+ #feed{position:absolute;top:40px;left:20px;width:300px;height:300px;overflow-y:scroll;scroll-snap-type:y mandatory;outline:none}
+ #feed>div{height:300px;scroll-snap-align:start;background:#eef;border-bottom:1px solid #99c;box-sizing:border-box}
+ #controls{position:fixed;top:0;left:0}
+</style>
+<div id="controls"><button id="search">Search</button><input id="q"></div>
+<div id="feed" tabindex="-1"><div>0</div><div>1</div><div>2</div><div>3</div></div>
+<script>
+// Task 0f376 (B213): Instagram's reel page focuses its reel feed, a snapping element scroll
+// container with tabindex -1, with focus({preventScroll: true}); its keydown handler at the feed
+// moves to the next reel on ArrowDown. The page's focus() must reach the viewer's copy, so that
+// the owner's keys go to the element the page focused, and so must its focus() of a text field
+// and its blur() (on Enter in the field).
+const feed=document.getElementById('feed'), q=document.getElementById('q');
+const log=s=>console.log(s);
+feed.addEventListener('keydown',e=>{
+ log('KEY '+e.key+' '+e.target.id+' '+(document.activeElement===feed));
+ if(e.key!=='ArrowDown')return;
+ e.preventDefault();
+ feed.scrollTo({top:(Math.round(feed.scrollTop/300)+1)*300});
+});
+feed.addEventListener('scrollend',()=>log('FEED '+Math.round(feed.scrollTop/300)));
+feed.addEventListener('focus',()=>log('FOCUSED feed'));
+q.addEventListener('input',()=>log('INPUT '+q.value));
+document.getElementById('search').onclick=()=>{q.focus();log('ACTIVE '+document.activeElement.id);};
+q.addEventListener('keydown',e=>{if(e.key==='Enter'){q.blur();log('ACTIVE '+document.activeElement.localName);}});
+setTimeout(()=>feed.focus({preventScroll:true}),300);
+</script>

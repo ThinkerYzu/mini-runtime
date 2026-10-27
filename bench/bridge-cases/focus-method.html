@@ -1,0 +1,68 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>focus-method</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  #h { display: none; }
+  #v { visibility: hidden; }
+  #far, #far2 { position: absolute; left: 20px; }
+  #far { top: 3000px; }
+  #far2 { top: 5000px; }
+  #spacer { height: 6000px; }
+</style>
+<!-- The page's focus() and blur() (task 0f376, GAPS B153): Instagram focuses its reel scroll
+     container, a div with tabindex -1, with focus({preventScroll: true}), and its ArrowDown handler
+     then gets the key. Logged: each step's focus, blur, focusin and focusout events at the document
+     (target, relatedTarget, phase, bubbles, isTrusted), then the active element and the scroll offset;
+     which elements are focusable (tabindex, a plain div, an input, a disabled button, a link and an
+     anchor with no href, an input with no frame or hidden, an editing host); blur() of an element
+     that does not have the focus; focus() scrolling into view unless preventScroll; the focused
+     element taken out of the document. -->
+<div id="d" tabindex="-1">d</div>
+<div id="p">p</div>
+<input id="i">
+<button id="b" disabled>b</button>
+<a id="a" href="#x">a</a>
+<a id="n">n</a>
+<input id="h">
+<input id="v">
+<div id="e" contenteditable="true">e</div>
+<input id="far">
+<input id="far2">
+<div id="spacer"></div>
+<script>
+window.__log = [];
+const log = s => window.__log.push(s);
+const $ = id => document.getElementById(id);
+const desc = n => !n ? String(n) : n === window ? "window" : n === document ? "document" : n.id ? "#" + n.id : n.localName || n.nodeName;
+// (an element's: Firefox also gives the window its focus, at the document, at the first focus() after
+// load, which the runtime does not, GAPS B153)
+for (const type of ["focus", "blur", "focusin", "focusout"]) {
+  document.addEventListener(type, e => e.target.nodeType === 1 && log(`  ${type} target=${desc(e.target)} related=${desc(e.relatedTarget)} phase=${e.eventPhase} bubbles=${e.bubbles} composed=${e.composed} isTrusted=${e.isTrusted} ${e.constructor.name}`), true);
+}
+const steps = [
+  ["d.focus({preventScroll: true})", () => $("d").focus({ preventScroll: true })],
+  ["d.focus() again", () => $("d").focus()],
+  ["p.focus()", () => $("p").focus()],
+  ["i.focus()", () => $("i").focus()],
+  ["b.focus() (disabled)", () => $("b").focus()],
+  ["a.focus()", () => $("a").focus()],
+  ["n.focus() (no href)", () => $("n").focus()],
+  ["h.focus() (display none)", () => $("h").focus()],
+  ["v.focus() (visibility hidden)", () => $("v").focus()],
+  ["e.focus() (editing host)", () => $("e").focus()],
+  ["i.blur() (not focused)", () => $("i").blur()],
+  ["e.blur()", () => $("e").blur()],
+  ["far.focus({preventScroll: true})", () => $("far").focus({ preventScroll: true })],
+  ["far2.focus()", () => $("far2").focus()],
+  ["d.focus() then remove it", () => { $("d").focus({ preventScroll: true }); $("d").remove(); }],
+];
+addEventListener("load", () => {
+  for (const [name, fn] of steps) {
+    log(name);
+    fn();
+    log(`  active=${desc(document.activeElement)} scrollY=${Math.round(scrollY)}`);
+  }
+  log("done");
+});
+</script>
