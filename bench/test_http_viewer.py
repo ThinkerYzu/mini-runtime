@@ -1186,6 +1186,8 @@ class Runtime(unittest.TestCase):
                 page += "?unlimited=1"
         if self._testMethodName == "test_media_events_before_load_dropped":
             page = "media-stale-events.html"
+        if self._testMethodName == "test_media_replay_after_queued_input":
+            page = "media-reattach-input.html"
         if self._testMethodName == "test_browser_media":
             page = "media-demo.html"
         if self._testMethodName == "test_browser_media_large_replay":
@@ -1537,6 +1539,46 @@ class Runtime(unittest.TestCase):
         self.assertNotIn("EVENT ended after load", text)
         self.call("stop", {})
         self.proc.wait(timeout=10)
+
+    def test_media_replay_after_queued_input(self):
+        # A viewer replaced while an input group is still queued: the runtime defers the snapshot until
+        # the input has run, and the media replay must wait for it too. Sent before it, the server
+        # dropped it as an update ahead of the snapshot, and the new viewer's video never loaded (51aca).
+        log = self.root / "logs" / "demo.log"
+        session, batches = self.snapshot()
+        after, ms, elements = 0, None, {}
+        end = time.monotonic() + 20
+        while time.monotonic() < end and not (log.exists() and "MEDIA_READY" in log.read_text()):
+            reply = self.call("poll?session=" + session + "&after=" + str(after))
+            if reply.get("mediaType"):
+                self.call("media-type", {"session":session, "id":reply["mediaType"]["id"], "reply":[True,"probably"]})
+            events = []
+            batches += reply["batches"]
+            for batch in reply["batches"]:
+                after = batch["seq"]
+                for op in batch["ops"]:
+                    if op[0] != "m": continue
+                    m = op[1]
+                    if m["o"] == "attach": ms = m["ms"]; events.append({"k":"ms", "ms":m["ms"], "ev":"sourceopen"})
+                    elif m["o"] == "append": events.append({"k":"sb", "sb":m["sb"], "n":m["n"], "buffered":[[0, 1]], "dur":1})
+            if events:
+                self.call("media-events", {"session":session, "epoch":reply["mediaEpoch"], "events":events})
+            if after: self.call("input", {"session":session, "ack":after, "events":[]})
+        self.assertIn("MEDIA_READY", log.read_text())
+        elements = {dict(s.get("a", [])).get("id"): s for s in self.specs(batches).values() if "n" in s}
+        def click(name, task):
+            return {"type": "click", "iface": "MouseEvent", "target": elements[name]["i"], "active": None,
+                    "task": task, "bubbles": True, "cancelable": True, "composed": True, "fields": {"button": 0}}
+        self.call("input", {"session": session, "ack": after, "events": [click("busy", 1)]})
+        self.until(lambda: "BUSY_START" in log.read_text())
+        self.call("input", {"session": session, "ack": after, "events": [click("poke", 2)]})
+        self.call("detach", {"session": session})
+        session, batches = self.snapshot()
+        end = time.monotonic() + 3
+        while time.monotonic() < end:
+            batches += self.call("poll?session=" + session + "&after=" + str(batches[-1]["seq"]))["batches"]
+        replays = [op[1]["o"] for b in batches for op in b["ops"] if op[0] == "m" and op[1].get("ms") == ms and op[1].get("replay")]
+        self.assertEqual(replays[:1] + replays[-1:], ["attach", "resume"], replays)
 
     def test_media_types_before_attachment(self):
         # The page checks its codecs while it loads, before any viewer attaches: the queries wait for

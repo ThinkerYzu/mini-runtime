@@ -8657,6 +8657,10 @@
   // what changed since the last flush, sent to the bridge tab; at most every 100 ms unless `force`
   function mirrorFlush(force) {
     if (!mirror.on) return 0;
+    // A replacement viewer's snapshot waits for queued input (mirrorSnapshot): until it is taken, the
+    // server drops every update, and the media replay and queued media ops would go with them, leaving
+    // the new viewer's video without a source (task 51aca). They wait for the snapshot's flush.
+    if (mirror.pendingSnapshot) return 0;
     // the runtime's clock, not the page's Date, which a page may replace (the replay's nearly still one)
     const now = global.__mrt.clockNow();
     if (!force && now - mirror.last < 100) return 0;
@@ -8762,6 +8766,8 @@
           for (const [ms, rec] of this.history) if (rec.el === el) this.forget(ms);
         } else if (op.o === "attach" || op.ms) {
           if (op.o === "attach") {
+            // an element has one source: a new one replaces what was kept for the element
+            for (const [ms, rec] of this.history) if (rec.el === el) this.forget(ms);
             this.forget(op.ms);
             this.history.set(op.ms, {el, ops: [], bytes: 0});
           }

@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><title>Media replay after input</title>
+<video id="video" muted></video>
+<button id="busy">Keep runtime busy</button><button id="poke">Second input</button>
+<script>
+// Runtime protocol fixture (task 51aca): the test answers the media ops itself. A viewer is replaced
+// while an input group is still queued, which defers its snapshot; the new viewer must still get
+// the MediaSource's replay.
+const video=document.getElementById('video'), type='video/mp4; codecs="avc1.42c01e"';
+const spin=ms=>{const end=Date.now()+ms;while(Date.now()<end){}};
+document.getElementById('busy').onclick=()=>{console.log('BUSY_START');spin(1000);};
+document.getElementById('poke').onclick=()=>spin(300);
+const ms=new MediaSource();video.src=URL.createObjectURL(ms);
+ms.addEventListener('sourceopen',()=>{
+ const sb=ms.addSourceBuffer(type);
+ sb.addEventListener('updateend',()=>console.log('MEDIA_READY'),{once:true});
+ sb.appendBuffer(new Uint8Array(8));
+},{once:true});
+</script>
