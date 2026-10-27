@@ -707,6 +707,33 @@ class Protocol(unittest.TestCase):
         v.publish([["c", 0, []]], session)
         self.assertTrue(v.poll(session, 0)["batches"][0]["snapshot"])
 
+    def test_input_in_flight_through_a_resync(self):
+        # Input the viewer captured while its copy was ready reaches the service after the journal
+        # overflowed and before the viewer applied the new snapshot (task d71f3): it is taken, and the
+        # reply pauses capture, instead of a refusal that disconnected the viewer
+        v = Viewer("demo", "http://example.test/", [800, 600], max_batches=2)
+        session = v.attach([800, 600])["session"]
+        v.wait({"now": 0, "busy": True})
+        v.publish([["c", 0, []]], session)
+        seq = v.poll(session, 0)["batches"][0]["seq"]
+        self.assertTrue(v.input(session, seq, [])["ready"])
+        v.publish([["d", 1, "one"]])
+        v.publish([["d", 1, "two"]])
+        v.publish([["d", 1, "overflow"]])
+        self.assertEqual((v.stats["resyncs"], v.stats["last_overflow"]["batches"]), (1, 2))
+        wheel = {"type": "wheel", "iface": "WheelEvent", "target": 0, "task": 1}
+        self.assertFalse(v.input(session, seq, [wheel])["ready"])
+        self.assertEqual((v.session, v.stats["resync_input"]), (session, 1))
+        state = v.wait({"now": 0, "busy": True})["ok"]
+        self.assertEqual((state["snapshot"], state["events"]), (session, [wheel]))
+        v.publish([["c", 0, []]], session)
+        seq = v.poll(session, seq)["batches"][-1]["seq"]
+        self.assertTrue(v.input(session, seq, [wheel])["ready"])
+        # a new viewport still needs its snapshot first: input captured in the old geometry is refused
+        v.input(session, seq, [], [900, 700])
+        with self.assertRaises(ValueError):
+            v.input(session, seq, [wheel])
+
     def test_large_snapshot_does_not_fill_the_journal(self):
         # A snapshot carrying a big media replay may exceed the journal budget (task 3450e): the
         # updates after it, sent before the viewer acknowledges it, are still the journal's to bound

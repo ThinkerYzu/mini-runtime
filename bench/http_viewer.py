@@ -82,6 +82,9 @@ class Viewer:
         self.last_seen = 0
         self.visible = True
         self.ready = False
+        # the session's viewer has applied a snapshot at the current viewport: the node ids of the
+        # input it captures stay valid through a later resynchronization (task d71f3)
+        self.viewport_applied = False
         self.snapshot_needed = False
         self.awaiting_snapshot = False
         self.snapshot_seq = None
@@ -138,6 +141,7 @@ class Viewer:
         self.polled_navigating = None
         self.stats = {"media_resources": 0, "media_resource_requests": 0, "media_resource_bytes": 0, "media_resource_chunks": 0, "media_resource_cancels": 0, "media_ops": 0, "media_replays": 0, "media_bytes": 0, "media_events": 0, "media_queries": 0, "media_attach_waits": 0, "media_cache_answers": 0, "media_resets": 0, "media_stale_events": 0, "webgl_jobs": 0, "webgl_timeouts": 0, "webgl_dummy": 0, "webgl_native": 0, "webgl_replays": 0, "webgl_overflows": 0, "attachments": 0, "snapshots": 0, "resyncs": 0, "events": 0,
                       "navigations": 0, "navigation_failures": 0, "navigation_refusals": 0, "navigation_input_dropped": 0,
+                      "resync_input": 0, "update_peak_bytes": 0, "journal_peak_bytes": 0, "journal_peak_batches": 0, "last_overflow": None,
                       "http_api_calls": 0, "http_api_bytes_in": 0, "http_api_bytes_out": 0,
                       "ws_connections": 0, "ws_calls": 0, "ws_bytes_in": 0, "ws_bytes_out": 0}
 
@@ -147,7 +151,7 @@ class Viewer:
         self.gl_job = None
         self.gl_cursor = 0
         self.session = None
-        self.ready = False
+        self.ready = self.viewport_applied = False
         self.snapshot_needed = self.awaiting_snapshot = False
         self.snapshot_seq = None
         self.journal.clear()
@@ -223,8 +227,13 @@ class Viewer:
             self.stats["media_replays"] += sum(o[0] == "m" and o[1].get("o") == "attach" and o[1].get("replay", False) for o in ops)
             self.stats["media_bytes"] += sum(len(o[1].get("b64", "")) * 3 // 4 for o in ops if o[0] == "m")
             size = len(json.dumps(ops))
+            if not snapshot:
+                self.stats["update_peak_bytes"] = max(self.stats["update_peak_bytes"], size)
             if not snapshot and (len(self.journal) >= self.max_batches or self.journal_bytes + size > self.max_bytes):
                 self.stats["resyncs"] += 1
+                # (what overflowed: the unacknowledged batches and bytes, and the update that did not fit)
+                self.stats["last_overflow"] = {"batches": len(self.journal), "bytes": self.journal_bytes, "update_bytes": size,
+                                               "media_b64": sum(len(o[1].get("b64", "")) for o in ops if o[0] == "m")}
                 self._media_reset()
                 self._resync()
                 self.lock.notify_all()
@@ -240,6 +249,8 @@ class Viewer:
             # again before the viewer could acknowledge it, without end (task 3450e).
             self.journal.append({"seq": self.seq, "snapshot": bool(snapshot), "ops": ops})
             self.journal_bytes += 0 if snapshot else size
+            self.stats["journal_peak_bytes"] = max(self.stats["journal_peak_bytes"], self.journal_bytes)
+            self.stats["journal_peak_batches"] = max(self.stats["journal_peak_batches"], len(self.journal))
             if snapshot:
                 self.snapshot_seq = self.seq
             self.lock.notify_all()
@@ -334,18 +345,25 @@ class Viewer:
                 raise ValueError("invalid sequence acknowledgement")
             if viewport is not None and viewport != self.viewport:
                 self.viewport = viewport
+                self.viewport_applied = False
                 self._resync()
             if visible is not None:
                 self.visible = bool(visible)
             if self.snapshot_seq is not None and ack >= self.snapshot_seq:
-                self.ready = True
+                self.ready = self.viewport_applied = True
             # The browser acknowledged applying these batches. Keep no delivered history.
             while self.journal and self.journal[0]["seq"] <= ack:
                 batch = self.journal.popleft()
                 if not batch["snapshot"]:
                     self.journal_bytes -= len(json.dumps(batch["ops"]))
-            if events and not self.ready:
+            if events and not self.viewport_applied:
                 raise ValueError("snapshot and viewport must be applied before input")
+            if events and not self.ready:
+                # Input the viewer captured before it heard of a resynchronization (a journal overflow,
+                # a media queue reset) refers to node ids the new snapshot keeps, so it is taken as any
+                # input that lags the copy is; refusing it disconnected the viewer (task d71f3). The
+                # reply's ready false pauses capture until the new snapshot is applied.
+                self.stats["resync_input"] += len(events)
             if events and self.navigating:
                 # (the old document is frozen and about to go: its input is dropped, not an error
                 # that would disconnect the viewer)
