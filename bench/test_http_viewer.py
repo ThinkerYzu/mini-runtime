@@ -734,6 +734,18 @@ class Protocol(unittest.TestCase):
         with self.assertRaises(ValueError):
             v.input(session, seq, [wheel])
 
+    def test_largest_media_update_fits_the_journal(self):
+        # One flush may carry appendBuffer's 8 MiB of pending segment bytes, 10.7 MiB as base64: the
+        # default journal holds it after an unacknowledged update instead of resynchronizing (d71f3)
+        v = Viewer("demo", "http://example.test/", [800, 600])
+        session = v.attach([800, 600])["session"]
+        v.wait({"now": 0, "busy": True})
+        v.publish([["c", 0, []]], session)
+        v.publish([["d", 1, "x" * 100000]])
+        v.publish([["m", {"o": "append", "b64": "A" * (8 * 1024 * 1024 * 4 // 3)}]])
+        self.assertEqual((v.stats["resyncs"], len(v.journal)), (0, 3))
+        self.assertGreater(v.stats["update_peak_bytes"], 10 * 1024 * 1024)
+
     def test_large_snapshot_does_not_fill_the_journal(self):
         # A snapshot carrying a big media replay may exceed the journal budget (task 3450e): the
         # updates after it, sent before the viewer acknowledges it, are still the journal's to bound

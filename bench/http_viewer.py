@@ -19,6 +19,7 @@ import secrets
 import signal
 import socket
 import struct
+import sys
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -26,6 +27,11 @@ from urllib.parse import parse_qs, urlsplit
 ASSETS = Path(__file__).with_name("http-viewer")
 MAX_BODY = 1024 * 1024
 MAX_GL = 8 * 1024 * 1024
+# The update journal's byte budget. It must hold the largest update the runtime sends: one flush may
+# carry 8 MiB of media segments (appendBuffer's transport limit in bridge.js), 10.7 MiB as base64, and
+# with an 8 MiB budget such a flush resynchronized on its own, even with nothing else unacknowledged
+# (task d71f3).
+JOURNAL_BYTES = 16 * 1024 * 1024
 # Media element resources through the API process (GAPS B172): one API request's range, the handles
 # a runtime may hold, the bytes kept in memory (runtime Blobs, and the whole answers of servers that
 # ignore Range), the largest one kept, and the responses streaming at once (VIEWER_MEDIA_CHUNK: another
@@ -68,7 +74,7 @@ def load_media_cache(path):
 
 class Viewer:
     def __init__(self, name, page_url, viewport, *, lease=5, first_attach=60, media_cache=None, max_batches=128,
-                 max_bytes=8 * 1024 * 1024, gl_max_bytes=32 * 1024 * 1024, gl_max_batches=10000):
+                 max_bytes=JOURNAL_BYTES, gl_max_bytes=32 * 1024 * 1024, gl_max_batches=10000):
         self.name, self.page_url = name, page_url
         self.viewport = list(viewport)
         self.lease, self.max_batches, self.max_bytes = lease, max_batches, max_bytes
@@ -234,6 +240,9 @@ class Viewer:
                 # (what overflowed: the unacknowledged batches and bytes, and the update that did not fit)
                 self.stats["last_overflow"] = {"batches": len(self.journal), "bytes": self.journal_bytes, "update_bytes": size,
                                                "media_b64": sum(len(o[1].get("b64", "")) for o in ops if o[0] == "m")}
+                # (the launcher's stderr keeps it when the driver is killed before its report is written)
+                print(f"viewer: update journal overflow ({json.dumps(self.stats['last_overflow'])}); resynchronizing",
+                      file=sys.stderr, flush=True)
                 self._media_reset()
                 self._resync()
                 self.lock.notify_all()
