@@ -916,11 +916,44 @@ fn wake_checks() -> usize {
     usize::from(!ok)
 }
 
+/// The owner's input (prelude queueInputTask, task 0f15b) runs ahead of the tasks queued before it
+/// came, here two timeouts already overdue; the other tasks keep their order, so the 0 ms timeouts
+/// queued since run after those two, and after the input's second task. Returns the failures.
+fn input_order_checks() -> usize {
+    let html = r#"<!doctype html><html><body><script>
+    var log = [];
+    setTimeout(() => log.push("A"), 10);
+    setTimeout(() => log.push("B"), 20);
+    </script></body></html>"#;
+    let mut page = Page::new(Dom::parse(html));
+    page.run_scripts("input order");
+    page.eval(
+        "__mrt.setClock(100);
+        const ahead = __mrt.taskOrder();
+        __mrt.queueInputTask(() => {
+          log.push('input 1');
+          setTimeout(() => log.push('t0'), 0);
+          __mrt.queueInputTask(() => log.push('input 2'), ahead);
+        }, ahead);
+        setTimeout(() => log.push('after'), 0);",
+        "check",
+    );
+    page.run_timers_stepwise(1_000, 50_000);
+    page.eval("console.log(log.join(' ; '))", "check");
+    let want = "input 1 ; input 2 ; A ; B ; after ; t0";
+    let ok = page.errors() == 0 && page.console() == [want];
+    println!("{} input ahead of the tasks queued before it", if ok { "ok  " } else { "FAIL" });
+    if !ok {
+        println!("  want: {want:?}\n  got:  {:?} (errors: {})", page.console(), page.errors());
+    }
+    usize::from(!ok)
+}
+
 fn main() {
     let failures = std::thread::Builder::new()
         .stack_size(2 << 30)
         .spawn(|| {
-            let mut failures = global_checks() + hibernation_checks() + wake_checks();
+            let mut failures = global_checks() + hibernation_checks() + wake_checks() + input_order_checks();
             for (name, body, want) in CASES {
                 let (got, errors) = run_case(body);
                 let ok = errors == 0 && got.iter().map(String::as_str).eq(want.iter().copied());

@@ -556,6 +556,11 @@
       waited.add(next[0]);
       next[1].order = clock.next++;
     }
+    // the owner's input goes ahead of a task queued before it came (queueInputTask), but not of the
+    // refresh driver's (Gecko's Vsync priority is above InputHigh)
+    if (next && next[1].ahead === undefined && !next[1].frame && next[1].callback !== refreshTick) {
+      for (const [id, t] of timers) if (t.ahead !== undefined && next[1].order < t.ahead) { next = [id, t, t.at]; break; }
+    }
     const w = workerTask();
     if (w && (!next || w.at < next[2])) return [0, w, w.at];
     return next;
@@ -653,7 +658,7 @@
     const next = nextDueTimer();
     if (!next || next[2] > limit) return 0;
     const [id, t, at] = next;
-    if (clock.profile) clock.lastRun = t;
+    if (clock.profile) { clock.lastRun = t; clock.lastLate = clockNow() - at; }
     startTimer(id, t, at);
     const nesting = t.nesting;
     rescheduleOrDelete(id, t);
@@ -2859,6 +2864,8 @@
     // loop's profile (realsite's MRT_TIMER_PROFILE, GAPS A22): its kind, delay and the start of its
     // callback's source
     profileTimers() { clock.profile = true; },
+    // how late on the clock the timer runNextTimer ran last started (realsite's MRT_LOOP_TRACE)
+    lastTimerLate() { return clock.lastLate || 0; },
     lastTimerKey() {
       const t = clock.lastRun;
       if (!t) return "";
@@ -2870,6 +2877,16 @@
     // a task of the C++ layer's (the rejection events) as a 0 ms timer, behind those already due;
     // the prelude's own queue, so a page that replaces setTimeout does not see it
     queueTask(fn, arg) { addTimer(fn, 0, [arg], false); },
+    // A task of the owner's input (bridge.js inputEvents), ahead of every task queued before the
+    // input came (`ahead`: taskOrder() then), as Gecko's InputTaskManager runs input events before
+    // the normal-priority tasks waiting (TaskController, EventQueuePriority::InputHigh), not before
+    // the refresh driver's animation frames and tick (EventQueuePriority::Vsync). The other
+    // tasks keep their order, so one queued since (a 0 ms timer set by the input's previous task)
+    // runs before it only when no older task is due (task 0f15b: during YouTube's playback each of
+    // a click's or key's tasks waited behind seconds of overdue frames and media tasks).
+    queueInputTask(fn, ahead) { const id = addTimer(fn, 0, [], false); timers.get(id).ahead = ahead; },
+    // the queue order the next task gets (queueInputTask's `ahead`)
+    taskOrder() { return clock.next; },
     // the scheduler's (bridge.js): a task at a priority (PRIORITY_NORMAL's scale), after `ms`; the
     // count of queued user-visible and user-blocking tasks the timeouts wait for
     queuePriorityTask(fn, priority, ms = 0) { addTimer(fn, ms, [], false, false, priority); },

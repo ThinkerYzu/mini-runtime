@@ -289,6 +289,7 @@ fn run_interactive_loop(page: &mut Page, hib: &mut Hibernation, upkeep: &mut Upk
             profile.flush(page, false);
             let reply = profile.wait(|| page.bridge_raw(&format!("{{\"op\":\"wait\",\"until\":{now},\"now\":{now},\"busy\":true}}")));
             asked = Instant::now();
+            profile.trace_input(page, &reply, now);
             if profile.input(|| take_input(page, &reply, hib, upkeep, now)) {
                 page.eval("__mrt.mirrorCheck(); __mrt.mirrorStop()", "driver");
                 return (ran, now);
@@ -314,6 +315,7 @@ fn run_interactive_loop(page: &mut Page, hib: &mut Hibernation, upkeep: &mut Upk
         let until = if next < 0.0 { "null".to_string() } else { format!("{next}") };
         let reply = profile.wait(|| page.bridge_raw(&format!("{{\"op\":\"wait\",\"until\":{until},\"now\":{now}}}")));
         asked = Instant::now();
+        profile.trace_input(page, &reply, now);
         if profile.input(|| take_input(page, &reply, hib, upkeep, now)) {
             // the tab's copy checked, then its bookkeeping dropped before the page is measured
             page.eval("__mrt.mirrorCheck(); __mrt.mirrorStop()", "driver");
@@ -402,10 +404,17 @@ struct LoopProfile {
     wait_ms: f64,
     upkeep_ms: f64,
     by_timer: Option<HashMap<String, (usize, f64)>>,
+    /// MRT_LOOP_TRACE=1: on stderr, each task or flush over 30 ms, each wait answer with the owner's
+    /// input, and each input task with how long after its input's arrival it ran (task 0f15b)
+    trace: Option<Instant>,
 }
 
 impl LoopProfile {
     fn from_env(page: &mut Page) -> Self {
+        let trace = std::env::var_os("MRT_LOOP_TRACE").is_some();
+        if trace {
+            page.eval("__mrt.profileTimers()", "driver");
+        }
         let by_timer = std::env::var_os("MRT_TIMER_PROFILE").is_some().then(|| {
             page.eval("__mrt.profileTimers()", "driver");
             HashMap::new()
@@ -424,6 +433,7 @@ impl LoopProfile {
             wait_ms: 0.0,
             upkeep_ms: 0.0,
             by_timer,
+            trace: trace.then(Instant::now),
         }
     }
 
@@ -441,6 +451,13 @@ impl LoopProfile {
             e.0 += 1;
             e.1 += ms;
         }
+        if let Some(since) = self.trace {
+            let key = page.eval_string("__mrt.lastTimerKey()", "driver");
+            let late = page.eval_number("__mrt.lastTimerLate()", "driver");
+            if ms > 30.0 || key.contains("inputGroups") {
+                eprintln!("trace {:.0}: task {ms:.0} ms, {late:.0} ms late: {key}", since.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
         true
     }
 
@@ -450,6 +467,9 @@ impl LoopProfile {
         let t = Instant::now();
         let ops = page.eval_number(if force { "__mrt.mirrorFlush(true)" } else { "__mrt.mirrorFlush(false)" }, "driver");
         let ms = t.elapsed().as_secs_f64() * 1000.0;
+        if let Some(since) = self.trace.filter(|_| ms > 30.0) {
+            eprintln!("trace {:.0}: flush {ms:.0} ms, {ops} ops", since.elapsed().as_secs_f64() * 1000.0);
+        }
         self.mirror_flushes += 1;
         self.mirror_ms += ms;
         if ops > 0.0 {
@@ -463,6 +483,16 @@ impl LoopProfile {
         let r = f();
         self.wait_ms += t.elapsed().as_secs_f64() * 1000.0;
         r
+    }
+
+    /// MRT_LOOP_TRACE: a wait's answer that carries events, with their types
+    fn trace_input(&self, page: &mut Page, reply: &str, now: f64) {
+        if let Some(since) = self.trace {
+            let types = page.eval_string(&format!("((({reply}).ok || {{}}).events || []).map(e => e.type).join(' ')"), "driver");
+            if !types.is_empty() {
+                eprintln!("trace {:.0}: input at clock {now:.0}: {types}", since.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
     }
 
     fn input<T>(&mut self, f: impl FnOnce() -> T) -> T {

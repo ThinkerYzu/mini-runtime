@@ -8960,6 +8960,7 @@
   // (`task`: in Gecko, pointerdown, mousedown and the focus they move are one task) run in one task,
   // in the tab's order, and each group's task is queued once the one before has run, so a 0 ms timer
   // set in pointerdown runs before pointerup, as in Firefox, where the next widget event comes later.
+  // The groups go ahead of the tasks queued before their events came (queueInputTask).
   // Before each event, the focused element and the selection become the tab's, and so do a control's
   // value and checkedness (an input or change event): what Firefox's editor did there. The tab has
   // already done the default actions (focus, typing, scrolling); a click on a link the page did not
@@ -8970,16 +8971,18 @@
   const inputGroups = [];
   let inputQueued = false;
   function inputEvents(list) {
+    // the tasks queued so far wait for these events' (queueInputTask)
+    const ahead = global.__mrt.taskOrder();
     for (const ev of list) {
       const last = inputGroups[inputGroups.length - 1];
       if (last && last.task === ev.task) last.events.push(ev);
-      else inputGroups.push({ task: ev.task, events: [ev] });
+      else inputGroups.push({ task: ev.task, events: [ev], ahead });
     }
     if (!inputQueued && inputGroups.length) queueInputGroup();
   }
   function queueInputGroup() {
     inputQueued = true;
-    global.__mrt.queueTask(() => {
+    global.__mrt.queueInputTask(() => {
       const group = inputGroups.shift();
       try {
         for (const e of group.events) fireInput(e);
@@ -8995,7 +8998,7 @@
           });
         } else if (!mirror.on) mirror.byId.clear();
       }
-    });
+    }, inputGroups[0].ahead);
   }
   function fireInput(ev) {
     if (env.httpViewer && ev.type === "viewer-history") {

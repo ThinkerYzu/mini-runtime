@@ -74,7 +74,7 @@ def main():
                      'INTERACTIVE_DEBUG', 'RENDER', 'HEAP_SCAN', 'WALL_LIMIT', 'INPUT_ACTIONS', 'MARIONETTE_PORT',
                      'GDOC_URL', 'DISPLAY', 'WAYLAND_DISPLAY'}
             env = {k: v for k, v in os.environ.items()
-                   if (not k.startswith(owned) and k not in flags) or k == 'VIEWER_MEDIA_REPLAY_UNLIMITED'}
+                   if (not k.startswith(owned) and k not in flags) or k in ('VIEWER_MEDIA_REPLAY_UNLIMITED', 'MRT_LOOP_TRACE')}
             env.update(VIEWER_HTTP=f'127.0.0.1:{args.port}', NO_FIREFOX='1', API_PROCESS='all',
                        ONLY='page', EXTRA_SITES=json.dumps({'page': args.url}), REALSITES_PROFILE=str(seed),
                        MRT_VIEWER_STORE=str(profile / 'store'), MRT_CONSOLE_DIR=str(session / 'console'),
