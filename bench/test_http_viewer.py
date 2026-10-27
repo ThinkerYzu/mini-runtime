@@ -1225,6 +1225,8 @@ class Runtime(unittest.TestCase):
                 page += "?unlimited=1"
         if self._testMethodName == "test_media_events_before_load_dropped":
             page = "media-stale-events.html"
+        if self._testMethodName == "test_media_out_of_copy_bytes":
+            page = "media-out-of-copy.html"
         if self._testMethodName == "test_media_replay_after_queued_input":
             page = "media-reattach-input.html"
         if self._testMethodName == "test_browser_media":
@@ -1548,6 +1550,44 @@ class Runtime(unittest.TestCase):
         self.assertEqual(result["bridge_tab"], {"made": False})
         self.assertFalse(result["unsupported_ops"])
 
+
+    def test_media_out_of_copy_bytes(self):
+        # B212 follow-up (task daa9b): appends queued for elements no longer in the copy do not
+        # count against appendBuffer's 8 MiB transport limit, and one put back is sent then
+        log = self.root / "logs" / "demo.log"
+        session = self.call("attach", {"runtime": "demo", "viewport": [800, 600]})["session"]
+        sent, after = [], 0
+        end = time.monotonic() + 45
+        while time.monotonic() < end:
+            reply = self.call("poll?session=" + session + "&after=" + str(after))
+            if reply.get("mediaType"):
+                self.call("media-type", {"session": session, "id": reply["mediaType"]["id"], "reply": [True, "probably"]})
+            events = []
+            for batch in reply["batches"]:
+                after = batch["seq"]
+                for op in batch["ops"]:
+                    if op[0] != "m":
+                        continue
+                    m = op[1]
+                    sent.append(m)
+                    if m["o"] == "attach":
+                        events.append({"k": "ms", "ms": m["ms"], "ev": "sourceopen"})
+                    elif m["o"] == "append":
+                        events.append({"k": "sb", "sb": m["sb"], "n": m["n"], "buffered": [], "dur": 1})
+            if events:
+                self.call("media-events", {"session": session, "epoch": reply["mediaEpoch"], "events": events})
+            if after:
+                self.call("input", {"session": session, "ack": after, "events": []})
+            text = log.read_text() if log.exists() else ""
+            self.assertNotIn("OUT_OF_COPY_ERROR", text)
+            if "PUT_BACK_APPENDED" in text:
+                break
+        else:
+            self.fail("fixture did not finish: " + (log.read_text() if log.exists() else ""))
+        self.assertIn("IN_COPY_APPENDED", text)
+        # the four in-copy appends, then the put-back video's; the other two removed ones never left
+        self.assertEqual(sum(1 for m in sent if m["o"] == "append"), 5, [m["o"] for m in sent])
+        self.call("stop", {})
 
     def test_media_events_before_load_dropped(self):
         # The tab's pause and ended for a source the page has replaced arrive after the page's load():

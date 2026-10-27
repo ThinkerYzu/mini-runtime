@@ -9159,6 +9159,11 @@
   const mediaValue = v => (typeof v === "string" ? Number(v) : v);
   const mediaLink = {
     on: () => mirror.on || !!env.httpViewer,
+    // pendingBytes: the segment bytes queued since the last flush (appendBuffer's 8 MiB transport
+    // limit). A flush sends the queues of the elements in the copy and leaves the others' until they
+    // are, so it starts the count again: those wait outside the transport (B212 follow-up, task
+    // daa9b: Instagram's preloaded reels, never in the copy, held their first segments' bytes in
+    // the count for good, and each later append over what was left was refused)
     available: false, epoch: 0, pendingBytes: 0,
     history: new Map(), historyBytes: 0, historyOps: 0,
     // A source whose next op would take the retained history over its budget (B181, task 19b81)
@@ -9289,7 +9294,6 @@
             entry.epoch = this.epoch;
             if (!entry.live) {
               const q = this.queues.get(entry.el) || [];
-              this.pendingBytes -= q.reduce((n, op) => n + (op.ms === ms && op.b64 ? op.b64.length * 3 / 4 : 0), 0);
               this.queues.set(entry.el, q.filter(op => op.ms !== ms));
               this.lose(ms, "Media replay history dropped; rebuild MediaSource");
             }
@@ -9298,7 +9302,6 @@
           // Accepted source work is already retained, including not-yet-flushed commands.
           const q = this.queues.get(entry.el) || [];
           const keep = q.filter(op => op.o !== "attach" && !op.ms);
-          this.pendingBytes -= q.reduce((n, op) => n + (op.b64 ? op.b64.length * 3 / 4 : 0), 0);
           this.queues.set(entry.el, keep);
           entry.epoch = this.epoch;
           for (const op of entry.ops) ops.push(["m", Object.assign({}, op, {
@@ -9322,13 +9325,22 @@
       }
       for (const [el, q] of this.queues) {
         const rec = mirror.sent.get(el);
-        if (!rec || mirror.byId.get(rec.i) !== el) continue;
+        if (!rec || mirror.byId.get(rec.i) !== el) {
+          // a source the viewer has not had in this epoch is rebuilt from its history when its
+          // element comes into the copy (above), so its queued ops are not kept twice
+          const entry = env.httpViewer && [...this.history.values()].find(e => e.el === el);
+          if (entry && !entry.dropped && entry.epoch !== this.epoch) {
+            const keep = q.filter(op => op.o !== "attach" && !op.ms);
+            if (keep.length) this.queues.set(el, keep); else this.queues.delete(el);
+          }
+          continue;
+        }
         for (const op of q) { op.el = rec.i; ops.push(["m", op]); }
         this.els.set(rec.i, new WeakRef(el));
         this.stats.ops += q.length;
-        this.pendingBytes -= q.reduce((n, op) => n + (op.b64 ? op.b64.length * 3 / 4 : 0), 0);
         this.queues.delete(el);
       }
+      this.pendingBytes = 0;
     },
   };
   // HTTP decoder state is ephemeral; bounded source commands reconstruct it.

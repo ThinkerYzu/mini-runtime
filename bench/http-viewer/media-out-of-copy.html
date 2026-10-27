@@ -1,0 +1,31 @@
+<!doctype html><meta charset="utf-8"><video id="a" muted></video><video id="b" muted></video><video id="c" muted></video><video id="d" muted></video>
+<script>
+// Runtime protocol fixture (B212 follow-up, task daa9b): the test supplies codec/source/buffer replies.
+// Three videos each start a 3 MiB append and leave the document before it reaches the viewer, as
+// Instagram's preloaded reels do; their bytes wait outside the transport, so a video still in the
+// copy can append, and a video put back gets its append.
+const type='video/mp4; codecs="avc1.42c01e"';
+const once=(o,t)=>new Promise(r=>o.addEventListener(t,r,{once:true}));
+async function open(video){
+ const ms=new MediaSource();video.src=URL.createObjectURL(ms);await once(ms,'sourceopen');
+ return ms.addSourceBuffer(type);
+}
+(async()=>{
+ const [a,b,c,d]=['a','b','c','d'].map(id=>document.getElementById(id));
+ const held=[];
+ for(const v of [a,b,c]){
+  const sb=await open(v);
+  held.push(once(sb,'updateend'));
+  sb.appendBuffer(new Uint8Array(3*1024*1024));
+  v.remove();
+ }
+ await new Promise(r=>setTimeout(r,500));
+ console.log('REMOVED');
+ const sb=await open(d);
+ for(let i=0;i<4;i++){const done=once(sb,'updateend');sb.appendBuffer(new Uint8Array(3*1024*1024));await done;}
+ console.log('IN_COPY_APPENDED');
+ document.body.append(a);
+ await held[0];
+ console.log('PUT_BACK_APPENDED');
+})().catch(e=>console.log('OUT_OF_COPY_ERROR '+e.name+' '+e.message));
+</script>
