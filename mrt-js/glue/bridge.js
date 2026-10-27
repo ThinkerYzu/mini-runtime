@@ -5111,8 +5111,7 @@
       if (!this._ms || this._updating) throw domError("InvalidStateError");
       if (this._ms._element && this._ms._element._error) throw domError("InvalidStateError");
       if (env.httpViewer && ((data?.byteLength || 0) > 4 * 1024 * 1024 ||
-          mediaLink.pendingBytes + (data?.byteLength || 0) > 8 * 1024 * 1024 ||
-          !mediaLink.canRetain(data?.byteLength || 0))) throw domError("QuotaExceededError");
+          mediaLink.pendingBytes + (data?.byteLength || 0) > 8 * 1024 * 1024)) throw domError("QuotaExceededError");
       if (this._ms._readyState === "ended") this._ms._setReadyState("open");
       this._updating = true;
       queueEvent(this, "updatestart");
@@ -8986,10 +8985,13 @@
     on: () => mirror.on || !!env.httpViewer,
     available: false, epoch: 0, pendingBytes: 0,
     history: new Map(), historyBytes: 0, historyOps: 0,
-    canRetain(bytes) {
-      // JSON's base64 plus a conservative envelope, measured as UTF-16 storage.
-      return env.mediaReplayUnlimited === true ||
-        (this.historyBytes + Math.ceil(bytes / 3) * 8 + 1024 <= 32 * 1024 * 1024 && this.historyOps < 10000);
+    // A source whose next op would take the retained history over its budget (B181, task 19b81)
+    // keeps playing: its history is freed and no more of it is kept (`dropped`), its ops still go
+    // to the viewer. Only a new viewer cannot rebuild it; flush fails it then, and the page makes
+    // a new one. `live`: every op since its attach is in the queue for the current viewer.
+    drop(rec) {
+      this.historyBytes -= rec.bytes; this.historyOps -= rec.ops.length;
+      rec.ops = []; rec.bytes = 0; rec.dropped = true;
     },
     forget(ms) {
       const rec = this.history.get(ms);
@@ -9031,10 +9033,11 @@
             // an element has one source: a new one replaces what was kept for the element
             for (const [ms, rec] of this.history) if (rec.el === el) this.forget(ms);
             this.forget(op.ms);
-            this.history.set(op.ms, {el, ops: [], bytes: 0});
+            this.history.set(op.ms, {el, ops: [], bytes: 0, live: this.available});
           }
           const rec = this.history.get(op.ms);
-          if (rec) {
+          if (rec && !this.available) rec.live = false;
+          if (rec && !rec.dropped) {
             if (op.o === "abort") {
               const at = rec.ops.findIndex(o => o.sb === op.sb && o.n === op.n && (o.o === "append" || o.o === "remove"));
               if (at >= 0) {
@@ -9044,11 +9047,11 @@
             }
             const bytes = JSON.stringify(op).length * 2;
             if (env.mediaReplayUnlimited !== true &&
-                (this.historyBytes + bytes > 32 * 1024 * 1024 || this.historyOps >= 10000)) {
-              this.lose(op.ms, "Media replay quota exceeded; rebuild MediaSource"); return;
+                (this.historyBytes + bytes > 32 * 1024 * 1024 || this.historyOps >= 10000)) this.drop(rec);
+            else {
+              rec.ops.push(Object.assign({}, op)); rec.bytes += bytes;
+              this.historyBytes += bytes; this.historyOps++;
             }
-            rec.ops.push(Object.assign({}, op)); rec.bytes += bytes;
-            this.historyBytes += bytes; this.historyOps++;
           }
         }
         if (!this.available && op.o !== "attach") return;
@@ -9105,6 +9108,17 @@
         for (const [ms, entry] of this.history) {
           const rec = mirror.sent.get(entry.el);
           if (entry.epoch === this.epoch || !rec || mirror.byId.get(rec.i) !== entry.el) continue;
+          if (entry.dropped) {
+            // sent as it was queued to a viewer that had it from its attach; any other cannot rebuild it
+            entry.epoch = this.epoch;
+            if (!entry.live) {
+              const q = this.queues.get(entry.el) || [];
+              this.pendingBytes -= q.reduce((n, op) => n + (op.ms === ms && op.b64 ? op.b64.length * 3 / 4 : 0), 0);
+              this.queues.set(entry.el, q.filter(op => op.ms !== ms));
+              this.lose(ms, "Media replay history dropped; rebuild MediaSource");
+            }
+            continue;
+          }
           // Accepted source work is already retained, including not-yet-flushed commands.
           const q = this.queues.get(entry.el) || [];
           const keep = q.filter(op => op.o !== "attach" && !op.ms);
@@ -9146,6 +9160,8 @@
     if (!env.httpViewer) return;
     if (state.epoch !== mediaLink.epoch) {
       mediaTypes.clear();
+      // a new viewer has none of the queued ops: a dropped source cannot be sent to it (flush)
+      for (const entry of mediaLink.history.values()) entry.live = false;
       if (mediaLink.available) {
         for (const [, reject] of mediaLink.plays.values())
           global.__mrt.queueTask(() => reject(new DOMException("Media viewer disconnected", "AbortError")));

@@ -1449,38 +1449,56 @@ class Runtime(unittest.TestCase):
         self.check_media_replay_quota(unlimited=True)
 
     def check_media_replay_quota(self, unlimited=False):
-        session = self.call("attach", {"runtime":"demo", "viewport":[800,600]})["session"]
-        after = 0
+        # The test answers the media ops (sourceopen, each append's end) as a viewer would
         log = self.root / "logs" / "demo.log"
-        end = time.monotonic() + 45
-        while time.monotonic() < end:
-            reply = self.call("poll?session=" + session + "&after=" + str(after))
-            if reply.get("mediaType"):
-                self.call("media-type", {"session":session, "id":reply["mediaType"]["id"], "reply":[True,"probably"]})
-            events = []
-            for batch in reply["batches"]:
-                after = batch["seq"]
-                for op in batch["ops"]:
-                    if op[0] != "m": continue
-                    m = op[1]
-                    if m["o"] == "attach": events.append({"k":"ms", "ms":m["ms"], "ev":"sourceopen"})
-                    elif m["o"] == "append": events.append({"k":"sb", "sb":m["sb"], "n":m["n"], "buffered":[], "dur":1})
-            if events:
-                self.call("media-events", {"session":session, "epoch":reply["mediaEpoch"], "events":events})
-            if after: self.call("input", {"session":session, "ack":after, "events":[]})
-            text = log.read_text() if log.exists() else ""
-            self.assertNotIn("QUOTA_ERROR", text)
-            if unlimited and "UNLIMITED_DONE" in text:
-                for marker in ("UNLIMITED_BYTES", "UNLIMITED_COMMANDS", "LIVE_APPEND_QUOTA"):
-                    self.assertIn(marker, text)
-                break
-            if not unlimited and "CACHE_RELEASED" in text:
-                self.assertIn("BYTE_QUOTA 11", text)
-                self.assertIn("COMMAND_QUOTA", text)
-                self.assertIn("QUOTA_SOURCE_CLOSED", text)
-                break
+        sent = []
+        def serve(session, marker, seconds=45):
+            after = 0
+            end = time.monotonic() + seconds
+            while time.monotonic() < end:
+                reply = self.call("poll?session=" + session + "&after=" + str(after))
+                if reply.get("mediaType"):
+                    self.call("media-type", {"session":session, "id":reply["mediaType"]["id"], "reply":[True,"probably"]})
+                events = []
+                for batch in reply["batches"]:
+                    after = batch["seq"]
+                    for op in batch["ops"]:
+                        if op[0] != "m": continue
+                        m = op[1]
+                        sent.append(m)
+                        if m["o"] == "attach": events.append({"k":"ms", "ms":m["ms"], "ev":"sourceopen"})
+                        elif m["o"] == "append": events.append({"k":"sb", "sb":m["sb"], "n":m["n"], "buffered":[], "dur":1})
+                if events:
+                    self.call("media-events", {"session":session, "epoch":reply["mediaEpoch"], "events":events})
+                if after: self.call("input", {"session":session, "ack":after, "events":[]})
+                text = log.read_text() if log.exists() else ""
+                self.assertNotIn("QUOTA_ERROR", text)
+                if marker in text:
+                    return text
+            self.fail(f"quota fixture did not reach {marker}: " + (log.read_text() if log.exists() else ""))
+        session = self.call("attach", {"runtime":"demo", "viewport":[800,600]})["session"]
+        if unlimited:
+            text = serve(session, "UNLIMITED_DONE")
+            for marker in ("UNLIMITED_BYTES", "UNLIMITED_COMMANDS", "LIVE_APPEND_QUOTA"):
+                self.assertIn(marker, text)
         else:
-            self.fail("quota fixture timed out: " + log.read_text())
+            text = serve(session, "BEFORE_RECONNECT")
+            self.assertIn("LIVE_PAST_BUDGET 20", text)
+            self.assertIn("COMMANDS_PAST_BUDGET", text)
+            # the sources by element: the first attach is the 20 MiB one, the second the small one,
+            # the third the one past the command budget
+            first = [m["ms"] for m in sent if m["o"] == "attach"]
+            self.assertEqual(len(first), 3, first)
+            # a new viewer: the small source is rebuilt; the two dropped ones are not
+            self.call("detach", {"session": session})
+            del sent[:]
+            session = self.call("attach", {"runtime":"demo", "viewport":[800,600]})["session"]
+            text = serve(session, "CACHE_RELEASED")
+            self.assertIn("DROPPED_LOST Media replay history dropped; rebuild MediaSource", text)
+            replayed = {m["ms"] for m in sent if m["o"] == "attach" and m.get("replay")}
+            self.assertIn(first[1], replayed)
+            self.assertNotIn(first[0], replayed)
+            self.assertNotIn(first[2], replayed)
         self.call("stop", {})
         self.proc.wait(timeout=10)
         result = json.loads((self.root / "result.json").read_text())["demo"]

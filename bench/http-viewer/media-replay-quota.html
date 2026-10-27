@@ -1,4 +1,4 @@
-<!doctype html><meta charset="utf-8"><video id="video" muted></video>
+<!doctype html><meta charset="utf-8"><video id="video" muted></video><video id="small" muted></video>
 <script>
 // Runtime protocol fixture: the test supplies codec/source/buffer replies.
 const video=document.getElementById('video'), type='video/mp4; codecs="avc1.42c01e"';
@@ -27,23 +27,29 @@ async function open(){
   console.log('UNLIMITED_DONE');
   return;
  }
- while(count<20){
-  try{const done=once(sb,'updateend');sb.appendBuffer(new Uint8Array(1024*1024));await done;count++;}
-  catch(e){if(e.name!=='QuotaExceededError'||sb.updating)throw e;break;}
- }
- if(count===20)throw new Error('Replay bytes were unbounded');
- console.log('BYTE_QUOTA '+count);
+ // Bounded default (B181, task 19b81): past the retention budget a source keeps playing; only its
+ // history is dropped, so the 20 MiB all append (11 would fit the budget).
+ while(count<20){const done=once(sb,'updateend');sb.appendBuffer(new Uint8Array(1024*1024));await done;count++;}
+ if(ms.readyState!=='open'||video.error)throw new Error('Live playback stopped at the budget');
+ console.log('LIVE_PAST_BUDGET '+count);
+ // a second element's small source fits the freed budget and stays replayable
+ const small=document.getElementById('small'), sms=new MediaSource();small.src=URL.createObjectURL(sms);
+ await once(sms,'sourceopen');const ssb=sms.addSourceBuffer(type);
+ let done=once(ssb,'updateend');ssb.appendBuffer(new Uint8Array(1024));await done;
+ small.addEventListener('error',()=>console.log('QUOTA_ERROR the retained source was lost'));
+ // the command budget: attach + addsb + 9998 configuration commands, then more, then an append
  video.src='';[ms,sb]=await open();
- // attach + addsb + 9998 config commands fill the shared command budget.
- for(let i=0;i<9998;i++)sb.timestampOffset=0;
- try{sb.appendBuffer(new Uint8Array(1));throw new Error('Replay commands were unbounded');}
- catch(e){if(e.name!=='QuotaExceededError'||sb.updating)throw e;}
- console.log('COMMAND_QUOTA');
- // Configuration overflow cannot throw append quota: it explicitly loses the source.
- const closed=once(ms,'sourceclose');sb.timestampOffset=0;await closed;
- console.log('QUOTA_SOURCE_CLOSED');
- video.src='';[ms,sb]=await open();
- const done=once(sb,'updateend');sb.appendBuffer(new Uint8Array(1024*1024));await done;
- console.log('CACHE_RELEASED');
+ for(let i=0;i<10005;i++)sb.timestampOffset=0;
+ done=once(sb,'updateend');sb.appendBuffer(new Uint8Array(1));await done;
+ if(ms.readyState!=='open'||video.error)throw new Error('Configuration past the budget closed the source');
+ console.log('COMMANDS_PAST_BUDGET');
+ // a new viewer cannot rebuild the dropped source: it fails, and a new one plays
+ video.addEventListener('error',async()=>{
+  console.log('DROPPED_LOST '+video.error.message);
+  [ms,sb]=await open();
+  const done=once(sb,'updateend');sb.appendBuffer(new Uint8Array(1024*1024));await done;
+  console.log('CACHE_RELEASED');
+ },{once:true});
+ console.log('BEFORE_RECONNECT');
 })().catch(e=>console.log('QUOTA_ERROR '+e));
 </script>
