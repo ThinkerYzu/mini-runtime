@@ -725,6 +725,45 @@ class Protocol(unittest.TestCase):
         self.assertEqual(v.session, session)
         self.assertEqual(v.wait({"now": 0, "busy": True})["ok"]["media"], [])
 
+    def test_started_page_visible_until_first_viewer(self):
+        # (task 9a0d7, GAPS B216) the started page stays visible while its first viewer comes, up to
+        # first_attach; once one has attached and gone, the lease rule hides it again
+        v = Viewer("demo", "http://example.test/", [800, 600], lease=0.01, first_attach=0.05)
+        self.assertFalse(v.wait({"now": 0, "until": 0})["ok"]["hidden"])
+        time.sleep(0.06)
+        self.assertTrue(v.wait({"now": 0, "until": 0})["ok"]["hidden"])
+        v = Viewer("demo", "http://example.test/", [800, 600], lease=0.01, first_attach=5)
+        self.assertFalse(v.wait({"now": 0, "until": 0})["ok"]["hidden"])
+        v.detach(v.attach([800, 600])["session"])
+        self.assertTrue(v.wait({"now": 0, "until": 0})["ok"]["hidden"])
+
+    def test_media_types_kept_for_the_next_document(self):
+        # (task 9a0d7, GAPS B216) a viewer browser's capability answer is kept in the profile's file;
+        # a later document asking before any viewer has attached gets it at once, an unknown type waits
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "store", "media-types.json")
+            v = Viewer("demo", "http://example.test/", [800, 600], media_cache=path)
+            session = v.attach([800, 600])["session"]
+            answer = {}
+            asker = threading.Thread(target=lambda: answer.update(v.media_type({"type": 'video/mp4; codecs="avc1.64001F"'})))
+            asker.start()
+            for _ in range(100):
+                query = v.poll(session, 0, timeout=0.05).get("mediaType")
+                if query:
+                    break
+            v.media_type_reply(session, query["id"], [True, "probably"])
+            asker.join(5)
+            self.assertEqual(answer["ok"][:2], [True, "probably"])
+            w = Viewer("demo", "http://example.test/", [800, 600], media_cache=path)
+            self.assertEqual(w.media_type({"type": 'video/mp4; codecs="avc1.64001F"'})["ok"], [True, "probably", 0, True])
+            self.assertEqual(w.stats["media_cache_answers"], 1)
+            waited = threading.Thread(target=lambda: answer.update(late=w.media_type({"type": "video/x-unknown"})))
+            waited.start()
+            waited.join(0.3)
+            self.assertTrue(waited.is_alive())  # not kept: it waits for the first viewer, as before
+            w.stop()
+            waited.join(5)
+
     def test_lease_and_access_policy(self):
         v = Viewer("demo", "http://example.test/", [800, 600], lease=0.01)
         session = v.attach([800, 600])["session"]

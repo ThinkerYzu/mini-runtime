@@ -47,12 +47,36 @@ def after_notice(viewer):
     return viewer.polled_notice != viewer.notice_seq or viewer.polled_navigating != viewer.navigating
 
 
+# the capability answers a profile keeps (Viewer media_cache)
+MAX_MEDIA_CACHE = 256
+
+
+def load_media_cache(path):
+    """The capability answers kept at `path`, by media type: {type: [isTypeSupported, canPlayType]};
+    empty when there is no file or it is not such a map."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in list(data.items())[:MAX_MEDIA_CACHE]
+            if isinstance(k, str) and len(k) <= 4096 and isinstance(v, list) and len(v) == 2
+            and type(v[0]) is bool and v[1] in ("", "maybe", "probably")}
+
+
 class Viewer:
-    def __init__(self, name, page_url, viewport, *, lease=5, max_batches=128, max_bytes=8 * 1024 * 1024,
-                 gl_max_bytes=32 * 1024 * 1024, gl_max_batches=10000):
+    def __init__(self, name, page_url, viewport, *, lease=5, first_attach=60, media_cache=None, max_batches=128,
+                 max_bytes=8 * 1024 * 1024, gl_max_bytes=32 * 1024 * 1024, gl_max_batches=10000):
         self.name, self.page_url = name, page_url
         self.viewport = list(viewport)
         self.lease, self.max_batches, self.max_bytes = lease, max_batches, max_bytes
+        # The started page is a tab opened to be seen (task 9a0d7, GAPS B216): it stays visible while
+        # its first viewer comes, up to `first_attach` seconds. Hidden from the start, a page put off
+        # its work for the visible document (Instagram's post-load scrollTo(0, 0)) until the viewer
+        # had shown the feed and taken the owner's first scroll, which it then undid.
+        self.started_at, self.first_attach = time.monotonic(), first_attach
         self.lock = threading.Condition()
         self.session = None
         self.last_seen = 0
@@ -72,6 +96,12 @@ class Viewer:
         # whether a viewer has attached since this document began: until one has, a capability
         # query waits for it instead of answering negative (task 6416e)
         self.document_attached = False
+        # the viewer browsers' capability answers, by media type, kept in the native profile's store
+        # (task 9a0d7, GAPS B216): a query before the first viewer gets the answer the profile's
+        # browser gave before, at once, as Firefox answers from its own codecs; the wait froze
+        # Instagram's whole startup until the viewer came
+        self.media_cache_path = media_cache
+        self.media_cache = load_media_cache(media_cache)
         self.media_next = 0
         self.media_events = []
         self.media_bytes = 0
@@ -106,7 +136,7 @@ class Viewer:
         self.committed_at = None
         self.polled_notice = 0
         self.polled_navigating = None
-        self.stats = {"media_resources": 0, "media_resource_requests": 0, "media_resource_bytes": 0, "media_resource_chunks": 0, "media_resource_cancels": 0, "media_ops": 0, "media_replays": 0, "media_bytes": 0, "media_events": 0, "media_queries": 0, "media_attach_waits": 0, "media_resets": 0, "media_stale_events": 0, "webgl_jobs": 0, "webgl_timeouts": 0, "webgl_dummy": 0, "webgl_native": 0, "webgl_replays": 0, "webgl_overflows": 0, "attachments": 0, "snapshots": 0, "resyncs": 0, "events": 0,
+        self.stats = {"media_resources": 0, "media_resource_requests": 0, "media_resource_bytes": 0, "media_resource_chunks": 0, "media_resource_cancels": 0, "media_ops": 0, "media_replays": 0, "media_bytes": 0, "media_events": 0, "media_queries": 0, "media_attach_waits": 0, "media_cache_answers": 0, "media_resets": 0, "media_stale_events": 0, "webgl_jobs": 0, "webgl_timeouts": 0, "webgl_dummy": 0, "webgl_native": 0, "webgl_replays": 0, "webgl_overflows": 0, "attachments": 0, "snapshots": 0, "resyncs": 0, "events": 0,
                       "navigations": 0, "navigation_failures": 0, "navigation_refusals": 0, "navigation_input_dropped": 0,
                       "http_api_calls": 0, "http_api_bytes_in": 0, "http_api_bytes_out": 0,
                       "ws_connections": 0, "ws_calls": 0, "ws_bytes_in": 0, "ws_bytes_out": 0}
@@ -337,12 +367,16 @@ class Viewer:
         answered by the attached viewer's browser. A document that no viewer has attached to yet waits
         for the first one: a page opened at its URL checks its codecs while it loads, before anyone
         opens the viewer, and a player that hears "nothing plays" then never asks again (YouTube,
-        task 6416e). Once a viewer has attached, a detached query is answered negative at once."""
+        task 6416e), unless the profile kept that type's answer from an earlier viewer (media_cache).
+        Once a viewer has attached, a detached query is answered negative at once."""
         kind = req.get("type", "")
         if not isinstance(kind, str) or len(kind) > 4096:
             return {"err": "Invalid media type"}
         with self.lock:
             self._expire()
+            if not self.document_attached and kind in self.media_cache:
+                self.stats["media_cache_answers"] += 1
+                return {"ok": [*self.media_cache[kind], self.media_epoch, True]}
             if not self.document_attached and not self.stop_requested:
                 self.stats["media_attach_waits"] += 1
                 while not self.document_attached and not self.stop_requested:
@@ -369,7 +403,24 @@ class Viewer:
                 self.media_query = None
             if self.session != session or self.media_epoch != epoch or query["reply"] is None:
                 return {"ok": [False, "", self.media_epoch, False]}
+            self._remember_media_type(kind, query["reply"])
             return {"ok": [*query["reply"], epoch, True]}
+
+    def _remember_media_type(self, kind, reply):
+        """Keeps a viewer browser's answer in the profile's capability file (media_cache)."""
+        if not self.media_cache_path or self.media_cache.get(kind) == reply:
+            return
+        if kind not in self.media_cache and len(self.media_cache) >= MAX_MEDIA_CACHE:
+            return
+        self.media_cache[kind] = list(reply)
+        try:
+            os.makedirs(os.path.dirname(self.media_cache_path), mode=0o700, exist_ok=True)
+            tmp = self.media_cache_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self.media_cache, f)
+            os.replace(tmp, self.media_cache_path)
+        except OSError:
+            pass
 
     def media_type_reply(self, session, ident, reply):
         with self.lock:
@@ -603,8 +654,11 @@ class Viewer:
             events, self.events = self.events, []
             # (a just navigated page waits a lease for its viewer to attach again before hibernating)
             reattaching = self.committed_at is not None and time.monotonic() - self.committed_at < self.lease
+            # (the started page, before any viewer has attached: see first_attach)
+            awaited = (not self.document_attached and self.committed_at is None and
+                       time.monotonic() - self.started_at < self.first_attach)
             state = {"stop": self.stop_requested, "events": events,
-                     "hidden": (not self.session and not reattaching) or not self.visible, "mirror": bool(self.session),
+                     "hidden": (not self.session and not reattaching and not awaited) or not self.visible, "mirror": bool(self.session),
                      "viewport": self.viewport, "webgl": self.gl_state(),
                      "mediaBackend": {"epoch": self.media_epoch, "attached": bool(self.session)}, "media": self.media_events}
             self.media_events = []

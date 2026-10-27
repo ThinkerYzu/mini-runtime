@@ -33,7 +33,7 @@ function read() {
 }
 document.getElementById('read').onclick = read;
 read();
-let seenViewer = false;
+let seenViewer = !document.hidden;  // (a started page is visible while its first viewer comes, task 9a0d7)
 document.addEventListener('visibilitychange', () => {
  if (!document.hidden) seenViewer = true;
  else if (seenViewer) {

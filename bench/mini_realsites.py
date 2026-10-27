@@ -2253,7 +2253,8 @@ def run(name, url):
         frames.site_of = site_of
         if VIEWER_HTTP:
             import http_viewer
-            frames.viewer = http_viewer.Viewer(name, document_url(doc["ok"]["url"], final), [view_w, view_h])
+            frames.viewer = http_viewer.Viewer(name, document_url(doc["ok"]["url"], final), [view_w, view_h],
+                                               media_cache=os.path.join(VIEWER_STORE, "media-types.json") if VIEWER_STORE else None)
             frames.viewer.runtime_pid = proc.pid
             viewer_service = http_viewer.Service(VIEWER_HTTP, frames.viewer).start()
             if "fetch" in API_ROUTED:
