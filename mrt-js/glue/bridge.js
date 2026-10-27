@@ -529,7 +529,8 @@
   // page posts one `scroll` and `scrollend` at the element for the next refresh tick, not bubbling
   // (ScrollContainerFrame::FireScrollEvent for an element), and numbers itself (`seq`) for the tab
   // (mirrorFlush's "escroll" op); the tab's own scrolling of the element comes back as its scroll
-  // event with the offset (fireViewerInput). Instant only, no snapping (GAPS B155).
+  // event with the offset (fireViewerInput). Smooth scrolling below (elementSmoothScrollTo); no
+  // snapping (GAPS B155).
   const elementScroll = share("elementScroll", () => ({ byElement: new Map(), seq: 0, changed: false }));
   const isScrollContainer = el => {
     if (isWorker || !el.isConnected || isScrollingElement(el) || __mrtBorderBox(el) === null) return false;
@@ -547,17 +548,27 @@
     if (shared.intersectionObservers) shared.intersectionObservers.scheduled = true;
     return state;
   };
-  // ScrollContainerFrame::ScrollToCSSPixels on an element's, instant: clamped to its scroll range
-  // (scroll size less client size), whole pixels as pageScrollTo
-  function elementScrollTo(el, x, y, round = Math.round) {
+  // an offset clamped to the element's scroll range (scroll size less client size), whole pixels as
+  // pageScrollTo
+  const clampElementScroll = (el, x, y, round) => {
     const [cw, ch, sw, sh] = __mrtClientScroll(el);
-    x = round(Math.min(Math.max(0, x), Math.max(0, sw - cw)));
-    y = round(Math.min(Math.max(0, y), Math.max(0, sh - ch)));
-    const old = elementOffset(el);
-    if (x === old.x && y === old.y) return;
+    return [round(Math.min(Math.max(0, x), Math.max(0, sw - cw))), round(Math.min(Math.max(0, y), Math.max(0, sh - ch)))];
+  };
+  // the page moved the element: its new offset, numbered for the tab's "escroll"
+  const moveElementScroll = (el, x, y) => {
     const state = setElementScroll(el, x, y);
     state.seq = ++elementScroll.seq;
     elementScroll.changed = true;
+    return state;
+  };
+  // ScrollContainerFrame::ScrollToCSSPixels on an element's, instant: clamped to its scroll range.
+  // It ends a smooth scroll of the element going on (CompleteAsyncScroll), even when it does not move.
+  function elementScrollTo(el, x, y, round = Math.round) {
+    [x, y] = clampElementScroll(el, x, y, round);
+    const old = elementOffset(el);
+    if (old.smooth) old.smooth = null;
+    if (x === old.x && y === old.y) return;
+    const state = moveElementScroll(el, x, y);
     if (state.posted) return;
     state.posted = true;
     global.__mrt.requestScroll(() => {
@@ -569,6 +580,57 @@
       }
     });
   }
+  // Smooth scrolling of an element (task 2b594): Gecko's ScrollAnimationMSDPhysics, which
+  // scrollIntoView, scroll, scrollTo, scrollBy and the scrollTop/scrollLeft setters use for
+  // `behavior: "smooth"`, or for "auto" on an element styled `scroll-behavior: smooth`. The offset
+  // follows a critically damped spring (layout.css.scroll-behavior.spring-constant 250, damping
+  // ratio 1) from where it is to the clamped destination: what is left after t ms is
+  // (1 + wt) e^(-wt) of the way, w = sqrt(250) / 1000. Each refresh tick moves it and fires one
+  // `scroll` at the element; `scrollend` follows once it is there (within half a pixel). A smooth
+  // scroll during one starts again from where it is (Gecko keeps the velocity); an instant one ends
+  // it. YouTube's shorts feed needs the scroll events of the frames between: its scroll handler
+  // reacts one animation frame later, and only its second reaction puts the feed back after a Next
+  // it was not ready for. Not done: snapping (GAPS B155), smooth scrolling of the document.
+  const SPRING_W = Math.sqrt(250) / 1000;
+  const smoothBehavior = (el, behavior) =>
+    behavior === "smooth" || ((behavior === undefined || behavior === "auto") &&
+      el.ownerDocument.defaultView?.getComputedStyle(el).scrollBehavior === "smooth");
+  function elementSmoothScrollTo(el, x, y, round = Math.round) {
+    [x, y] = clampElementScroll(el, x, y, round);
+    const old = elementOffset(el);
+    if (x === old.x && y === old.y && !old.smooth) return;
+    if (!elementScroll.byElement.has(el)) setElementScroll(el, old.x, old.y);
+    const state = elementScroll.byElement.get(el);
+    const smooth = state.smooth = { fromX: state.x, fromY: state.y, toX: x, toY: y, start: performance.now() };
+    const step = () => {
+      if (state.smooth !== smooth || !el.isConnected) return;
+      const t = Math.max(0, performance.now() - smooth.start);
+      const left = (1 + SPRING_W * t) * Math.exp(-SPRING_W * t);
+      const done = Math.abs(smooth.toX - smooth.fromX) * left < 0.5 && Math.abs(smooth.toY - smooth.fromY) * left < 0.5;
+      const nx = done ? smooth.toX : Math.round(smooth.toX - (smooth.toX - smooth.fromX) * left);
+      const ny = done ? smooth.toY : Math.round(smooth.toY - (smooth.toY - smooth.fromY) * left);
+      const types = [];
+      if (nx !== state.x || ny !== state.y) {
+        moveElementScroll(el, nx, ny);
+        types.push(["scroll", true]);
+      }
+      if (done) {
+        state.smooth = null;
+        types.push(["scrollend", false]);
+      } else {
+        global.__mrt.requestScroll(step);
+      }
+      for (const [type, cancelable] of types) {
+        const e = new UIEvent(type, { bubbles: false, cancelable, view: null });
+        Object.assign(e, { isTrusted: true });
+        el.dispatchEvent(e);
+      }
+    };
+    global.__mrt.requestScroll(step);
+  }
+  // an element's scroll to (x, y): smooth or instant as `behavior` and its style say
+  const scrollElement = (el, x, y, behavior, round) =>
+    (smoothBehavior(el, behavior) ? elementSmoothScrollTo : elementScrollTo)(el, x, y, round);
   {
     // [Replaceable] attributes: a page's assignment makes an own value
     const replaceable = (name, get) => getter(global, name, get, v => define(global, name, v));
@@ -2649,17 +2711,19 @@
     getter(Element.prototype, "scrollTop", function () { return isScrollingElement(this) ? rootScroll.y : elementOffset(this).y; },
       function (v) {
         if (isScrollingElement(this)) pageScrollTo(rootScroll.x, toNumber(v));
-        else if (isScrollContainer(this)) elementScrollTo(this, elementOffset(this).x, toNumber(v));
+        else if (isScrollContainer(this)) scrollElement(this, elementOffset(this).x, toNumber(v));
       });
     getter(Element.prototype, "scrollLeft", function () { return isScrollingElement(this) ? rootScroll.x : elementOffset(this).x; },
       function (v) {
         if (isScrollingElement(this)) pageScrollTo(toNumber(v), rootScroll.y);
-        else if (isScrollContainer(this)) elementScrollTo(this, toNumber(v), elementOffset(this).y);
+        else if (isScrollContainer(this)) scrollElement(this, toNumber(v), elementOffset(this).y);
       });
+    // (ScrollToOptions' behavior: the one-argument form's)
     function elementScrollArgs(el, args, what, by) {
       const [l, t] = scrollArgs(args, what), o = elementOffset(el);
-      if (by) elementScrollTo(el, o.x + (l ?? 0), o.y + (t ?? 0));
-      else elementScrollTo(el, l ?? o.x, t ?? o.y);
+      const behavior = args.length < 2 && args[0] !== null && typeof args[0] === "object" ? args[0].behavior : undefined;
+      if (by) scrollElement(el, o.x + (l ?? 0), o.y + (t ?? 0), behavior);
+      else scrollElement(el, l ?? o.x, t ?? o.y, behavior);
     }
     define(Element.prototype, "scroll", function scroll() {
       if (isScrollingElement(this)) scrollTo(arguments, "Element.scroll");
@@ -2701,9 +2765,10 @@
     };
     define(Element.prototype, "scrollIntoView", function scrollIntoView() {
       const arg = arguments[0];
-      let block = "start", inline = "nearest";
+      let block = "start", inline = "nearest", behavior;
       if (arg === false) block = "end";
       else if (arg !== null && typeof arg === "object") {
+        if (arg.behavior !== undefined) behavior = String(arg.behavior);
         if (arg.block !== undefined) block = String(arg.block);
         if (arg.inline !== undefined) inline = String(arg.inline);
         for (const [k, v] of [["block", block], ["inline", inline]]) {
@@ -2713,14 +2778,28 @@
         }
       }
       if (this.ownerDocument !== document || !this.isConnected || __mrtBorderBox(this) === null) return;
+      // a container that scrolls smoothly is put at its destination for the outer ones to measure,
+      // then back where it was before its animation starts (`smooth`: [container, x, y, to x, to y])
+      const round = n => Math.ceil(n - 0.5), smooth = [];
       for (let c = scrollParent(this); c; c = scrollParent(c)) {
         const r = this.getBoundingClientRect(), port = c.getBoundingClientRect(), style = c.ownerDocument.defaultView.getComputedStyle(c);
         const [cw, ch] = __mrtClientScroll(c), o = elementOffset(c);
         const left = r.left - port.left - (parseFloat(style.borderLeftWidth) || 0), top = r.top - port.top - (parseFloat(style.borderTopWidth) || 0);
-        elementScrollTo(c, align(o.x, left, r.width, cw, inline), align(o.y, top, r.height, ch, block), n => Math.ceil(n - 0.5));
+        const x = align(o.x, left, r.width, cw, inline), y = align(o.y, top, r.height, ch, block);
+        if (!smoothBehavior(c, behavior)) {
+          elementScrollTo(c, x, y, round);
+          continue;
+        }
+        const to = clampElementScroll(c, x, y, round);
+        smooth.push([c, o.x, o.y, ...to]);
+        setElementScroll(c, ...to);
       }
       const r = this.getBoundingClientRect(), v = viewportSize();
-      pageScrollTo(align(rootScroll.x, r.left, r.width, v.width, inline), align(rootScroll.y, r.top, r.height, v.height, block), v => Math.ceil(v - 0.5));
+      pageScrollTo(align(rootScroll.x, r.left, r.width, v.width, inline), align(rootScroll.y, r.top, r.height, v.height, block), round);
+      for (const [c, x, y, toX, toY] of smooth) {
+        setElementScroll(c, x, y);
+        elementSmoothScrollTo(c, toX, toY);
+      }
     });
   }
 

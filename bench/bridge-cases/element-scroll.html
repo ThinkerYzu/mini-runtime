@@ -63,7 +63,7 @@ const steps = [
   ["c.scroll(0, 0)", () => $("c").scroll(0, 0)],
   ["c.scrollTop = 0 (unchanged)", () => { $("c").scrollTop = 0; }],
   ["v.scrollTop = 50", () => { $("v").scrollTop = 50; }],
-  // (YouTube's Next asks for behavior: "smooth", which the runtime does at once, GAPS B155)
+  // (YouTube's Next asks for behavior: "smooth": case element-scroll-smooth, task 2b594)
   ["s1.scrollIntoView(nearest)", () => $("s1").scrollIntoView({ block: "nearest", inline: "center" })],
 ];
 let i = 0, timer = 0;

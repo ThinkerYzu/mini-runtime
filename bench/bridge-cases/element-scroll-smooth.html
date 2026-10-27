@@ -1,0 +1,78 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>element-scroll-smooth</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  #c { position: absolute; top: 20px; left: 20px; width: 300px; height: 200px; overflow: auto; }
+  #c > div, #d > div { height: 100px; background: #eef; border-bottom: 1px solid #aac; box-sizing: border-box; }
+  #d { position: absolute; top: 20px; left: 400px; width: 300px; height: 200px; overflow: auto; scroll-behavior: smooth; }
+</style>
+<!-- Smooth scrolling of element scroll containers (task 2b594, GAPS B155): behavior "smooth" on
+     scrollTo, scrollBy and scrollIntoView, and the scrollTop setter on a container styled
+     scroll-behavior: smooth. Logged per step: the offset right after the call, whether the scroll
+     events came over several frames (the first well short of the destination, never going back), the
+     scrollend count, and the offset at the end. Then an instant scroll during a smooth one ends it,
+     as YouTube's shorts feed does from an animation frame of its scroll handler (its Next short). -->
+<div id="c">
+  <div>0</div><div>1</div><div>2</div><div>3</div><div>4</div><div id="c5">5</div><div>6</div><div>7</div><div>8</div><div>9</div>
+</div>
+<div id="d">
+  <div>0</div><div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div><div>7</div><div>8</div><div>9</div>
+</div>
+<script>
+window.__log = [];
+const log = s => window.__log.push(s);
+const $ = id => document.getElementById(id);
+log(`d scroll-behavior=${getComputedStyle($("d")).scrollBehavior} c scroll-behavior=${getComputedStyle($("c")).scrollBehavior}`);
+let rec = null;
+for (const el of [$("c"), $("d")]) {
+  el.addEventListener("scroll", () => {
+    if (!rec || rec.el !== el) return;
+    rec.tops.push(el.scrollTop);
+    if (rec.onScroll) rec.onScroll(rec.tops.length);
+  });
+  el.addEventListener("scrollend", () => {
+    if (!rec || rec.el !== el) return;
+    rec.ends++;
+    clearTimeout(rec.timer);
+    rec.timer = setTimeout(finish, 300);
+  });
+}
+const steps = [
+  ["c.scrollTo({top: 300, smooth})", "c", 300, () => $("c").scrollTo({ top: 300, behavior: "smooth" })],
+  ["c.scrollBy({top: -200, smooth})", "c", 100, () => $("c").scrollBy({ top: -200, behavior: "smooth" })],
+  ["c5.scrollIntoView({smooth})", "c", 500, () => $("c5").scrollIntoView({ behavior: "smooth" })],
+  ["c.scrollTo({top: 500, smooth}) (already there)", "c", 500, () => $("c").scrollTo({ top: 500, behavior: "smooth" })],
+  ["c.scrollTo({top: 0, instant})", "c", 0, () => $("c").scrollTo({ top: 0, behavior: "instant" })],
+  ["d.scrollTop = 400 (scroll-behavior: smooth)", "d", 400, () => { $("d").scrollTop = 400; }],
+  ["d.scrollTo({top: 0, instant})", "d", 0, () => $("d").scrollTo({ top: 0, behavior: "instant" })],
+  // YouTube's shorts feed: the second frame after a scroll event puts the offset back at once
+  ["c.scrollTo({top: 600, smooth}), at the second scroll c.scrollTop = 16 from a frame", "c", 16, () => {
+    rec.onScroll = n => { if (n === 2) requestAnimationFrame(() => { $("c").scrollTop = 16; }); };
+    $("c").scrollTo({ top: 600, behavior: "smooth" });
+  }],
+];
+let i = 0;
+function finish() {
+  const r = rec;
+  clearTimeout(r.timer);
+  const tops = r.tops, el = r.el;
+  const monotonic = tops.every((t, k) => k === 0 || (r.to >= r.from ? t >= tops[k - 1] : t <= tops[k - 1]));
+  const gradual = tops.length >= 4 && Math.abs(tops[0] - r.from) < Math.abs(r.to - r.from) / 2;
+  log(`${r.name}: right after ${r.after}; ${tops.length === 0 ? "no scroll events" : tops.length >= 4 ? "scroll events over several frames" : `${tops.length} scroll events`}`
+    + `${tops.length >= 4 ? (gradual ? ", the first short of half way" : ", the first past half way") + (monotonic ? ", in order" : ", going back") : ""}`
+    + `; ${r.ends} scrollend; end ${Math.round(el.scrollTop)}`);
+  next();
+}
+function next() {
+  if (i === steps.length) { log("done"); return; }
+  const [name, id, to, fn] = steps[i++];
+  const el = $(id);
+  rec = { name, el, to, from: el.scrollTop, tops: [], ends: 0, timer: 0 };
+  fn();
+  rec.after = Math.round(el.scrollTop);
+  // (a step that does not scroll ends 1 s on)
+  rec.timer = setTimeout(finish, 1000);
+}
+addEventListener("load", () => setTimeout(next, 100));
+</script>
