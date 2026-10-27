@@ -129,6 +129,9 @@ from a local server, and the two logs it writes to `window.__log` are diffed. Th
   focus-method  the page's focus() and blur() (GAPS B153, task 0f376): focus, blur, focusin and focusout
                 with their related targets, the active element, which elements are focusable, focus()
                 scrolling an element out of view to the center unless preventScroll
+  text-selection  a text control's selection (GAPS B214, task 36009): selectionStart, selectionEnd and
+                selectionDirection, setSelectionRange, select() and its focus, the caret after a value is
+                set, the types with no text selection, the select and selectionchange events
 
 usage (from a Firefox source tree):
   FIREFOX_BIN=.../firefox xvfb-run -a ./mach python /path/to/bench/compare_bridge.py [CASE ...]

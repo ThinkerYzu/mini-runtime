@@ -3778,8 +3778,94 @@
     getter(HTMLTextAreaElement.prototype, "defaultValue", function () { return this.textContent; }, ceReactions(function (v) { this.textContent = v === null ? "" : String(v); }));
     getter(HTMLTextAreaElement.prototype, "value", function () {
       return textareaValues.has(this) ? textareaValues.get(this) : normalizeLines(this.textContent);
-    }, function (v) { textareaValues.set(this, normalizeLines(v === null ? "" : String(v))); });
+    }, function (v) {
+      const old = this.value;
+      textareaValues.set(this, normalizeLines(v === null ? "" : String(v)));
+      textValueSet(this, old);
+    });
     getter(HTMLTextAreaElement.prototype, "textLength", function () { return this.value.length; });
+  }
+  // A text control's selection (B214: Instagram's search box calls select() as it opens, and the
+  // TypeError took the whole search bar away): Gecko's TextControlState with its selection cached,
+  // as for a control with no editor yet. The start and end are capped at the value's length, a start
+  // after the end becomes the end, and a direction other than "backward" is "forward". A change
+  // queues a select event and, once until it fires, a selectionchange event at the control, both
+  // bubbling. Setting a different value puts the caret at its end. The selection stays in the
+  // runtime: the tab's copy does not show it and the owner's caret does not come back (GAPS B152).
+  const textSelections = new WeakMap(), selectionChangePending = new WeakSet();
+  const INPUT_TYPES = new Set(["hidden", "text", "search", "tel", "url", "email", "password", "date", "month", "week", "time",
+    "datetime-local", "number", "range", "color", "checkbox", "radio", "file", "submit", "image", "reset", "button"]);
+  const inputType = el => (INPUT_TYPES.has(typeOf(el)) ? typeOf(el) : "text");
+  // HTMLInputElement::SupportsTextSelection; select() works on the wider IsSingleLineTextControl
+  const SELECTION_TYPES = new Set(["text", "search", "url", "tel", "password"]);
+  const SINGLE_LINE_TYPES = new Set([...SELECTION_TYPES, "email", "number", "month", "week"]);
+  const hasTextSelection = el => el.localName === "textarea" || SELECTION_TYPES.has(inputType(el));
+  // (an email or number input has a selection too, which select() makes, but does not show it)
+  const keepsTextSelection = el => el.localName === "textarea" || SINGLE_LINE_TYPES.has(inputType(el));
+  const textSelection = el => {
+    const length = el.value.length, s = textSelections.get(el) || { start: 0, end: 0, backward: false };
+    return { start: Math.min(s.start, length), end: Math.min(s.end, length), backward: s.backward };
+  };
+  const fireTextSelectionEvent = (el, type) =>
+    el.dispatchEvent(Object.assign(new Event(type, { bubbles: true }), { isTrusted: true }));
+  const queueSelectionChange = el => {
+    if (selectionChangePending.has(el)) return;
+    selectionChangePending.add(el);
+    global.__mrt.queueTask(() => { selectionChangePending.delete(el); fireTextSelectionEvent(el, "selectionchange"); });
+  };
+  const setTextSelection = (el, start, end, direction) => {
+    const length = el.value.length;
+    end = Math.min(end, length);
+    start = Math.min(start, end);
+    const old = textSelection(el), backward = direction === "backward";
+    if (old.start === start && old.end === end && old.backward === backward) return;
+    textSelections.set(el, { start, end, backward });
+    global.__mrt.queueTask(() => fireTextSelectionEvent(el, "select"));
+    queueSelectionChange(el);
+  };
+  // the value setter's (ValueSetterOption::MoveCursorToEndIfValueChanged): a caret that moves
+  // queues a selectionchange, not a select
+  function textValueSet(el, old) {
+    const value = el.value;
+    if (value === old || !keepsTextSelection(el)) return;
+    const s = textSelection(el);
+    textSelections.set(el, { start: value.length, end: value.length, backward: false });
+    if (s.start !== value.length || s.end !== value.length || s.backward) queueSelectionChange(el);
+  }
+  // WebIDL unsigned long
+  const toUint32 = v => Number(v) >>> 0;
+  const invalidState = () => new DOMException("An attempt was made to use an object that is not, or is no longer, usable", "InvalidStateError");
+  if (!isWorker) for (const proto of [HTMLInputElement.prototype, HTMLTextAreaElement.prototype]) {
+    getter(proto, "selectionStart", function () { return hasTextSelection(this) ? textSelection(this).start : null; }, function (v) {
+      if (!hasTextSelection(this)) throw invalidState();
+      const s = textSelection(this), start = v === null ? 0 : toUint32(v);
+      setTextSelection(this, start, Math.max(start, s.end), s.backward ? "backward" : "forward");
+    });
+    getter(proto, "selectionEnd", function () { return hasTextSelection(this) ? textSelection(this).end : null; }, function (v) {
+      if (!hasTextSelection(this)) throw invalidState();
+      const s = textSelection(this);
+      setTextSelection(this, s.start, v === null ? 0 : toUint32(v), s.backward ? "backward" : "forward");
+    });
+    getter(proto, "selectionDirection", function () {
+      if (!hasTextSelection(this)) return null;
+      return textSelection(this).backward ? "backward" : "forward";
+    }, function (v) {
+      if (!hasTextSelection(this)) throw invalidState();
+      const s = textSelection(this);
+      setTextSelection(this, s.start, s.end, String(v));
+    });
+    define(proto, "setSelectionRange", function setSelectionRange(start, end, direction) {
+      if (!hasTextSelection(this)) throw invalidState();
+      setTextSelection(this, toUint32(start), toUint32(end), direction === undefined ? "forward" : String(direction));
+    });
+    // HTMLInputElement::Select and HTMLTextAreaElement::Select: a focusable control takes the focus
+    // without scrolling, then all its text is selected (an input that is not a single-line text
+    // control does nothing)
+    define(proto, "select", function select() {
+      if (!keepsTextSelection(this)) return;
+      this.focus({ preventScroll: true });
+      setTextSelection(this, 0, this.value.length, "forward");
+    });
   }
   // HTMLInputElement's value and checkedness (Gecko's HTMLInputElement: GetValueMode, the dirty
   // value and mCheckedChanged): a text-like input keeps the value set by script or typed by the
@@ -3812,7 +3898,7 @@
     }, function (v) {
       v = v === null ? "" : String(v);
       const mode = valueMode(this);
-      if (mode === "value") inputValues.set(this, sanitize(this, v));
+      if (mode === "value") { const old = this.value; inputValues.set(this, sanitize(this, v)); textValueSet(this, old); }
       else if (mode === "filename") { if (v !== "") throw new DOMException("An attempt was made to use an object that is not, or is no longer, usable", "InvalidStateError"); }
       else this.setAttribute("value", v);
     });
