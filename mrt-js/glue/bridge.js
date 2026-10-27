@@ -2623,11 +2623,22 @@
   };
   if (!isWorker) getter(Element.prototype, "clientWidth", function () { return isScrollingElement(this) ? viewportSize().width : __mrtClientScroll(this)[0]; });
   if (!isWorker) getter(Element.prototype, "clientHeight", function () { return isScrollingElement(this) ? viewportSize().height : __mrtClientScroll(this)[1]; });
+  // The scrolling element's scroll size is the root scroll range's content, at least the port: the
+  // root element's scroll size from layout (its margin box, its descendants' overflow and the boxes
+  // positioned against the initial containing block, as Gecko's ScrollContainerFrame::GetScrolledRect).
+  // Instagram's body is the viewport's height and its feed overflows it; its scrollTo() restoring the
+  // feed position was clamped to the body's height (GAPS B215, task 9a0d7).
+  const rootScrollSize = () => {
+    const root = document.documentElement, v = viewportSize();
+    if (!root) return [v.width, v.height];
+    const size = __mrtClientScroll(root);
+    return [Math.max(v.width, root.offsetWidth, size[2]), Math.max(v.height, root.offsetHeight, size[3])];
+  };
   if (!isWorker) getter(Element.prototype, "scrollWidth", function () {
-    return isScrollingElement(this) ? Math.max(viewportSize().width, document.documentElement.offsetWidth) : __mrtClientScroll(this)[2];
+    return isScrollingElement(this) ? rootScrollSize()[0] : __mrtClientScroll(this)[2];
   });
   if (!isWorker) getter(Element.prototype, "scrollHeight", function () {
-    return isScrollingElement(this) ? Math.max(viewportSize().height, document.documentElement.offsetHeight) : __mrtClientScroll(this)[3];
+    return isScrollingElement(this) ? rootScrollSize()[1] : __mrtClientScroll(this)[3];
   });
   if (!isWorker) for (const p of ["clientTop", "clientLeft"]) getter(Element.prototype, p, () => 0, () => {});
   // The scrolling element scrolls the document (Element::GetScrollTop and SetScrollTop, Element::Scroll

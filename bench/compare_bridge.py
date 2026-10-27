@@ -6,6 +6,9 @@ from a local server, and the two logs it writes to `window.__log` are diffed. Th
   idb           IndexedDB forwarded to Firefox (SPEC decision 12): an upgrade, values of each
                 structured-clone type, cursors, aborts, an explicit commit, key ranges, a versionchange
   scroll-size   clientWidth/Height and scrollWidth/Height of elements other than the scrolling element
+  root-scroll-size  the scrolling element's scroll size and the page's scroll range (GAPS B215, task 9a0d7):
+                content overflowing the root, absolutely positioned and fixed boxes, a scroll container's
+                content, the root's and the body's overflow
   abspos        absolutely and fixed positioned boxes: offsets, static positions, sizes, containing blocks
   storage       sessionStorage (the runtime's, SPEC decision 14) and localStorage (forwarded): methods,
                 named properties, the quota

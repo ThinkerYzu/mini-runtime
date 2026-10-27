@@ -1,0 +1,52 @@
+<!doctype html>
+<!-- The scrolling element's scrollWidth/Height and the page's scroll range when content overflows the
+     root's box, against release Firefox: bench/compare_bridge.py root-scroll-size (GAPS B215, task
+     9a0d7). Instagram's body is the viewport's height and its feed overflows it (here the root is
+     400px high, as the viewport-high root does not resolve in every runtime mode); Gecko's root scroll
+     range is the root's scrollable overflow (ScrollContainerFrame::GetScrolledRect), and the page's
+     scrollTo() to restore its feed position is clamped to it. Fixed boxes are the viewport's and a
+     scroll container's content its own, not the root's overflow; the root's overflow, or else the
+     body's, is the viewport's. -->
+<html><head><title>root scroll size</title>
+<style>
+  html { height: 400px; }
+  body { height: 100%; margin: 0; font: 16px/20px sans-serif; }
+  #feed { height: 2500px; background: linear-gradient(white, gray); }
+  #wide { width: 3000px; height: 10px; }
+  #abs { position: absolute; top: 3200px; left: 0; height: 40px; width: 10px; }
+  #fixed { position: fixed; top: 6000px; left: 9000px; height: 40px; width: 10px; }
+  #box { position: absolute; top: 100px; left: 100px; width: 100px; height: 100px; overflow: auto; }
+  #box div { height: 8000px; width: 5000px; }
+</style></head>
+<body>
+<div id="feed">feed</div>
+<div id="wide"></div>
+<div id="fixed"></div>
+<div id="box"><div></div></div>
+<script>
+  window.__log = [];
+  const de = document.documentElement, log = what => window.__log.push([what, "html", de.offsetHeight, de.clientWidth, de.clientHeight,
+    de.scrollWidth, de.scrollHeight, "body", document.body.offsetHeight, document.body.scrollHeight, "at", scrollX, scrollY].join(" "));
+  log("overflowing body");
+  scrollTo(0, 1500);
+  log("scrollTo 1500");
+  scrollTo(99999, 99999);
+  log("scrollTo end");
+  const abs = document.createElement("div");
+  abs.id = "abs";
+  document.body.append(abs);
+  log("abspos below");
+  scrollTo(0, 99999);
+  log("scrollTo end with abspos");
+  document.getElementById("wide").remove();
+  document.documentElement.scrollTop = 99999;
+  log("scrollTop end, not wide");
+  document.body.style.overflowX = "hidden";
+  log("body overflow-x hidden (the viewport's)");
+  document.documentElement.style.overflowY = "scroll";
+  scrollTo(0, 99999);
+  log("and html overflow-y scroll (body's own)");
+  document.body.style.overflowX = "";
+  document.documentElement.style.overflowY = "";
+  window.__log.push("done");
+</script></body></html>

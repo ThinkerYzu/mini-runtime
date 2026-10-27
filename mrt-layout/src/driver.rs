@@ -1229,6 +1229,52 @@ fn UnionChildOverflow(aFrame: nsIFrame, aOverflowAreas: &mut OverflowAreas, aAsI
     }
 }
 
+/// Adds to `aOverflow` the scrollable overflow `aFrame`'s children give the root scroll range, in the
+/// coordinates where `aFrame` is at `aOrigin`: each child's border box and, unless the child stands
+/// for a scroll container, what its own children stick out. ADAPTER: the stored overflow of a block
+/// Gecko would make a scroll container holds its scrolled content (the port has no scroll container
+/// frames), which Gecko's ScrollContainerFrame keeps to itself, so the frames are walked instead of
+/// reading the canvas's overflow. A child whose stored overflow is within its box is not entered, and
+/// a transformed one counts with its stored (transformed) overflow.
+fn UnionScrolledOverflow(aFrame: nsIFrame, aOrigin: nsPoint, aOverflow: &mut nsRect) {
+    let mut lists = Vec::new();
+    aFrame.GetChildLists(&mut lists);
+    aFrame.nsIFrame_GetChildLists(&mut lists);
+    let mut seen = std::collections::HashSet::<nsIFrame>::new();
+    for list in &lists {
+        for child in &list.mList {
+            if !seen.insert(child) || child.IsPlaceholderFrame() {
+                continue;
+            }
+            let origin = aOrigin + child.GetPosition();
+            let bounds = child.GetRect() - child.GetPosition() + origin;
+            *aOverflow = aOverflow.UnionEdges(bounds);
+            let stored = child.ScrollableOverflowRect() + origin;
+            if bounds.Contains__nsRect(stored) || StandsForScrollContainer(child, aFrame) {
+                continue;
+            }
+            if child.IsTransformed() {
+                *aOverflow = aOverflow.UnionEdges(stored);
+            } else {
+                UnionScrolledOverflow(child, origin, aOverflow);
+            }
+        }
+    }
+}
+
+/// Whether `aFrame` (a child of `aParent`) is a block Gecko would make a scroll container. The root
+/// element's overflow, or else the body's, is the viewport's (Gecko's PropagateScrollToViewport,
+/// not ported: those blocks scroll nothing).
+fn StandsForScrollContainer(aFrame: nsIFrame, aParent: nsIFrame) -> bool {
+    let isRoot = |f: nsIFrame| f.GetParent().is_some_and(|p| p.IsCanvasFrame() && p.PrincipalChildList_FirstChild() == Some(f));
+    if !aFrame.StyleDisplay().IsScrollableOverflow() || !aFrame.IsBlockFrameOrSubclass() || isRoot(aFrame) {
+        return false;
+    }
+    let isBody = aFrame.GetContent().is_some_and(|c| c.IsHTMLElement(nsGkAtoms::body));
+    let rootVisible = isRoot(aParent) && !aParent.StyleDisplay().IsScrollableOverflow();
+    !(isBody && rootVisible)
+}
+
 /// Moves every child frame of `aFrame`, in each of its child lists, by `aDelta` (app units).
 fn ShiftChildFrames(aFrame: nsIFrame, aDelta: nsPoint) {
     let mut lists = Vec::new();
@@ -1254,9 +1300,22 @@ fn ShiftChildFrames(aFrame: nsIFrame, aDelta: nsPoint) {
 /// (nsBlockFrame::ScrolledContentOverflow), and that of any other frame is computed as for an
 /// element that is not a scroll container (GetScrollRectSizeForOverflowVisibleFrame): grid
 /// containers miss the grid area and end padding Gecko adds in reflow (GAPS B39). The scrolling
-/// element is the caller's (the viewport).
+/// element's client area is the caller's (the viewport); the root element's scroll size is the
+/// root scroll range's content (see below), which the caller takes as the scrolling element's.
 pub fn ClientAreaAndScrollSize(aFrame: nsIFrame) -> (f64, f64, f64, f64) {
     let px = |v: nscoord| v as f64 / AppUnitsPerCSSPixel() as f64;
+    // The root element's frame, a child of the canvas: the canvas's scrollable overflow, which is what
+    // Gecko's root scroll frame scrolls (ScrollContainerFrame::GetScrolledRect, from the origin): the
+    // root's margin box, its descendants' overflow and the boxes absolutely positioned against the
+    // initial containing block; fixed boxes are the viewport's (GAPS B215, task 9a0d7).
+    // ADAPTER: in quirks mode Gecko's <html> keeps its own scroll size; here it has this one too.
+    // (the canvas's principal child; its absolutely positioned children have it as parent too)
+    if let Some(canvas) = aFrame.GetParent().filter(|p| p.IsCanvasFrame() && p.PrincipalChildList_FirstChild() == Some(aFrame)) {
+        let mut overflow = canvas.GetRect() - canvas.GetPosition();
+        UnionScrolledOverflow(canvas, nsPoint::new(0, 0), &mut overflow);
+        let paddingRect = aFrame.GetPaddingRectRelativeToSelf();
+        return (px(paddingRect.width), px(paddingRect.height), px(overflow.XMost().max(0)), px(overflow.YMost().max(0)));
+    }
     let paddingRect = aFrame.GetPaddingRectRelativeToSelf();
     // GetClientAreaRect: the padding box, except for inline boxes that are not replaced
     let display = aFrame.StyleDisplay();
