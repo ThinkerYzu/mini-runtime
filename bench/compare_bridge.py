@@ -123,6 +123,9 @@ from a local server, and the two logs it writes to `window.__log` are diffed. Th
                 and the page's scrollTo, scrollBy, scrollTop, scrollIntoView: the scroll and scrollend
                 events, the offsets, client rectangles of a static and a fixed box, elementFromPoint,
                 IntersectionObserver entries
+  select-options  <select> and <option> (Gecko's HTMLSelectElement and HTMLOptionsCollection, GAPS B211): the
+                options list, each option's text, value, label and selectedness, selectedIndex and value set
+                by script, add, remove, length, the Option factory, valueMissing, React-DOM's updateOptions
 
 usage (from a Firefox source tree):
   FIREFOX_BIN=.../firefox xvfb-run -a ./mach python /path/to/bench/compare_bridge.py [CASE ...]

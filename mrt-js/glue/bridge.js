@@ -1716,8 +1716,8 @@
       return map;
     });
   }
-  // `text` is the content of a, option, script and title (on body it is a legacy color attribute)
-  if (!isWorker) for (const name of ["HTMLAnchorElement", "HTMLOptionElement", "HTMLScriptElement", "HTMLTitleElement"]) {
+  // `text` is the content of a, script and title (option's is below; on body it is a legacy color attribute)
+  if (!isWorker) for (const name of ["HTMLAnchorElement", "HTMLScriptElement", "HTMLTitleElement"]) {
     getter(global[name].prototype, "text", function () { return this.textContent; }, function (v) { this.textContent = String(v); });
   }
 
@@ -3706,6 +3706,7 @@
   function valueMissing(el) {
     if (!el.hasAttribute("required") || !willValidate(el)) return false;
     if (el.localName === "input" && ["checkbox", "radio"].includes(typeOf(el))) return !el.hasAttribute("checked");
+    if (el.localName === "select") return selectValueMissing(el);
     return (el.localName === "textarea" ? el.textContent : el.getAttribute("value") || "") === "";
   }
   // HTMLTextAreaElement's value (Gecko's TextControlState): its default value is its text; its value
@@ -3767,6 +3768,199 @@
         if (other !== this && typeOf(other) === "radio" && other.getAttribute("name") === name && other.closest("form") === form) inputChecked.set(other, false);
       }
     });
+  }
+  // HTMLSelectElement and HTMLOptionElement (Gecko's HTMLSelectElement, HTMLOptionElement and
+  // HTMLOptionsCollection; B211, React's select updates read select.options). A select's options
+  // are the option descendants whose nearest ancestor select it is (IsValidOption: no hr, option or
+  // datalist between, at most one optgroup). An option's selectedness is its selected attribute
+  // until script sets it (mSelectedChanged); a single select shows the last selected option, or,
+  // at display size 1, the first enabled one, unless script chose none (selectedIndex -1, a value
+  // no option has). The selectedness is worked out on each read, not kept as Gecko keeps it on each
+  // insertion: the option picked by default is remembered at a read or an add() and kept while it
+  // is still an enabled option, but an option inserted after script chose none stays unselected.
+  // options and selectedOptions are snapshot lists, as the other collections are (GAPS B11).
+  const isHTMLTag = (n, tag) => n.nodeType === 1 && n.namespaceURI === "http://www.w3.org/1999/xhtml" && n.localName === tag;
+  const isOptionListBoundary = n => ["select", "hr", "option", "datalist"].some(t => isHTMLTag(n, t));
+  const nearestSelect = option => {
+    let seenOptgroup = false;
+    for (let n = option.parentNode; n && n.nodeType === 1; n = n.parentNode) {
+      if (isHTMLTag(n, "select")) return n;
+      if (isOptionListBoundary(n)) return null;
+      if (isHTMLTag(n, "optgroup")) { if (seenOptgroup) return null; seenOptgroup = true; }
+    }
+    return null;
+  };
+  const selectOptions = select => Array.from(Element.prototype.querySelectorAll.call(select, "option"))
+    .filter(o => isHTMLTag(o, "option") && nearestSelect(o) === select);
+  // IsOptionDisabled: its own disabled attribute, or that of the optgroup it is in
+  const optionDisabled = option => {
+    if (option.hasAttribute("disabled")) return true;
+    for (let n = option.parentNode; n && n.nodeType === 1; n = n.parentNode) {
+      if (isOptionListBoundary(n)) return false;
+      if (isHTMLTag(n, "optgroup")) return n.hasAttribute("disabled");
+    }
+    return false;
+  };
+  const optionSelectedSet = share("optionSelectedSet", () => new WeakMap());
+  const selectNone = share("selectNone", () => new WeakSet());
+  const defaultPicks = share("selectDefaultPicks", () => new WeakMap());
+  const rawSelected = o => (optionSelectedSet.has(o) ? optionSelectedSet.get(o) : o.hasAttribute("selected"));
+  const displaySize = select => {
+    const size = parseInt(select.getAttribute("size"), 10);
+    return size > 0 ? size : select.hasAttribute("multiple") ? 4 : 1;
+  };
+  // each option's selectedness, in the order of the select's options
+  const selectedness = (select, options = selectOptions(select)) => {
+    const raw = options.map(rawSelected);
+    if (select.hasAttribute("multiple")) return raw;
+    const last = raw.lastIndexOf(true);
+    const out = raw.map((_, i) => i === last);
+    if (last < 0 && displaySize(select) === 1 && !selectNone.has(select)) {
+      const kept = options.indexOf(defaultPicks.get(select));
+      const pick = kept >= 0 && !optionDisabled(options[kept]) ? kept : options.findIndex(o => !optionDisabled(o));
+      if (pick >= 0) { out[pick] = true; defaultPicks.set(select, options[pick]); }
+    }
+    return out;
+  };
+  // SetSelectedIndexInternal: every option unselected, then the one at index selected; an index
+  // out of range leaves none
+  const setSelectedIndex = (select, index) => {
+    const options = selectOptions(select);
+    for (const o of options) optionSelectedSet.set(o, false);
+    if (index >= 0 && index < options.length) { optionSelectedSet.set(options[index], true); selectNone.delete(select); }
+    else selectNone.add(select);
+  };
+  // IsValueMissing: required, and no selected option but the placeholder label option
+  const selectValueMissing = select => {
+    const options = selectOptions(select), selected = selectedness(select, options);
+    return !options.some((o, i) => selected[i] && !(i === 0 && !select.hasAttribute("multiple") && displaySize(select) === 1 &&
+      o.parentNode === select && o.value === ""));
+  };
+  if (!isWorker) {
+    // GetText: the text of its text descendants, not those in scripts, with white space stripped
+    // and collapsed
+    const optionText = option => {
+      const parts = [];
+      const walk = n => {
+        for (let c = n.firstChild; c; c = c.nextSibling) {
+          if (c.nodeType === 3) parts.push(c.data);
+          else if (c.nodeType === 1 && c.localName !== "script") walk(c);
+        }
+      };
+      walk(option);
+      return parts.join("").replace(/[\t\n\f\r ]+/g, " ").replace(/^ | $/g, "");
+    };
+    const O = HTMLOptionElement.prototype;
+    getter(O, "text", function () { return optionText(this); }, function (v) { this.textContent = String(v); });
+    getter(O, "value", function () { return this.getAttribute("value") ?? optionText(this); }, function (v) { this.setAttribute("value", String(v)); });
+    getter(O, "label", function () { return this.getAttribute("label") ?? optionText(this); }, function (v) { this.setAttribute("label", String(v)); });
+    getter(O, "defaultSelected", function () { return this.hasAttribute("selected"); },
+      function (v) { if (v) this.setAttribute("selected", ""); else this.removeAttribute("selected"); });
+    getter(O, "selected", function () {
+      const select = nearestSelect(this);
+      if (!select) return rawSelected(this);
+      const options = selectOptions(select);
+      return selectedness(select, options)[options.indexOf(this)];
+    }, function (v) {
+      v = !!v;
+      const select = nearestSelect(this);
+      if (select && v && !select.hasAttribute("multiple")) for (const o of selectOptions(select)) optionSelectedSet.set(o, false);
+      optionSelectedSet.set(this, v);
+      if (select) selectNone.delete(select);
+    });
+    getter(O, "index", function () {
+      const select = nearestSelect(this);
+      return select ? Math.max(0, selectOptions(select).indexOf(this)) : 0;
+    });
+    getter(O, "form", function () { const select = nearestSelect(this); return select ? formOwner(select) : null; });
+
+    // HTMLOptionsCollection: the select's options, with selectedIndex, add and remove
+    const optionsOwners = new WeakMap();
+    const HTMLOptionsCollection = function () { throw new TypeError("Illegal constructor."); };
+    Object.defineProperty(HTMLOptionsCollection, "name", { value: "HTMLOptionsCollection" });
+    HTMLOptionsCollection.prototype = Object.create(HTMLCollection.prototype, {
+      constructor: { value: HTMLOptionsCollection, writable: true, configurable: true },
+      [Symbol.toStringTag]: { value: "HTMLOptionsCollection", configurable: true },
+    });
+    define(global, "HTMLOptionsCollection", HTMLOptionsCollection);
+    const ownerSelect = list => {
+      const select = optionsOwners.get(list);
+      if (!select) throw new TypeError("'HTMLOptionsCollection' method called on an object that does not implement interface HTMLOptionsCollection.");
+      return select;
+    };
+    const P = HTMLOptionsCollection.prototype;
+    getter(P, "selectedIndex", function () { return ownerSelect(this).selectedIndex; }, function (v) { ownerSelect(this).selectedIndex = v; });
+    define(P, "add", function (element, before = null) { return ownerSelect(this).add(element, before); });
+    define(P, "remove", function (index) { ownerSelect(this).remove(index); });
+
+    const S = HTMLSelectElement.prototype;
+    const removeNode = Element.prototype.remove;
+    getter(S, "options", function () {
+      const list = Object.setPrototypeOf(selectOptions(this), HTMLOptionsCollection.prototype);
+      optionsOwners.set(list, this);
+      return list;
+    });
+    getter(S, "length", function () { return selectOptions(this).length; }, ceReactions(function (v) {
+      const length = Number(v) >>> 0, options = selectOptions(this);
+      if (length < options.length) { for (const o of options.slice(length)) o.remove(); return; }
+      if (length > 100000) return;
+      for (let i = options.length; i < length; i++) this.appendChild(this.ownerDocument.createElement("option"));
+    }));
+    getter(S, "form", function () { return formOwner(this); });
+    getter(S, "type", function () { return this.hasAttribute("multiple") ? "select-multiple" : "select-one"; });
+    getter(S, "selectedIndex", function () { return selectedness(this).indexOf(true); }, function (v) { setSelectedIndex(this, Number(v) | 0); });
+    getter(S, "value", function () {
+      const options = selectOptions(this), i = selectedness(this, options).indexOf(true);
+      return i < 0 ? "" : options[i].value;
+    }, function (v) {
+      v = v === null ? "" : String(v);
+      setSelectedIndex(this, selectOptions(this).findIndex(o => o.value === v));
+    });
+    getter(S, "selectedOptions", function () {
+      const options = selectOptions(this), selected = selectedness(this, options);
+      return asList(HTMLCollection, options.filter((_, i) => selected[i]));
+    });
+    define(S, "item", function (index) { return selectOptions(this)[Number(index) >>> 0] ?? null; });
+    define(S, "namedItem", function (name) {
+      name = String(name);
+      return selectOptions(this).find(o => o.id === name || o.getAttribute("name") === name) || null;
+    });
+    // Add: before is an element (inserted before it, which must be in the select) or an index
+    define(S, "add", ceReactions(function (element, before = null) {
+      if (!(element instanceof HTMLOptionElement || element instanceof HTMLOptGroupElement)) {
+        throw new TypeError("HTMLSelectElement.add: Argument 1 could not be converted to any of: HTMLOptionElement, HTMLOptGroupElement.");
+      }
+      if (typeof before === "number" || (before !== null && !(before instanceof HTMLElement))) before = this.item(Number(before) | 0);
+      selectedness(this);
+      if (!before) { this.appendChild(element); return; }
+      const parent = before.parentNode;
+      if (!parent || !(parent === this || this.contains(parent))) throw new DOMException("Node was not found", "NotFoundError");
+      parent.insertBefore(element, before);
+    }));
+    // remove() is ChildNode's; remove(index) removes that option
+    define(S, "remove", ceReactions(function (index) {
+      if (arguments.length === 0) return removeNode.call(this);
+      index = Number(index) | 0;
+      const option = index < 0 ? null : this.item(index);
+      if (option) option.remove();
+    }));
+    getter(HTMLDataListElement.prototype, "options", function () {
+      return asList(HTMLCollection, Array.from(Element.prototype.querySelectorAll.call(this, "option")));
+    });
+    // the legacy factory function Option (HTMLOptionElement::Option); its selectedness is the
+    // `selected` argument, kept here as if script had set it
+    const Option = function Option(text = "", value, defaultSelected = false, selected = false) {
+      if (!new.target) throw new TypeError("Option constructor: 'new' is required");
+      const option = document.createElement("option");
+      text = String(text);
+      if (text !== "") option.appendChild(document.createTextNode(text));
+      if (value !== undefined) option.setAttribute("value", String(value));
+      if (defaultSelected) option.setAttribute("selected", "");
+      optionSelectedSet.set(option, !!selected);
+      return option;
+    };
+    Option.prototype = HTMLOptionElement.prototype;
+    define(global, "Option", Option);
   }
   if (!isWorker) for (const name of ["HTMLInputElement", "HTMLSelectElement", "HTMLTextAreaElement", "HTMLButtonElement", "HTMLFieldSetElement",
     "HTMLOutputElement", "HTMLObjectElement"]) {

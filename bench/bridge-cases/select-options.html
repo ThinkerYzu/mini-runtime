@@ -1,0 +1,144 @@
+<!doctype html>
+<!-- <select> and <option> (Gecko's HTMLSelectElement, HTMLOptionElement, HTMLOptionsCollection; GAPS
+     B211) against release Firefox: bench/compare_bridge.py select-options. The options list (optgroups,
+     a nested select, hr), each option's text, value, label, index and selectedness, the default
+     selection of a single select, selectedIndex and value set by script, selectedOptions, add, remove,
+     length, namedItem, the Option factory, valueMissing, and React-DOM's updateOptions, which threw on
+     Instagram's post, profile and Explore pages when select.options was undefined. -->
+<html><head><meta charset="utf-8"><title>select-options</title></head><body><p>select-options test</p>
+<form id="f">
+<select id="one">
+  <option value="a">  Alpha
+    one </option>
+  <optgroup label="g"><option>Beta<script>/*x*/</script></option><option value="c" label="Gamma label">Gamma</option></optgroup>
+  <option disabled>Delta</option>
+</select>
+</form>
+<select id="parsed"><option selected>p0</option><option selected>p1</option><option>p2</option></select>
+<select id="dis"><option disabled>d0</option><optgroup disabled><option>d1</option></optgroup><option>d2</option></select>
+<select id="many" multiple><option selected>m0</option><option>m1</option><option selected>m2</option></select>
+<select id="sized" size="3"><option>s0</option><option>s1</option></select>
+<select id="req" required><option value="">Choose</option><option value="x">X</option></select>
+<datalist id="dl"><option value="u">U</option><option value="v"></option></datalist>
+<script>
+(function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name + ": " + e.message : "null";
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const $ = id => document.getElementById(id);
+  const state = s => [s.selectedIndex, s.value, Array.from(s.options).map(o => o.selected), Array.from(s.selectedOptions).map(o => o.index)];
+
+  const one = $("one");
+  T("types", () => [typeof one.options, Object.prototype.toString.call(one.options), one.options instanceof HTMLCollection,
+                    typeof HTMLOptionsCollection, one.type, $("many").type]);
+  T("options", () => [one.length, one.options.length, Array.from(one.options).map(o => [o.text, o.value, o.label, o.index, o.disabled])]);
+  T("item", () => [one.item(1).text, one.item(9), one.options.item(2).value, one.options[0] === one.item(0), one.namedItem("nope")]);
+  T("form", () => [one.options[0].form && one.options[0].form.id, new Option().form, $("parsed").options[0].form]);
+  T("default one", () => state(one));
+  T("parsed last wins", () => state($("parsed")));
+  T("disabled skipped", () => state($("dis")));
+  T("multiple", () => state($("many")));
+  T("sized none", () => state($("sized")));
+  T("datalist", () => [$("dl").options.length, Array.from($("dl").options).map(o => o.value)]);
+
+  T("selectedIndex 2", () => { one.selectedIndex = 2; return state(one); });
+  T("selectedIndex -1", () => { one.selectedIndex = -1; return state(one); });
+  T("selectedIndex 99", () => { one.selectedIndex = 99; return state(one); });
+  T("value c", () => { one.value = "c"; return state(one); });
+  T("value nope", () => { one.value = "nope"; return state(one); });
+  T("value Beta", () => { one.value = "Beta"; return state(one); });
+  T("option selected true", () => { one.options[0].selected = true; return state(one); });
+  T("option selected false", () => { one.options[0].selected = false; return state(one); });
+  T("options.selectedIndex", () => { one.options.selectedIndex = 2; return [one.options.selectedIndex, state(one)]; });
+  T("dirty ignores attribute", () => { one.options[1].selected = true; one.options[2].defaultSelected = true; return [state(one), one.options[2].defaultSelected]; });
+  T("multiple set", () => { const m = $("many"); m.options[1].selected = true; m.options[0].selected = false; return state(m); });
+  T("multiple index", () => { const m = $("many"); m.selectedIndex = 2; return state(m); });
+
+  T("add", () => {
+    const s = document.createElement("select");
+    s.add(new Option("n0", "v0"));
+    s.add(new Option("n2", "v2"), null);
+    s.add(new Option("n1", "v1"), s.options[1]);
+    s.add(new Option("first"), 0);
+    s.options.add(new Option("last"), 99);
+    return [s.length, Array.from(s.options).map(o => o.text + "/" + o.value), state(s)];
+  });
+  T("add bad", () => document.createElement("select").add(document.createElement("div")));
+  T("add not found", () => { const s = document.createElement("select"); s.add(new Option("a"), new Option("b")); });
+  T("remove", () => {
+    const s = document.createElement("select");
+    for (const t of ["r0", "r1", "r2", "r3"]) s.add(new Option(t));
+    s.remove(1); s.options.remove(0); s.remove(-1); s.remove(9);
+    return Array.from(s.options).map(o => o.text);
+  });
+  T("remove self", () => { const d = document.createElement("div"), s = document.createElement("select"); d.appendChild(s); s.remove(); return d.childNodes.length; });
+  T("length set", () => {
+    const s = document.createElement("select");
+    s.length = 3; const grown = [s.length, s.options[2].text, s.options[2].value];
+    s.length = 1;
+    return [grown, s.length];
+  });
+  T("Option", () => {
+    const o = new Option("t", "v", true, false), p = new Option("u", undefined, false, true), q = new Option();
+    return [o.text, o.value, o.defaultSelected, o.selected, p.value, p.defaultSelected, p.selected, q.outerHTML,
+            Option.length, Option.prototype === HTMLOptionElement.prototype, o instanceof HTMLOptionElement];
+  });
+  T("Option no new", () => Option("x"));
+  T("text set", () => { const o = new Option("a"); o.text = "  b  c "; return [o.text, o.textContent, o.value]; });
+  T("label empty", () => { const o = new Option("txt"); o.label = ""; return [o.label, o.getAttribute("label")]; });
+  T("required", () => {
+    const r = $("req");
+    const before = [r.validity.valueMissing, r.checkValidity()];
+    r.value = "x";
+    return [before, r.validity.valueMissing, r.checkValidity()];
+  });
+
+  // React-DOM 18's updateOptions (ReactDOMSelect), as Instagram's bundle runs it
+  function updateOptions(node, multiple, propValue, setDefaultSelected) {
+    const options = node.options;
+    if (multiple) {
+      const selectedValue = {};
+      for (let i = 0; i < propValue.length; i++) selectedValue["$" + propValue[i]] = true;
+      for (let i = 0; i < options.length; i++) {
+        const selected = selectedValue.hasOwnProperty("$" + options[i].value);
+        if (options[i].selected !== selected) options[i].selected = selected;
+        if (selected && setDefaultSelected) options[i].defaultSelected = true;
+      }
+    } else {
+      const selectedValue = String(propValue);
+      let defaultSelected = null;
+      for (let i = 0; i < options.length; i++) {
+        if (options[i].value === selectedValue) {
+          options[i].selected = true;
+          if (setDefaultSelected) options[i].defaultSelected = true;
+          return;
+        }
+        if (defaultSelected === null && !options[i].disabled) defaultSelected = options[i];
+      }
+      if (defaultSelected !== null) defaultSelected.selected = true;
+    }
+  }
+  T("react single", () => {
+    const s = document.createElement("select");
+    for (const v of ["en", "fr", "de"]) { const o = document.createElement("option"); o.value = v; o.textContent = v.toUpperCase(); s.appendChild(o); }
+    document.body.appendChild(s);
+    s.multiple = false;
+    updateOptions(s, false, "fr", true);
+    const first = state(s);
+    updateOptions(s, false, "zz", false);
+    return [first, state(s), s.options[1].defaultSelected, s.outerHTML];
+  });
+  T("react multiple", () => {
+    const s = document.createElement("select");
+    s.multiple = true;
+    for (const v of ["a", "b", "c"]) s.add(new Option(v));
+    updateOptions(s, true, ["a", "c"], true);
+    const first = state(s);
+    updateOptions(s, true, ["b"], false);
+    return [first, state(s)];
+  });
+})();
+</script>
+</body></html>
