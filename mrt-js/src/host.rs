@@ -64,6 +64,13 @@ pub struct Host {
     pub bridge: bool,
     /// Bridge requests sent.
     pub bridge_calls: usize,
+    /// The nodes the viewer's copy may need again since bridge.js last took them (`take_mirror_dirty`,
+    /// task 9caa0, GAPS A23): a node whose text, attributes or shadow root changed, and the parent of
+    /// each node inserted or removed, by script or by the parser. Element state is left out: the copy
+    /// has no hover or focus of the page's. Past `MIRROR_DIRTY_MAX` marks only `mirror_overflow` is
+    /// kept, and the copy is walked whole.
+    mirror_dirty: std::collections::HashSet<NodeId>,
+    mirror_overflow: bool,
     /// The page's dedicated workers (worker.rs), each on a thread of its own.
     pub workers: crate::worker::Workers,
     /// What workers handed over and the page has not taken yet, by worker id (worker.rs).
@@ -93,6 +100,7 @@ impl mrt_style::mrt_dom::ParserObserver for ParserNotifier {
         h.sheets_moved(parent, node);
         h.restyle(node, |r, d| r.content_inserted(d, node));
         h.frame_op(node, FrameOp::Inserted(node));
+        h.mirror_touch(parent);
         h.changed();
         unsafe { mrt_js_parser_inserted(parent, node) };
     }
@@ -102,6 +110,7 @@ impl mrt_style::mrt_dom::ParserObserver for ParserNotifier {
         let parent = h.dom.node(node).parent;
         unsafe { mrt_js_parser_will_remove(parent, node) };
         h.restyle(node, |r, d| r.content_will_be_removed(d, node));
+        h.mirror_touch(parent);
         h.frame_will_be_removed(node);
         h.sheets_moved(parent, node);
         h.changed();
@@ -115,6 +124,7 @@ impl mrt_style::mrt_dom::ParserObserver for ParserNotifier {
         }
         h.restyle(node, |r, d| r.character_data_changed(d, node));
         h.frame_op(node, FrameOp::TextChanged(node));
+        h.mirror_touch(node);
         h.changed();
     }
 
@@ -123,6 +133,7 @@ impl mrt_style::mrt_dom::ParserObserver for ParserNotifier {
         // is restyled; only a second <html> or <body> tag does this)
         let h = unsafe { &mut *self.host };
         h.restyle(node, |r, _| r.everything());
+        h.mirror_touch(node);
         for name in names {
             h.sheet_attribute_changed(node, name);
             h.frame_op(node, FrameOp::AttrChanged(node, name.clone()));
@@ -234,6 +245,8 @@ impl Host {
             resizes: Vec::new(),
             bridge: false,
             bridge_calls: 0,
+            mirror_dirty: Default::default(),
+            mirror_overflow: false,
             workers: Default::default(),
             worker_pending: Vec::new(),
             worker_out: Vec::new(),
@@ -481,6 +494,26 @@ impl Host {
         for owner in owners {
             self.sheet_replaced(owner);
         }
+    }
+
+    /// `node` changed in what the viewer's copy shows of it (see `mirror_dirty`).
+    fn mirror_touch(&mut self, node: NodeId) {
+        if self.mirror_overflow || node == NONE {
+            return;
+        }
+        if self.mirror_dirty.len() >= MIRROR_DIRTY_MAX {
+            self.mirror_dirty = Default::default();
+            self.mirror_overflow = true;
+            return;
+        }
+        self.mirror_dirty.insert(node);
+    }
+
+    /// The marks since the last call (`mirror_dirty`), which start again; None after an overflow.
+    pub fn take_mirror_dirty(&mut self) -> Option<Vec<NodeId>> {
+        let overflow = std::mem::take(&mut self.mirror_overflow);
+        let dirty = std::mem::take(&mut self.mirror_dirty);
+        (!overflow).then(|| dirty.into_iter().collect())
     }
 
     /// Tell the restyle log of `node`'s document about a change (`record` gets it and the DOM).
@@ -1889,6 +1922,8 @@ extern "C" fn mrt_dom_set_text_content(h: *mut c_void, id: u32, s: *const c_char
     if style != NONE && h.dom.node(style).kind == Kind::Element && h.dom.tag(style) == "style" {
         h.sheet_replaced(style);
     }
+    // (an element's children replaced, or a text's or comment's data)
+    h.mirror_touch(id);
     if is_element {
         // (nsContentUtils::SetNodeTextContent: the children removed, then a text appended)
         let children: Vec<NodeId> = h.dom.children(id).collect();
@@ -1953,8 +1988,10 @@ extern "C" fn mrt_dom_insert(h: *mut c_void, parent: u32, child: u32, before: u3
                 h.restyle(child, |r, d| r.content_will_be_removed(d, child));
                 h.frame_will_be_removed(child);
                 h.sheets_moved(old_parent, child);
+                h.mirror_touch(old_parent);
             }
             h.dom.insert_child(parent, child, before);
+            h.mirror_touch(parent);
             h.sheets_moved(parent, child);
             h.restyle(child, |r, d| r.content_inserted(d, child));
             // (a fragment's children were inserted one by one: each is its own op)
@@ -1978,6 +2015,7 @@ extern "C" fn mrt_dom_remove(h: *mut c_void, parent: u32, child: u32) -> i32 {
         h.sheets_moved(parent, child);
     }
     let removed = h.dom.remove_child(parent, child);
+    h.mirror_touch(parent);
     h.changed();
     removed as i32
 }
@@ -2007,6 +2045,7 @@ extern "C" fn mrt_dom_set_attr(h: *mut c_void, id: u32, name: *const c_char, nam
         h.sheet_attribute_changed(id, name);
         h.restyle(id, |r, _| r.attribute_changed(id, name));
         h.frame_op(id, FrameOp::AttrChanged(id, name.to_string()));
+        h.mirror_touch(id);
         h.changed();
     }
 }
@@ -2021,6 +2060,7 @@ extern "C" fn mrt_dom_remove_attr(h: *mut c_void, id: u32, name: *const c_char, 
         h.sheet_attribute_changed(id, name);
         h.restyle(id, |r, _| r.attribute_changed(id, name));
         h.frame_op(id, FrameOp::AttrChanged(id, name.to_string()));
+        h.mirror_touch(id);
         h.changed();
     }
 }
@@ -2070,6 +2110,20 @@ extern "C" fn mrt_dom_match(h: *mut c_void, id: u32, sel: *const c_char, len: us
     let (dom, result) = match_selector(dom, id, unsafe { text(sel, len) }, closest != 0);
     h.dom = dom;
     result.map_or(-1, |n| n as i64)
+}
+
+/// The viewer copy's marks (Host::take_mirror_dirty) into the result list, read with `mrt_dom_result`:
+/// how many, or -1 after an overflow (the copy is walked whole).
+#[unsafe(no_mangle)]
+extern "C" fn mrt_dom_mirror_take(h: *mut c_void) -> i32 {
+    let h = unsafe { host(h) };
+    match h.take_mirror_dirty() {
+        Some(ids) => {
+            h.results = ids;
+            h.results.len() as i32
+        }
+        None => -1,
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -2185,6 +2239,9 @@ pub struct TaskTimes {
     pub bridge: usize,
     pub bridge_ms: f64,
 }
+
+/// Marks kept for the viewer's copy before one whole walk is cheaper (see `Host::mirror_dirty`).
+const MIRROR_DIRTY_MAX: usize = 50_000;
 
 static TASK_TIMES: Mutex<TaskTimes> = Mutex::new(TaskTimes { flushes: 0, flush_ms: 0.0, style_ms: 0.0, construct_ms: 0.0, reflow_ms: 0.0, attach_ms: 0.0, boxes_ms: 0.0, state_ms: 0.0, reads: 0, read_ms: 0.0, bridge: 0, bridge_ms: 0.0 });
 
@@ -2472,6 +2529,7 @@ extern "C" fn mrt_dom_attach_shadow(h: *mut c_void, id: u32, flags: u32) -> i64 
     let r = h.dom.attach_shadow(id, flags as u8);
     h.restyle(id, |r, _| r.shadow_attached(id));
     h.frame_op(id, FrameOp::Reframe(id));
+    h.mirror_touch(id);
     h.changed();
     r.map_or(-1, |root| root as i64)
 }

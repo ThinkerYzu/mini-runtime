@@ -105,6 +105,7 @@ int32_t mrt_dom_assigned_nodes(void* host, uint32_t slot);
 // Nodes matching a selector below `root`, in tree order, at most `max` (0: all). Ids go to a list the
 // caller reads with mrt_dom_result. Returns the count, or -1 for a selector that does not parse.
 int32_t mrt_dom_query(void* host, uint32_t root, const char* sel, size_t len, uint32_t max);
+int32_t mrt_dom_mirror_take(void* host);
 uint32_t mrt_dom_result(void* host, uint32_t i);
 // element.matches (closest 0: the element's id or 0) and element.closest (1: the nearest inclusive
 // ancestor matching, or 0); -1 for a selector that does not parse.

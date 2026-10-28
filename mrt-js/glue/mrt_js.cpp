@@ -2656,6 +2656,31 @@ NATIVE(Element_closest) { return MatchSelector(cx, argc, vp, true); }
 NATIVE(ParentNode_querySelector) { return Query(cx, argc, vp, false); }
 NATIVE(ParentNode_querySelectorAll) { return Query(cx, argc, vp, true); }
 
+// __mrtMirrorTake(): the nodes the viewer's copy may need again since the last call (Host::
+// take_mirror_dirty, task 9caa0), or null when there were too many and the copy is to be walked whole.
+NATIVE(Global_mrtMirrorTake) {
+  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+  int32_t n = mrt_dom_mirror_take(tJs->host);
+  if (n < 0) {
+    args.rval().setNull();
+    return true;
+  }
+  // the ids first: wrapping can run a GC, but not script, so the result list stays as it is
+  std::vector<uint32_t> ids(n);
+  for (int32_t i = 0; i < n; i++) ids[i] = mrt_dom_result(tJs->host, i);
+  JS::RootedObject arr(cx, JS::NewArrayObject(cx, 0));
+  if (!arr) return false;
+  JS::RootedValue v(cx);
+  uint32_t at = 0;
+  for (uint32_t id : ids) {
+    if (!Wrap(cx, id, &v)) return false;
+    if (v.isNull()) continue;
+    if (!JS_SetElement(cx, arr, at++, v)) return false;
+  }
+  args.rval().setObject(*arr);
+  return true;
+}
+
 // Layout reads. Each one flushes style and layout on the Rust side. getBoundingClientRect: the border
 // box in the document as a plain object.
 static bool Box(JSContext* cx, unsigned argc, JS::Value* vp) {
@@ -5215,6 +5240,7 @@ static bool InitGlobal(JSContext* cx, JS::HandleObject global, uint32_t doc = 1)
       !JS_DefineFunction(cx, global, "__mrtStyle", Global_mrtStyle, 5, 0) ||
       !JS_DefineFunction(cx, global, "__mrtComputed", Global_mrtComputed, 4, 0) ||
       !JS_DefineFunction(cx, global, "__mrtBridge", Global_mrtBridge, 1, 0) ||
+      !JS_DefineFunction(cx, global, "__mrtMirrorTake", Global_mrtMirrorTake, 0, 0) ||
       !JS_DefineFunction(cx, global, "__mrtParseFragment", Global_mrtParseFragment, 2, 0) ||
       !JS_DefineFunction(cx, global, "__mrtCEReactions", Global_mrtCEReactions, 2, 0) ||
       !JS_DefineFunction(cx, global, "__mrtLink", Global_mrtLink, 2, 0) ||
@@ -6159,6 +6185,7 @@ static bool InitWorkerGlobal(JSContext* cx, JS::HandleObject global, const char*
       !JS_DefineFunction(cx, global, "__mrtEnterCallback", Global_mrtEnterCallback, 0, 0) ||
       !JS_DefineFunction(cx, global, "__mrtLeaveCallback", Global_mrtLeaveCallback, 0, 0) ||
       !JS_DefineFunction(cx, global, "__mrtBridge", Global_mrtBridge, 1, 0) ||
+      !JS_DefineFunction(cx, global, "__mrtMirrorTake", Global_mrtMirrorTake, 0, 0) ||
       !JS_DefineFunction(cx, global, "__mrtModuleScript", Global_mrtModuleScript, 2, 0) ||
       !JS_DefineFunction(cx, global, "__mrtModuleStats", Global_mrtModuleStats, 0, 0) ||
       !JS_DefineFunction(cx, global, "__mrtWorkerOut", Global_mrtWorkerOut, 1, 0) ||

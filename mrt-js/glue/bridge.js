@@ -2178,8 +2178,10 @@
   // copy of the document (mirrorFlush), which takes the rules again when the count moves
   const cssomEdits = new WeakMap();
   const constructedEdits = new WeakMap();
+  // (and the owners edited since the copy's last flush, which an incremental flush checks)
+  const cssomTouched = new Set();
   const noteSheetEdit = (owner, sheet) => {
-    if (owner) cssomEdits.set(owner, (cssomEdits.get(owner) || 0) + 1);
+    if (owner) { cssomEdits.set(owner, (cssomEdits.get(owner) || 0) + 1); cssomTouched.add(owner); }
     if (sheet && sheet._constructed) constructedEdits.set(sheet, (constructedEdits.get(sheet) || 0) + 1);
   };
   const internal = Symbol("internal");
@@ -8910,7 +8912,8 @@
   // (`byId`: each id's node at the last flush, for the owner's input, which names nodes by id;
   // `windows`: the window that mirrored each node, whose fireInput runs the input on it (a frame's).
   // Unlike `sent` it outlives a detach, so input queued before one still reaches its frame.)
-  const mirror = share("viewerMirror", () => ({ on: false, next: 1, ids: new WeakMap(), windows: new WeakMap(), snapshot: null, pendingSnapshot: null, sent: new WeakMap(), byId: new Map(), last: -Infinity, href: "", adopted: "", history: "", historyAck: 0 }));
+  const mirror = share("viewerMirror", () => ({ on: false, next: 1, ids: new WeakMap(), windows: new WeakMap(), snapshot: null, pendingSnapshot: null, sent: new WeakMap(), byId: new Map(), last: -Infinity, href: "", adopted: "", history: "", historyAck: 0,
+    full: true, removed: [], controls: new Set(), frames: new Set(), roots: new Set(), templates: new WeakMap() }));
   const XHTML = "http://www.w3.org/1999/xhtml";
   // the DOM's own methods, as they were before the page's scripts, which may wrap them
   const domOwn = (proto, name) => {
@@ -8921,6 +8924,7 @@
   const DOM_OWN = typeof Element === "undefined" ? {} : {
     attributeNames: domOwn(Element.prototype, "getAttributeNames"), attribute: domOwn(Element.prototype, "getAttribute"),
     childNodes: domOwn(Node.prototype, "childNodes"), shadowRoot: domOwn(Element.prototype, "shadowRoot"),
+    parentNode: domOwn(Node.prototype, "parentNode"),
     inputValue: domOwn(HTMLInputElement.prototype, "value"), inputChecked: domOwn(HTMLInputElement.prototype, "checked"),
     textareaValue: domOwn(HTMLTextAreaElement.prototype, "value"),
     setInputValue: Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set,
@@ -8930,7 +8934,23 @@
   const domCall = (fn, self, ...args) => (fn ? Reflect.apply(fn, self, args) : undefined);
   const childNodes = node => domCall(DOM_OWN.childNodes, node) || node.childNodes;
   const shadowOf = el => (DOM_OWN.shadowRoot ? domCall(DOM_OWN.shadowRoot, el) : el.shadowRoot);
-  const mirrorKids = node => childNodes(node.nodeType === 1 && node.localName === "template" && node.namespaceURI === XHTML ? node.content : node);
+  const isTemplate = node => node.nodeType === 1 && node.localName === "template" && node.namespaceURI === XHTML;
+  const mirrorKids = node => {
+    if (!isTemplate(node)) return childNodes(node);
+    mirror.templates.set(node.content, node);
+    return childNodes(node.content);
+  };
+  // The node at the top of the copy's tree that has `node`: up through parents, a shadow root's host
+  // and a template's contents' template. The page's document when the copy has the node there.
+  const mirrorRootOf = node => {
+    for (let n = node; ;) {
+      const p = domCall(DOM_OWN.parentNode, n);
+      if (p) { n = p; continue; }
+      const up = n.nodeType === 11 ? (n.host || mirror.templates.get(n)) : null;
+      if (!up) return n;
+      n = up;
+    }
+  };
   const isNoscript = node => node.nodeType === 1 && node.localName === "noscript" && node.namespaceURI === XHTML;
   const attrList = el => domCall(DOM_OWN.attributeNames, el).map(a => [a, domCall(DOM_OWN.attribute, el, a) ?? ""]);
   // A media element's resource through the API process (HTTP viewer, GAPS B172): the src of a
@@ -9031,9 +9051,10 @@
       const doc = mirrorFrame(node, ops);
       rec.f = doc ? (typeof doc === "number" ? doc : doc.i) : 0;
       if (doc) spec.f = doc;
+      mirror.frames.add(node);
     }
     if (rec.e) ops.push(["s", i, sheetRules(node)]);
-    if (isControl(node)) { rec.v = controlDefault(node); mirrorControl(node, rec, ops); }
+    if (isControl(node)) { rec.v = controlDefault(node); mirrorControl(node, rec, ops); mirror.controls.add(node); }
     const root = shadowOf(node);
     if (root) spec.r = mirrorRoot(root, ops);
     return spec;
@@ -9063,6 +9084,7 @@
     const rec = { i, k: "" };
     mirror.sent.set(root, rec);
     mirror.byId.set(i, root);
+    mirror.roots.add(root);
     const kids = Array.from(childNodes(root), k => mirrorSpec(k, ops));
     rec.k = kids.map(k => (typeof k === "number" ? k : k.i)).join(",");
     return { i, o: root.mode, c: kids, adopted: mirrorAdopted(root, rec) };
@@ -9080,7 +9102,8 @@
       if (text !== rec.a) { rec.a = text; ops.push(["a", rec.i, a]); }
       const e = cssomEdits.get(node) || 0;
       if (e !== rec.e) { rec.e = e; ops.push(["s", rec.i, sheetRules(node)]); }
-      if (rec.v !== undefined) mirrorControl(node, rec, ops);
+      if (rec.v !== undefined) { mirrorControl(node, rec, ops); mirror.controls.add(node); }
+      if (rec.f !== undefined) mirror.frames.add(node);
       if (rec.f !== undefined) {
         // its document walked; a new one (the frame navigated) replaces the copy's
         const at = ops.push(null) - 1;
@@ -9096,6 +9119,7 @@
       }
       else if (root) {
         mirror.byId.set(mirror.sent.get(root).i, root);
+        mirror.roots.add(root);
         const rootRec = mirror.sent.get(root);
         const sheets = mirrorAdopted(root, rootRec);
         if (sheets !== null) ops.push(["adopted-root", rootRec.i, sheets]);
@@ -9104,17 +9128,113 @@
     }
     mirrorChildren(node, rec, ops);
   }
-  function mirrorChildren(parent, rec, ops) {
+  // `deep`: the children the copy had walked too (the whole walk); else only the ones new here,
+  // which may have changed while out of the copy's tree (an incremental flush, mirrorTouch)
+  function mirrorChildren(parent, rec, ops, deep = true) {
     const kids = Array.from(parent.nodeType === 9 ? Array.from(childNodes(parent)).filter(k => k.nodeType === 1 || k.nodeType === 8) : mirrorKids(parent));
     const ids = kids.map(k => { const r = mirror.sent.get(k); return r ? r.i : 0; }).join(",");
-    if (ids !== rec.k) {
-      // (its place taken first: the new nodes' own ops, as their sheets' rules, come after it)
-      const at = ops.push(null) - 1;
-      const specs = kids.map(k => (mirror.sent.has(k) ? mirror.sent.get(k).i : mirrorSpec(k, ops)));
-      rec.k = specs.map(k => (typeof k === "number" ? k : k.i)).join(",");
-      ops[at] = ["c", rec.i, specs];
+    if (ids === rec.k) {
+      if (deep) for (const k of kids) if (mirror.sent.has(k)) mirrorWalk(k, ops);
+      return;
     }
-    for (const k of kids) if (mirror.sent.has(k)) mirrorWalk(k, ops);
+    const before = new Set(rec.k ? rec.k.split(",").map(Number) : []);
+    // (its place taken first: the new nodes' own ops, as their sheets' rules, come after it)
+    const at = ops.push(null) - 1;
+    const specs = kids.map(k => (mirror.sent.has(k) ? mirror.sent.get(k).i : mirrorSpec(k, ops)));
+    rec.k = specs.map(k => (typeof k === "number" ? k : k.i)).join(",");
+    ops[at] = ["c", rec.i, specs];
+    const now = new Set(specs.map(k => (typeof k === "number" ? k : k.i)));
+    for (const i of before) if (!now.has(i)) mirror.removed.push(i);
+    kids.forEach((k, at) => {
+      const r = mirror.sent.get(k);
+      if (r && (deep || (typeof specs[at] === "number" && !before.has(r.i)))) mirrorWalk(k, ops);
+    });
+  }
+  // A node the copy has, its own state only: what an incremental flush does for a node the DOM says
+  // changed (__mrtMirrorTake): its text, attributes, rules, control state, a new shadow root, and its
+  // children's list (the frames, controls and shadow roots' sheets are checked by mirrorFlush)
+  function mirrorTouch(node, ops) {
+    const rec = mirror.sent.get(node);
+    mirror.byId.set(rec.i, node);
+    if (node.nodeType === 3 || rec.leaf) {
+      if (node.nodeType !== 1 && rec.d !== node.data) { rec.d = node.data; ops.push(["d", rec.i, node.data]); }
+      return;
+    }
+    if (node.nodeType === 1) {
+      const a = mirrorAttrs(node), text = JSON.stringify(a);
+      if (text !== rec.a) { rec.a = text; ops.push(["a", rec.i, a]); }
+      // (a <source>'s src for the copy depends on its media element's crossorigin)
+      if (env.httpViewer && isMedia(node)) {
+        for (const k of mirrorKids(node)) if (k.nodeType === 1 && mirror.sent.has(k) && isMediaSource(k)) mirrorTouch(k, ops);
+      }
+      const root = shadowOf(node);
+      if (root && !mirror.sent.has(root)) {
+        const at = ops.push(null) - 1;
+        ops[at] = ["r", rec.i, mirrorRoot(root, ops)];
+      }
+    }
+    mirrorChildren(node, rec, ops, false);
+  }
+  // An incremental flush (mirrorFlush): the nodes the DOM marked that the copy has in this document
+  // (a frame's document is walked whole, by mirrorFrame), then what changes without a DOM mutation:
+  // sheets the CSSOM edited, form controls' values, frames' documents and shadow roots' adopted sheets
+  function mirrorChanges(dirty, ops) {
+    const mine = n => mirrorRootOf(n) === document;
+    for (let node of dirty) {
+      if (node.nodeType === 11 && mirror.templates.has(node)) node = mirror.templates.get(node);
+      if (mirror.sent.has(node) && mine(node)) mirrorTouch(node, ops);
+    }
+    for (const el of cssomTouched) {
+      const rec = mirror.sent.get(el);
+      if (!rec || rec.e === undefined || !mine(el)) continue;
+      const e = cssomEdits.get(el) || 0;
+      if (e !== rec.e) { rec.e = e; ops.push(["s", rec.i, sheetRules(el)]); }
+    }
+    cssomTouched.clear();
+    for (const el of mirror.controls) {
+      const rec = mirror.sent.get(el);
+      if (!rec || !mine(el)) { mirror.controls.delete(el); continue; }
+      mirrorControl(el, rec, ops);
+    }
+    for (const el of mirror.frames) {
+      const rec = mirror.sent.get(el);
+      if (!rec || !mine(el)) { mirror.frames.delete(el); continue; }
+      // its document walked; a new one (the frame navigated) replaces the copy's
+      const at = ops.push(null) - 1;
+      const doc = mirrorFrame(el, ops);
+      const i = doc ? (typeof doc === "number" ? doc : doc.i) : 0;
+      if (i !== rec.f || (doc && typeof doc === "object")) { rec.f = i; ops[at] = ["f", rec.i, doc]; }
+      else ops.splice(at, 1);
+    }
+    for (const root of mirror.roots) {
+      const rec = mirror.sent.get(root);
+      if (!rec || !mine(root)) { mirror.roots.delete(root); continue; }
+      const sheets = mirrorAdopted(root, rec);
+      if (sheets !== null) ops.push(["adopted-root", rec.i, sheets]);
+    }
+    mirrorForget();
+  }
+  // the ids no longer in the copy's tree after this flush (see mirror.removed), out of mirror.byId,
+  // their subtrees with them: the map keeps what the viewer's input and media events refer to
+  function mirrorForget() {
+    const gone = mirror.removed.splice(0);
+    for (const i of gone) {
+      const node = mirror.byId.get(i);
+      if (!node) continue;
+      const top = mirrorRootOf(node);
+      if (top.nodeType === 9 && mirror.sent.has(top)) continue;
+      const stack = [node];
+      while (stack.length) {
+        const n = stack.pop();
+        const r = mirror.sent.get(n);
+        if (r && mirror.byId.get(r.i) === n) mirror.byId.delete(r.i);
+        if (n.nodeType === 1 || n.nodeType === 11) {
+          stack.push(...mirrorKids(n));
+          const root = n.nodeType === 1 ? shadowOf(n) : null;
+          if (root) stack.push(root);
+        }
+      }
+    }
   }
   // The HTTP viewer's frames: a frame element's window, if this runtime has it, mirrors its own
   // document (its __mrt.mirrorDocument): the document's spec when the copy does not have it yet, else
@@ -9145,10 +9265,20 @@
     if (!force && now - mirror.last < 100) return 0;
     mirror.last = now;
     const ops = [];
-    // Even an empty document must replace the viewer's old children in a fresh snapshot.
-    if (!mirror.sent.has(document)) mirror.sent.set(document, { i: 0, k: null });
-    mirror.byId = new Map([[0, document]]);
-    mirrorChildren(document, mirror.sent.get(document), ops);
+    // What the DOM marked since the last flush; the whole document walked when the copy is new (a
+    // snapshot, a restarted copy) or the marks overflowed (task 9caa0, GAPS A23: the whole walk
+    // before every wait took 21-26 ms on Google Images, 1-17 ms on X)
+    const dirty = __mrtMirrorTake();
+    if (mirror.full || dirty === null || !mirror.sent.has(document)) {
+      mirror.full = false;
+      mirror.removed.length = 0;
+      mirror.controls.clear(); mirror.frames.clear(); mirror.roots.clear();
+      cssomTouched.clear();
+      // Even an empty document must replace the viewer's old children in a fresh snapshot.
+      if (!mirror.sent.has(document)) mirror.sent.set(document, { i: 0, k: null });
+      mirror.byId = new Map([[0, document]]);
+      mirrorChildren(document, mirror.sent.get(document), ops);
+    } else mirrorChanges(dirty, ops);
     if (pageURL.href !== mirror.href) { mirror.href = pageURL.href; ops.push(["u", pageURL.href]); }
     if (env.httpViewer) {
       const count = historyEntries().length;
@@ -9900,13 +10030,14 @@
       if (!id) { id = mirror.next++; mirror.ids.set(node, id); }
       return id;
     },
-    mirrorStart() { mirror.on = true; },
+    mirrorStart() { mirror.on = true; mirror.full = true; },
     // HTTP attachment retains node ids but resets incremental bookkeeping.
     mirrorSnapshot(session) {
       if (inputQueued) { mirror.pendingSnapshot = session; return 0; }
       mirror.pendingSnapshot = null;
       mirror.on = true;
       mirror.sent = new WeakMap();
+      mirror.full = true;
       mirror.href = ""; mirror.adopted = "";
       mirror.snapshot = session;
       rootScroll.sent = -1;
@@ -9920,6 +10051,7 @@
         mirror.pendingSnapshot = null;
         mirror.sent = new WeakMap();
       }
+      if (enabled && !mirror.on) mirror.full = true;
       mirror.on = enabled;
     },
     viewerViewport(width, height) {
