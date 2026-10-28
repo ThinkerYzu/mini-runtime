@@ -1274,6 +1274,10 @@ class Runtime(unittest.TestCase):
             page = "media-large-replay.html"
         if self._testMethodName == "test_browser_media_audible_resume":
             page = "media-audible-resume.html"
+        if self._testMethodName == "test_browser_media_audible_page_play":
+            page = "media-audible-resume.html?visibility=0"
+        if self._testMethodName == "test_browser_media_audible_page_play_later":
+            page = "media-audible-resume.html?visibility=3000"
         if self._testMethodName == "test_browser_element_scroll":
             page = "element-scroll.html"
         if self._testMethodName == "test_browser_page_focus":
@@ -2551,6 +2555,83 @@ class Runtime(unittest.TestCase):
             browser.navigate(self.viewer_url)
             plays_muted_copy()
             self.assertEqual(self.call("runtimes")[0]["pid"], pid)
+        except Exception:
+            browser.switch_to_frame()
+            print("VIEWER STATUS", browser.execute_script(status), browser.execute_script(
+                f'const v={video};return v&&[v.paused,v.muted,v.currentTime,v.readyState,v.error&&v.error.message]'),
+                "RUNTIME MEDIA LOG", log.read_text()[-8000:]); raise
+        finally:
+            firefox_exit.close(browser)
+        self.call("stop", {})
+        self.proc.wait(timeout=20)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual((result["exit"], result["js_errors"]), (0, 0), result)
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_media_audible_page_play(self):
+        # Task 035f5 (B207 follow-up): Instagram's reel pauses while the page is hidden and calls
+        # play() when it is visible again. After a tab replacement that play() comes from the page,
+        # not the viewer's resume, and reaches the new viewer, whose document has no user
+        # activation: Firefox refused it and the page's reel stayed paused. The viewer plays its
+        # copy muted for it too, as for its resume (B207). Here the play() comes at once.
+        self.audible_page_play()
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_media_audible_page_play_later(self):
+        # Task 035f5: the same with the page's play() 3 s after it is visible, once the new viewer
+        # has rebuilt and resumed the source.
+        self.audible_page_play()
+
+    def audible_page_play(self):
+        """A tab replacement over a page that pauses while hidden and plays when visible"""
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        log = self.root / "logs" / "demo.log"
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False,
+            "media.autoplay.default": 1, "media.autoplay.blocking_policy": 0})
+        browser.start_session()
+        status = 'return document.getElementById("status").textContent'
+        frame = 'document.getElementById("page").contentDocument'
+        video = f'{frame}.getElementById("mse")'
+        page_state = f'return {frame}.getElementById("state").textContent'
+        try:
+            browser.set_context("content"); browser.navigate(self.viewer_url)
+            self.until(lambda: "AUDIBLE_READY" in log.read_text(), timeout=20)
+            self.until(lambda: browser.execute_script(status).startswith("Connected"))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", "play").click()
+            self.until(lambda: "PLAY_OK" in log.read_text())
+            browser.switch_to_frame()
+            pid = self.call("runtimes")[0]["pid"]
+            # the new tab in front hides the old viewer, so the page pauses; then the old one closes
+            # without coming to the front again (switch_to_window would show it, and the page plays)
+            spare = browser.open(type="tab", focus=True)["handle"]
+            self.until(lambda: "PAGE_VISIBLE false" in log.read_text())
+            self.until(lambda: "PAGE_PAUSE" in log.read_text())
+            with browser.using_context("chrome"):
+                browser.execute_script("const g = window.gBrowser; g.removeTab(g.tabs.find(t => t !== g.selectedTab))")
+            browser.switch_to_window(spare)
+            plays = log.read_text().count("PLAY_OK")
+            browser.navigate(self.viewer_url)
+            self.until(lambda: "PAGE_VISIBLE true" in log.read_text(), timeout=30)
+            self.until(lambda: log.read_text().count("PLAY_OK") > plays or "PLAY_ERROR" in log.read_text(), timeout=20)
+            self.assertNotIn("PLAY_ERROR", log.read_text())
+            start = browser.execute_script(f'return {video}.currentTime')
+            self.until(lambda: browser.execute_script(f'const v={video};return !v.paused&&Math.abs(v.currentTime-{start})>0.5'), timeout=15)
+            self.assertTrue(browser.execute_script(f'return {video}.muted'))
+            self.assertIn("click", browser.execute_script(status))
+            self.until(lambda: browser.execute_script(page_state).endswith(" false false"))
+            self.assertNotIn("PAGE_VOLUME", log.read_text())
+            self.assertEqual(self.call("runtimes")[0]["pid"], pid)
+            # the first click gives the sound back
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            self.until(lambda: browser.execute_script('return window.frameElement.style.pointerEvents === "auto"'))
+            browser.find_element("id", "state").click()
+            browser.switch_to_frame()
+            self.until(lambda: browser.execute_script(f'const v={video};return !v.muted&&!v.paused'))
+            self.assertNotIn("click", browser.execute_script(status))
+            self.assertNotIn("PAGE_VOLUME", log.read_text())
         except Exception:
             browser.switch_to_frame()
             print("VIEWER STATUS", browser.execute_script(status), browser.execute_script(

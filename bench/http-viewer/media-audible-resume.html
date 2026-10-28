@@ -25,5 +25,14 @@ const once=(o,t)=>new Promise(resolve=>o.addEventListener(t,resolve,{once:true})
 document.getElementById('play').onclick=()=>video.play().then(()=>log('PLAY_OK'),e=>log('PLAY_ERROR '+e.name));
 video.addEventListener('pause',()=>log('PAGE_PAUSE'));
 video.addEventListener('volumechange',()=>log('PAGE_VOLUME '+video.muted+' '+video.volume));
+// Task 035f5 (B207 follow-up), with ?visibility=<ms>: Instagram's reel pauses when the page is
+// hidden and plays again <ms> after it is visible. After a tab replacement that play() comes from
+// the page, in the new viewer, whose document has no user activation.
+const visibility=new URLSearchParams(location.search).get('visibility');
+if(visibility!==null)document.addEventListener('visibilitychange',()=>{
+ log('PAGE_VISIBLE '+!document.hidden);
+ if(document.hidden)video.pause();
+ else setTimeout(()=>video.play().then(()=>log('PLAY_OK'),e=>log('PLAY_ERROR '+e.name+' '+e.message)),+visibility);
+});
 setInterval(()=>document.getElementById('state').textContent=[video.currentTime.toFixed(1),video.paused,video.muted].join(' '),100);
 </script>

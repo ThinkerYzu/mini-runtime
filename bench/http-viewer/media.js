@@ -8,13 +8,30 @@ const dec = v => (typeof v === "string" ? Number(v) : v);
 const ranges = r => { const out = []; for (let i = 0; i < r.length; i++) out.push([num(r.start(i)), num(r.end(i))]); return out; };
 const lastSeq = new WeakMap();
 // The elements this viewer muted to keep them playing (task 3a93c), each with the page's own muted
-// value: a new viewer's document has no user activation, so Firefox refuses an audible play() for
-// the runtime's resume, while muted playback is allowed. The page still sees its own value, and the
+// value: a new viewer's document has no user activation, so Firefox refuses an audible play(), the
+// runtime's resume or the page's own (`playHeld`), while muted playback is allowed. The page still sees its own value, and the
 // volumechange events of these mutes (`quiet`, a count per element) are not sent. The first user
 // gesture in the viewer gives each its value back (unmuting earlier would make Firefox pause it).
 const held = new Map(), quiet = new WeakMap();
 const setQuietly = (el, muted) => { if (el.muted !== muted) { quiet.set(el, (quiet.get(el) || 0) + 1); el.muted = muted; } };
 const hold = el => { held.set(el, el.muted); setQuietly(el, true); onHold(held.size); };
+const unhold = el => { if (held.has(el)) { setQuietly(el, held.get(el)); held.delete(el); onHold(held.size); } };
+// A play() of an audible element refused for want of user activation: play it muted under the hold,
+// settled as the muted play() is (the first refusal stands if that one is refused too). Only in a
+// viewer that took over a page (`reattached`: a replayed source or a restore came, task 035f5): with
+// no earlier viewer the page's own audible autoplay is refused, as Firefox refuses it.
+let reattached = false;
+const playHeld = (el, refusal) => {
+  if (!active || refusal.name !== "NotAllowedError" || !reattached || el.muted || held.has(el)) return Promise.reject(refusal);
+  hold(el);
+  return el.play().catch(() => { unhold(el); throw refusal; });
+};
+// the page's volume, rates and muted value; a held element stays muted, keeping the page's value for
+// the gesture (the page's play() can be held before the resume of its source comes, task 035f5)
+const setSound = (el, op) => {
+  for (const name of ["volume", "playbackRate", "defaultPlaybackRate"]) el[name] = op[name];
+  if (held.has(el)) held.set(el, !!op.muted); else el.muted = op.muted;
+};
 const restoreSound = () => {
   if (!held.size || W.navigator.userActivation?.hasBeenActive === false) return;
   for (const [el, muted] of held) setQuietly(el, muted);
@@ -106,20 +123,13 @@ function step(rec, op) {
       const finish = () => {
         if (!active || rec.lost) return;
         try {
-          for (const name of ["volume", "muted", "playbackRate", "defaultPlaybackRate"]) el[name] = op[name];
+          setSound(el, op);
           if (op.currentTime > 0) el.currentTime = op.currentTime;
           rec.replaying = false; rec.busy = false; W.clearTimeout(rec.timer);
           queue.push({type:"media", k:"el", el:op.el, ev:"timeupdate", s:state(el), seq:op.seq, resumed:true});
           const paused = () => { if (active) queue.push({type:"media", k:"el", el:op.el, ev:"pause", s:state(el), seq:op.seq, resumed:true}); };
           // refused for want of user activation: play muted (see `held`), not paused
-          if (!op.paused) el.play().catch(e => {
-            if (!active || e.name !== "NotAllowedError" || el.muted || held.has(el)) { paused(); return; }
-            hold(el);
-            el.play().catch(() => {
-              if (held.has(el)) { setQuietly(el, held.get(el)); held.delete(el); onHold(held.size); }
-              paused();
-            });
-          });
+          if (!op.paused) el.play().catch(e => playHeld(el, e)).catch(paused);
           pump(rec);
         } catch (e) { lose(rec, e.name + ": " + e.message); }
       };
@@ -169,8 +179,8 @@ const apply = op => {
   switch (op.o) {
     case "restore": {
       if (!el || restored.has(op.el)) return;
-      restored.add(op.el); watchElement(el);
-      for (const name of ["volume", "muted", "playbackRate", "defaultPlaybackRate"]) el[name] = op[name];
+      restored.add(op.el); watchElement(el); reattached = true;
+      setSound(el, op);
       el.pause();
       const seek = () => { if (active && op.currentTime > 0) try { el.currentTime = op.currentTime; } catch (_) {} };
       if (el.readyState >= 1) seek(); else el.addEventListener("loadedmetadata", seek, {once: true});
@@ -180,6 +190,7 @@ const apply = op => {
       for (const rec of sources.values()) if (rec.el === el) release(rec);
       const ms = new W.MediaSource();
       const rec = { id:op.ms, ms, el, open: false, queue: [], busy: false, current: null, sbs: new Map(), replaying:!!op.replay };
+      if (op.replay) reattached = true;
       if (rec.replaying) rec.timer = W.setTimeout(() => lose(rec, "Media reconstruction timed out"), 10000);
       sources.set(op.ms, rec);
       ms.addEventListener("sourceopen", () => {
@@ -201,7 +212,8 @@ const apply = op => {
     case "play":
       if (!el) { queue.push({type:"media", k:"play", p:op.p, ok:false, name:"AbortError", message:"Media element unavailable"}); return; }
       if (el) watchElement(el);
-      if (el) el.play().then(() => queue.push({ type: "media", k: "play", p: op.p, ok: true }),
+      // the page's own play() in a new viewer (Instagram's reel when the page is visible again)
+      if (el) el.play().catch(e => playHeld(el, e)).then(() => queue.push({ type: "media", k: "play", p: op.p, ok: true }),
                              e => queue.push({ type: "media", k: "play", p: op.p, ok: false, name: e.name, message: e.message }));
       return;
     case "pause": if (el) el.pause(); return;
