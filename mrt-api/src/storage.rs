@@ -43,6 +43,18 @@ pub fn handle(req: &Value, store: &Store) -> Result<Value, String> {
             let names: Vec<String> = st.query_map([origin], |r| r.get(0)).map_err(err)?.flatten().collect();
             Ok(json!(names))
         }
+        // (B222) the origin's items in order, for the page's snapshot of a task (Gecko's LSSnapshot
+        // prefill), when their keys and values come to at most `limit` UTF-16 units; null otherwise
+        "items" => {
+            let limit = args.first().and_then(Value::as_i64).unwrap_or(0);
+            let usage: i64 = db.query_row("SELECT coalesce(sum(len), 0) FROM ls WHERE origin = ?1", [origin], |r| r.get(0)).map_err(err)?;
+            if usage > limit {
+                return Ok(Value::Null);
+            }
+            let mut st = db.prepare_cached("SELECT key, value FROM ls WHERE origin = ?1 ORDER BY seq").map_err(err)?;
+            let items: Vec<Value> = st.query_map([origin], |r| Ok(json!([r.get::<_, String>(0)?, r.get::<_, String>(1)?]))).map_err(err)?.flatten().collect();
+            Ok(json!(items))
+        }
         "key" => {
             let i = args.first().and_then(Value::as_u64).unwrap_or(0) as i64;
             let k: Option<String> = db

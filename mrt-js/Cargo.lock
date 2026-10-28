@@ -543,6 +543,7 @@ dependencies = [
  "cssparser",
  "euclid",
  "mrt-dom",
+ "rayon",
  "selectors",
  "stylo",
  "stylo_dom",

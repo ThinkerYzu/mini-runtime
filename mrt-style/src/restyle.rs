@@ -76,6 +76,11 @@ impl RestyleRecorder {
         self.restyled_as_whole_container.clear();
     }
 
+    /// Whether nothing was recorded since the last style build.
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
+
     /// The ops since the last style build; the recorder starts a new log.
     pub fn take_ops(&mut self) -> Vec<RestyleOp> {
         self.snapshots.clear();

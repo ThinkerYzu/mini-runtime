@@ -951,9 +951,14 @@
   // Live native jobs retain their response past the old five-second cutoff.
   // Poll in timer tasks so input, other APIs and viewer replacement keep running.
   // `op`: the job's kind, "fetch" or "image" (an image load, B218).
+  // A poll is a cheap round trip, so the next one comes a quarter of the job's age later (8 to 100
+  // ms): a short request is seen soon after it ends (B222: Google's preview fetch and the full-size
+  // image each waited up to 100 ms on a fixed interval), a long one costs few polls.
+  const nextPoll = started => clockNow() + Math.min(100, Math.max(8, (clockNow() - started) / 4));
   function receiveResponse(initial, aborted = () => false, op = "fetch") {
     return new Promise((resolve, reject) => {
       const id = initial?.job;
+      const started = clockNow();
       const poll = () => {
         try {
           if (aborted()) {
@@ -961,7 +966,7 @@
             resolve(null); return;
           }
           const response = id ? bridge(op, {call: "poll", id}) : initial;
-          if (response?.job) { global.__mrt.queueAt(poll, clockNow() + 100); return; }
+          if (response?.job) { global.__mrt.queueAt(poll, nextPoll(started)); return; }
           // Legacy measuring/privileged bridge long polls still have no late delivery.
           if (response?.pending) return;
           afterNetwork(response, () => resolve(response));
@@ -1353,9 +1358,51 @@
   const quotaExceeded = () => new DOMException("The quota has been exceeded.", "QuotaExceededError");
   // the document's URI when the window first used localStorage (the storage events' url)
   let storageURL = null;
-  const ls = (call, args) => {
+  const lsBridge = (call, args) => {
     if (storageURL === null && !isWorker) storageURL = global.document.URL;
     return bridge("storage", { origin: global.origin, area: "localStorage", call, args });
+  };
+  // This window's snapshot of localStorage for the current task (B222), as Gecko's LSSnapshot: made
+  // at the first access, filled with every item when they come to at most 16384 UTF-16 units
+  // (dom.storage.snapshot_prefill), else one key at a time; writes go through to the API process
+  // and into the snapshot; it ends at the next microtask checkpoint (Gecko: the stable state).
+  // Google reads the same items hundreds of times a click, each a round trip to the API process.
+  let lsSnapshot = null;
+  const snapshot = () => {
+    if (lsSnapshot) return lsSnapshot;
+    // (a bridge tab without the call, as in the privileged mode: one key at a time)
+    let items = null;
+    try { items = lsBridge("items", [16384]); } catch (e) {}
+    lsSnapshot = { values: new Map(items || []), complete: !!items, names: items ? items.map(i => i[0]) : null };
+    Promise.resolve().then(() => { lsSnapshot = null; });
+    return lsSnapshot;
+  };
+  const ls = (call, args) => {
+    const snap = snapshot();
+    switch (call) {
+      case "getItem":
+        if (!snap.complete && !snap.values.has(args[0])) snap.values.set(args[0], lsBridge(call, args));
+        return snap.values.has(args[0]) ? snap.values.get(args[0]) : null;
+      case "names":
+        if (!snap.names) snap.names = lsBridge(call, args);
+        return snap.names.slice();
+      case "length":
+        return snap.names ? snap.names.length : lsBridge(call, args);
+      case "key":
+        return snap.names ? (snap.names[args[0]] ?? null) : lsBridge(call, args);
+    }
+    const r = lsBridge(call, args);
+    if (call === "setItem" && r) {
+      // (a new key goes last, an overwritten one keeps its place)
+      if (snap.names && !snap.names.includes(args[0])) snap.names.push(args[0]);
+      snap.values.set(args[0], args[1]);
+    } else if (call === "removeItem") {
+      if (snap.names) snap.names = snap.names.filter(n => n !== args[0]);
+      if (snap.complete) snap.values.delete(args[0]); else snap.values.set(args[0], null);
+    } else if (call === "clear") {
+      lsSnapshot = Object.assign(snap, { values: new Map(), complete: true, names: [] });
+    }
+    return r;
   };
   // The storage event (Storage::NotifyChange, StorageNotifierService::Broadcast, nsGlobalWindowInner::
   // ObserveStorageNotification): a change to localStorage reaches every other window of the runtime

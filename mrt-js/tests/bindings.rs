@@ -241,6 +241,24 @@ const CASES: &[(&str, &str, &[&str])] = &[
         &["60", "60", "true"],
     ),
     (
+        // reads between attribute changes that do not change style or frames keep the last layout
+        // (task dcb24: no flush for them), and a change that does still shows: a class a rule
+        // matches, an attribute selector, an img's width, then the data attribute last again
+        "reads after attribute changes that change nothing",
+        r##"<style>.wide { width: 80px } [data-big=y] { width: 120px }</style><div id=d style="width:40px">d</div><img id=i width=10 height=5><script>
+        const d = document.getElementById("d"), i = document.getElementById("i");
+        const w = () => [d.getBoundingClientRect().width, getComputedStyle(d).width, i.offsetWidth].join(" ");
+        console.log(w());
+        d.setAttribute("data-x", "1"); console.log(w());
+        d.setAttribute("aria-label", "a"); console.log(w());
+        d.removeAttribute("style"); d.className = "wide"; d.setAttribute("data-y", "2"); console.log(w());
+        d.setAttribute("data-big", "y"); console.log(w());
+        i.setAttribute("width", "30"); console.log(w());
+        d.setAttribute("data-x", "2"); console.log(w());
+        </script>"##,
+        &["40 40px 10", "40 40px 10", "40 40px 10", "80 80px 10", "120 120px 10", "120 120px 30", "120 120px 30"],
+    ),
+    (
         // class and id selectors compared with the attribute's text (task 9caa0): exact in a
         // standards-mode document, ASCII case-insensitive in a quirks-mode one (a DOMParser document
         // without a doctype), through querySelectorAll, querySelector, matches and closest

@@ -598,7 +598,29 @@ impl Host {
         let stale = shell.boxes.as_ref().is_none_or(|b| b.0 != self.generation || b.1 != Some(viewport))
             || shell.boxes_scroll != scroll
             || shell.boxes_element_scroll != self.element_scroll_generation;
-        if stale && shell.boxes.is_some() && self.flushes >= self.max_flushes {
+        // Only attribute changes since the last flush that neither restyle, reframe nor touch a form
+        // control (B222: Google sets one before each of its getComputedStyle reads): the flush would
+        // leave style and frames as they are, as Gecko's does with nothing dirty, so the last flush's
+        // boxes stay; the ops wait for the next flush.
+        let unchanged = stale
+            && shell.boxes.as_ref().is_some_and(|b| b.1 == Some(viewport))
+            && shell.boxes_scroll == scroll
+            && shell.boxes_element_scroll == self.element_scroll_generation
+            && shell.layout_thread.is_some()
+            && shell.restyle.is_empty()
+            && !shell.frame_ops.is_empty()
+            && shell.frame_ops.iter().all(|op| match op {
+                FrameOp::AttrChanged(n, name) => {
+                    attribute_reframes(&self.dom, *n, name).is_none() && form_control_ancestor(&self.dom, self.dom.node(*n).parent).is_none()
+                }
+                _ => false,
+            });
+        if unchanged {
+            let generation = self.generation;
+            if let Some(b) = self.shells.get_mut(&doc).unwrap().boxes.as_mut() {
+                b.0 = generation;
+            }
+        } else if stale && shell.boxes.is_some() && self.flushes >= self.max_flushes {
             self.stale_reads += 1;
         } else if stale {
             self.flushes += 1;

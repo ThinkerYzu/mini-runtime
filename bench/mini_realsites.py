@@ -314,6 +314,18 @@ const PENDING_MS = """ + str(PENDING_MS) + """;
         for (let i = 0; i < s.length; i++) names.push(s.key(i));
         return names;
       }
+      if (req.call === "items") {
+        // (B222) every item in order, when keys and values come to at most args[0] UTF-16 units
+        const items = [];
+        let size = 0;
+        for (let i = 0; i < s.length; i++) {
+          const k = s.key(i), v = s.getItem(k);
+          size += k.length + v.length;
+          if (size > req.args[0]) return null;
+          items.push([k, v]);
+        }
+        return items;
+      }
       if (req.call === "setItem") {
         // false: the quota is exceeded (the runtime throws QuotaExceededError)
         try { s.setItem(...req.args); } catch (e) { if (e.name === "QuotaExceededError") return false; throw e; }

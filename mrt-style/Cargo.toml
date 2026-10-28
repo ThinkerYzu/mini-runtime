@@ -17,6 +17,8 @@ app_units = "0.7"
 url = "2"
 cssparser = "0.38"
 style_traits = { version = "0.22", package = "stylo_traits" }
+# (Stylo's parallel traversal takes a rayon pool: task dcb24)
+rayon = "1"
 
 [profile.release]
 debug = false

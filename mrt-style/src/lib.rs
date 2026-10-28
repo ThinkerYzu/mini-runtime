@@ -1138,7 +1138,16 @@ impl StyleDom {
             let token = RecalcStyle::pre_traverse(root, &context);
             if token.should_traverse() {
                 let traverser = RecalcStyle { context };
-                style::driver::traverse_dom(&traverser, token, None);
+                // (the pool's threads find the tree through CURRENT_TREE too, for this traversal)
+                let pool = STYLE_POOL.as_ref().map(|p| p.lock().unwrap_or_else(|e| e.into_inner()));
+                let at = tree as *const Tree as usize;
+                if let Some(p) = &pool {
+                    p.broadcast(|_| CURRENT_TREE.with(|c| c.set(at as *const Tree)));
+                }
+                style::driver::traverse_dom(&traverser, token, pool.as_deref());
+                if let Some(p) = &pool {
+                    p.broadcast(|_| CURRENT_TREE.with(|c| c.set(std::ptr::null())));
+                }
             }
             thread_state::exit(ThreadState::LAYOUT);
         }
@@ -1410,6 +1419,27 @@ impl<E: TElement> DomTraversal<E> for RecalcStyle<'_> {
         &self.context
     }
 }
+
+/// Stylo's worker threads (Gecko's StyleThreadPool, task dcb24): a flush's traversal hands them
+/// subtrees when a level of the tree has more elements than Stylo's work unit, so a small restyle
+/// stays on the layout thread. One pool for every document's layout thread, one traversal at a
+/// time. MRT_STYLE_THREADS sets its threads; by default Gecko's count, three quarters of the cores
+/// and at most 6; 1 or fewer: no pool, every traversal sequential.
+static STYLE_POOL: std::sync::LazyLock<Option<Mutex<rayon::ThreadPool>>> = std::sync::LazyLock::new(|| {
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let threads = std::env::var("MRT_STYLE_THREADS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or((cores * 3 / 4).clamp(1, 6));
+    if threads <= 1 {
+        return None;
+    }
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .thread_name(|i| format!("StyleThread#{i}"))
+        .stack_size(style::parallel::STYLE_THREAD_STACK_SIZE_KB * 1024)
+        .start_handler(|_| style::thread_state::initialize_layout_worker_thread())
+        .build()
+        .ok()
+        .map(Mutex::new)
+});
 
 thread_local! {
     /// The tree that handles on this thread refer to; set while styles are being resolved.
