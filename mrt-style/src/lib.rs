@@ -391,8 +391,24 @@ impl Tree {
     /// parsed inline declarations. In particular, matches/closest must not walk unrelated nodes.
     fn for_selectors(doc: NodeId, dom: Dom) -> Tree {
         let mut tree = Self::bare(doc, dom, SharedRwLock::new(), true);
-        tree.name_atoms = (0..tree.dom.names.len() as u32)
-            .map(|i| LocalName::from(tree.dom.names.get(i))).collect();
+        // the names' atoms of the last query on this thread, made again only where the DOM's names
+        // differ: interning every name for each querySelectorAll cost Google Images several ms per
+        // click (task 9caa0)
+        thread_local!(static NAME_ATOMS: std::cell::RefCell<Vec<LocalName>> = Default::default());
+        tree.name_atoms = NAME_ATOMS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let names = &tree.dom.names;
+            cache.truncate(names.len());
+            for (i, atom) in cache.iter_mut().enumerate() {
+                if &**atom != names.get(i as u32) {
+                    *atom = LocalName::from(names.get(i as u32));
+                }
+            }
+            for i in cache.len()..names.len() {
+                cache.push(LocalName::from(names.get(i as u32)));
+            }
+            cache.clone()
+        });
         tree
     }
 

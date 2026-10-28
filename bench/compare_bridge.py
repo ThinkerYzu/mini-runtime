@@ -111,6 +111,8 @@ from a local server, and the two logs it writes to `window.__log` are diffed. Th
                 done with WebDriver actions (input-events.actions.json), in Firefox's tab and in the
                 bridge tab, from which the runtime gets them (realsite --interactive): each event's
                 order, interface, phase, target, fields, isTrusted, the focused element, values
+  compare-position  Node.compareDocumentPosition (task 9caa0): siblings, ancestors, text and comment nodes,
+                a shadow tree, nodes of another tree
   create-event  document.createEvent over Gecko's table, initEvent, initCustomEvent, initUIEvent,
                 initMouseEvent, the events' hierarchy, a UIEvent's view, defaultView, and the image's
                 reflected attributes (longDesc and the others; GAPS B38, task 135a)

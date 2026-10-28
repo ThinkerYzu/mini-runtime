@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- Node.compareDocumentPosition (Gecko's nsINode::CompareDocumentPosition) against release Firefox:
+     bench/compare_bridge.py compare-position. Siblings and cousins both ways, ancestors, the
+     document, text and comment nodes, a shadow tree, and nodes of another tree (disconnected and
+     implementation specific, in one order per pair). The runtime's took every element of the
+     document per call, and Google Images calls it hundreds of times per click (task 9caa0). -->
+<html><head><meta charset="utf-8"><title>compare-position</title></head><body>
+<div id=a><p id=p>t<b id=b>u</b></p><!--c--><i id=i></i></div><div id=z></div>
+<script>
+(function () {
+  const log = window.__log = [];
+  const L = (...a) => log.push(a.join(" "));
+  const J = v => JSON.stringify(v);
+  const E = e => e ? (e.constructor ? e.constructor.name : "?") + " " + e.name : "null";
+  const T = (what, f) => { try { L(what, "ok", J(f())); } catch (e) { L(what, "throws", E(e)); } };
+  const $ = id => document.getElementById(id);
+  const p = $("p"), b = $("b"), i = $("i"), z = $("z");
+  const t = p.firstChild, c = p.nextSibling;
+  T("constants", () => [Node.DOCUMENT_POSITION_DISCONNECTED, Node.DOCUMENT_POSITION_PRECEDING, Node.DOCUMENT_POSITION_FOLLOWING,
+    Node.DOCUMENT_POSITION_CONTAINS, Node.DOCUMENT_POSITION_CONTAINED_BY, Node.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC]);
+  T("siblings and cousins", () => [p.compareDocumentPosition(i), i.compareDocumentPosition(p), b.compareDocumentPosition(z), z.compareDocumentPosition(b)]);
+  T("ancestors and self", () => [p.compareDocumentPosition(b), b.compareDocumentPosition(p), document.compareDocumentPosition(b),
+    b.compareDocumentPosition(document), document.documentElement.compareDocumentPosition(z), b.compareDocumentPosition(b)]);
+  T("text and comment", () => [t.compareDocumentPosition(b), b.compareDocumentPosition(t), c.compareDocumentPosition(t), t.compareDocumentPosition(c),
+    c.compareDocumentPosition(i), p.compareDocumentPosition(t)]);
+  T("not a node", () => p.compareDocumentPosition({}));
+  T("other tree", () => {
+    const lone = document.createElement("q"), kid = lone.appendChild(document.createElement("s"));
+    const x = b.compareDocumentPosition(lone), y = lone.compareDocumentPosition(b);
+    // the direction is the engine's own: only that it is one of the two, and the same both times
+    return [x & 57, y & 57, (x & 6) === 2 || (x & 6) === 4, (x & 6) !== (y & 6), x === b.compareDocumentPosition(lone), kid.compareDocumentPosition(lone), lone.compareDocumentPosition(kid)];
+  });
+  T("shadow tree", () => {
+    const host = document.createElement("div"); document.body.appendChild(host);
+    const root = host.attachShadow({ mode: "open" }), inner = root.appendChild(document.createElement("span"));
+    const r = [inner.compareDocumentPosition(host) & 57, host.compareDocumentPosition(inner) & 57, root.compareDocumentPosition(inner), inner.compareDocumentPosition(root)];
+    host.remove();
+    return r;
+  });
+})();
+</script></body></html>

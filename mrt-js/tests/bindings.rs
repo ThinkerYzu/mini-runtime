@@ -241,6 +241,24 @@ const CASES: &[(&str, &str, &[&str])] = &[
         &["60", "60", "true"],
     ),
     (
+        // class and id selectors compared with the attribute's text (task 9caa0): exact in a
+        // standards-mode document, ASCII case-insensitive in a quirks-mode one (a DOMParser document
+        // without a doctype), through querySelectorAll, querySelector, matches and closest
+        "class and id selectors by case",
+        r##"<div id=Box class="a  Foo b"><span class=foo id=s>x</span></div><script>
+        const n = l => Array.from(l, e => e.id).join("/");
+        console.log(n(document.querySelectorAll(".Foo")), n(document.querySelectorAll(".foo")), n(document.querySelectorAll(".FOO")));
+        console.log(n(document.querySelectorAll("#Box")), n(document.querySelectorAll("#box")), document.querySelector("div.b > .foo").id);
+        const s = document.getElementById("s");
+        console.log(s.matches(".foo"), s.matches(".Foo"), s.closest(".Foo").id, s.closest("#box"));
+        const q = new DOMParser().parseFromString('<div id=Box class="a Foo"><span class=foo id=s></span></div>', "text/html");
+        console.log(q.compatMode, n(q.querySelectorAll(".FOO")), n(q.querySelectorAll("#box")), q.querySelector("#S").id);
+        const qs = q.querySelector("span");
+        console.log(qs.matches(".FOO"), qs.closest("#BOX").id);
+        </script>"##,
+        &["Box s ", "Box  s", "true false Box null", "BackCompat Box/s Box s", "true Box"],
+    ),
+    (
         // the root element's primary frame (nsCSSFrameConstructor::ConstructDocElementFrame); release
         // Firefox prints the same line
         "the root element's box",

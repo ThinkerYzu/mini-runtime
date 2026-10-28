@@ -441,6 +441,7 @@ impl LoopProfile {
     fn task(&mut self, page: &mut Page, now: u32) -> bool {
         if self.trace.is_some() {
             mrt_js::take_task_times();
+            mrt_js::take_native_times(0);
         }
         let t = Instant::now();
         if page.run_timers_stepwise(now, 1) != 1 {
@@ -465,6 +466,10 @@ impl LoopProfile {
                     tt.flushes, tt.flush_ms, tt.attach_ms, tt.style_ms, tt.construct_ms, tt.reflow_ms, tt.boxes_ms, tt.state_ms, tt.reads, tt.read_ms, tt.bridge, tt.bridge_ms
                 );
                 eprintln!("trace {:.0}: task {ms:.0} ms, {late:.0} ms late, {split}: {key}", since.elapsed().as_secs_f64() * 1000.0);
+                // and its costliest natives (the flushes, reads and bridge calls above are inside some)
+                if ms > 100.0 {
+                    eprintln!("trace   {}", mrt_js::take_native_times(12).replace('\n', "; "));
+                }
             }
         }
         true

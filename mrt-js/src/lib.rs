@@ -126,6 +126,7 @@ unsafe extern "C" {
     fn mrt_js_free(js: *mut MrtJs);
     fn mrt_js_set_window_script(js: *mut MrtJs, which: i32, src: *const c_char, len: usize);
     fn mrt_js_shutdown();
+    fn mrt_js_take_native_times(out: *mut c_char, len: usize, max: usize) -> usize;
     fn mrt_js_eval(js: *mut MrtJs, src: *const c_char, len: usize, filename: *const c_char) -> i32;
     fn mrt_js_eval_number(js: *mut MrtJs, src: *const c_char, len: usize, filename: *const c_char, out: *mut f64) -> i32;
     fn mrt_js_eval_string(js: *mut MrtJs, src: *const c_char, len: usize, filename: *const c_char, out_len: *mut usize) -> *const c_char;
@@ -170,6 +171,15 @@ static BRIDGE_FULL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 });
 
 /// Shut SpiderMonkey down. Call once, after every `Page` is dropped, before the process exits.
+/// The page's natives timed since the last call (MRT_LOOP_TRACE, task 9caa0): a "natives calls ms"
+/// line for all of them, then the `max` costliest as "name calls ms" lines; the counts start again.
+/// Empty without MRT_LOOP_TRACE.
+pub fn take_native_times(max: usize) -> String {
+    let mut buf = vec![0u8; 64 + max * 160];
+    let n = unsafe { mrt_js_take_native_times(buf.as_mut_ptr() as *mut c_char, buf.len(), max) };
+    String::from_utf8_lossy(&buf[..n]).into_owned()
+}
+
 pub fn shutdown() {
     unsafe { mrt_js_shutdown() }
 }

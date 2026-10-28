@@ -2648,17 +2648,34 @@
     };
     return equal(this, other);
   });
-  if (!isWorker) define(Node.prototype, "compareDocumentPosition", function (o) {
-    if (o === this) return 0;
-    if (this.contains(o)) return 20;
-    if (o.contains(this)) return 10;
-    const all = document.querySelectorAll("*");
-    const a = all.indexOf(this), b = all.indexOf(o);
-    return a < 0 || b < 0 ? 1 : a < b ? 4 : 2;
+  // Gecko's nsINode::CompareDocumentPosition: the two parent chains compared from their roots, then
+  // the order of the two siblings where they part. (It took every element of the document and two
+  // indexOf scans, ~0.4 ms on Google Images, which calls it hundreds of times per click: task 9caa0.)
+  // Nodes of different trees are disconnected, in an order kept per pair of roots.
+  const treeOrder = new WeakMap();
+  let treeOrderNext = 0;
+  if (!isWorker) define(Node.prototype, "compareDocumentPosition", function (other) {
+    if (!(other instanceof Node)) throw new TypeError("Node.compareDocumentPosition: Argument 1 is not an object.");
+    if (other === this) return 0;
+    const chain = n => { const c = []; for (; n; n = n.parentNode) c.push(n); return c; };
+    const mine = chain(this), theirs = chain(other);
+    let i = mine.length - 1, j = theirs.length - 1;
+    if (mine[i] !== theirs[j]) {
+      for (const root of [mine[i], theirs[j]]) if (!treeOrder.has(root)) treeOrder.set(root, treeOrderNext++);
+      return Node.DOCUMENT_POSITION_DISCONNECTED | Node.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC |
+        (treeOrder.get(theirs[j]) < treeOrder.get(mine[i]) ? Node.DOCUMENT_POSITION_PRECEDING : Node.DOCUMENT_POSITION_FOLLOWING);
+    }
+    while (i >= 0 && j >= 0 && mine[i] === theirs[j]) { i--; j--; }
+    // one chain ended: that node is an ancestor of the other
+    if (i < 0) return Node.DOCUMENT_POSITION_CONTAINED_BY | Node.DOCUMENT_POSITION_FOLLOWING;
+    if (j < 0) return Node.DOCUMENT_POSITION_CONTAINS | Node.DOCUMENT_POSITION_PRECEDING;
+    for (let s = mine[i].nextSibling; s; s = s.nextSibling) if (s === theirs[j]) return Node.DOCUMENT_POSITION_FOLLOWING;
+    return Node.DOCUMENT_POSITION_PRECEDING;
   });
   if (!isWorker) Object.assign(Node, { ELEMENT_NODE: 1, ATTRIBUTE_NODE: 2, TEXT_NODE: 3, CDATA_SECTION_NODE: 4, COMMENT_NODE: 8, DOCUMENT_NODE: 9,
     DOCUMENT_TYPE_NODE: 10, DOCUMENT_FRAGMENT_NODE: 11, DOCUMENT_POSITION_DISCONNECTED: 1, DOCUMENT_POSITION_PRECEDING: 2,
-    DOCUMENT_POSITION_FOLLOWING: 4, DOCUMENT_POSITION_CONTAINS: 8, DOCUMENT_POSITION_CONTAINED_BY: 16 });
+    DOCUMENT_POSITION_FOLLOWING: 4, DOCUMENT_POSITION_CONTAINS: 8, DOCUMENT_POSITION_CONTAINED_BY: 16,
+    DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: 32 });
   if (!isWorker) for (const m of ["setPointerCapture", "releasePointerCapture"]) {
     define(Element.prototype, m, function () {});
   }

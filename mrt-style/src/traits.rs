@@ -299,13 +299,12 @@ impl Element for H<'_> {
     }
     fn has_id(&self, id: &AtomIdent, case_sensitivity: CaseSensitivity) -> bool {
         if self.t().selector_only {
-            return self.attr(&local_name!("id"))
-                .is_some_and(|mine| case_sensitivity.eq_atom(&Atom::from(mine), id));
+            return self.attr(&local_name!("id")).is_some_and(|mine| eq_text(case_sensitivity, mine, id));
         }
         self.t().id_atom(self.id).is_some_and(|mine| case_sensitivity.eq_atom(mine, id))
     }
     fn has_class(&self, name: &AtomIdent, case_sensitivity: CaseSensitivity) -> bool {
-        self.classes().any(|c| case_sensitivity.eq_atom(&Atom::from(c), name))
+        self.classes().any(|c| eq_text(case_sensitivity, c, name))
     }
     // `exportparts="inner: outer, name"` (Gecko: Element::GetExportedParts): the inner name for an
     // outer one.
@@ -761,3 +760,13 @@ impl<'a> TElement for H<'a> {
 
 #[allow(dead_code)]
 fn _unused(_: &ComputedValues, _: VisitedHandlingMode) {}
+
+/// `case_sensitivity.eq_atom` of an attribute's text and an atom, without interning the text (an
+/// atom of the servo build is its string): querySelectorAll tests every element's classes, and an
+/// atom for each took a lock and a hash (task 9caa0).
+fn eq_text(case_sensitivity: CaseSensitivity, text: &str, atom: &Atom) -> bool {
+    match case_sensitivity {
+        CaseSensitivity::CaseSensitive => text == &**atom,
+        CaseSensitivity::AsciiCaseInsensitive => text.eq_ignore_ascii_case(atom),
+    }
+}

@@ -42,6 +42,8 @@
 #include <cstdio>
 #include <thread>
 #include <cstring>
+#include <ctime>
+#include <pthread.h>
 #include <memory>
 #include <optional>
 #include <map>
@@ -1068,7 +1070,93 @@ class AutoCEReaction {
 
 // ---- Node ----
 
-#define NATIVE(name) static bool name(JSContext* cx, unsigned argc, JS::Value* vp)
+// MRT_LOOP_TRACE: the time of each native the page calls, the outermost only (a native that calls a
+// script that calls another counts both in the first), for realsite's long-task lines
+// (mrt_js_take_native_times, task 9caa0). Off, a native pays one load and a branch.
+struct NativeStat {
+  const char* mName;
+  uint64_t mCalls = 0;
+  uint64_t mNs = 0;
+  NativeStat* mNext = nullptr;
+};
+static NativeStat* sNativeStats = nullptr;
+static bool sNativeTiming = getenv("MRT_LOOP_TRACE") != nullptr;
+// (the page's thread only, the one that takes the times: workers run the same natives on threads of
+// their own)
+static pthread_t sNativeThread;
+static bool sNativeThreadKnown = false;
+static thread_local int sNativeDepth = 0;
+struct NativeStatList {
+  explicit NativeStatList(NativeStat* aStat) {
+    aStat->mNext = sNativeStats;
+    sNativeStats = aStat;
+  }
+};
+static uint64_t NativeNowNs() {
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return uint64_t(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+}
+struct NativeTimer {
+  NativeStat* mStat;
+  uint64_t mStart = 0;
+  bool mOutermost = false;
+  explicit NativeTimer(NativeStat* aStat) : mStat(aStat) {
+    if (sNativeTiming && sNativeDepth++ == 0 && sNativeThreadKnown && pthread_equal(pthread_self(), sNativeThread)) {
+      mOutermost = true;
+      mStart = NativeNowNs();
+    }
+  }
+  ~NativeTimer() {
+    if (!sNativeTiming) return;
+    sNativeDepth--;
+    if (mOutermost) {
+      mStat->mCalls++;
+      mStat->mNs += NativeNowNs() - mStart;
+    }
+  }
+};
+#define NATIVE_TIMED(name)                                 \
+  static NativeStat name##_stat{#name};                    \
+  static NativeStatList name##_listed(&name##_stat);       \
+  NativeTimer name##_timer(&name##_stat)
+#define NATIVE(name)                                               \
+  static bool name##_body(JSContext* cx, unsigned argc, JS::Value* vp); \
+  static bool name(JSContext* cx, unsigned argc, JS::Value* vp) {  \
+    NATIVE_TIMED(name);                                            \
+    return name##_body(cx, argc, vp);                              \
+  }                                                                \
+  static bool name##_body(JSContext* cx, unsigned argc, JS::Value* vp)
+
+// The natives timed since the last call, the costliest first, as "name calls ms" lines (at most `max`),
+// with "natives calls ms" for all of them first; the counts start again. Empty when not timing.
+extern "C" size_t mrt_js_take_native_times(char* aOut, size_t aLen, size_t aMax) {
+  if (!sNativeThreadKnown) {
+    sNativeThread = pthread_self();
+    sNativeThreadKnown = true;
+  }
+  std::vector<NativeStat*> stats;
+  uint64_t calls = 0, ns = 0;
+  for (NativeStat* s = sNativeStats; s; s = s->mNext) {
+    if (!s->mCalls) continue;
+    stats.push_back(s);
+    calls += s->mCalls;
+    ns += s->mNs;
+  }
+  std::sort(stats.begin(), stats.end(), [](NativeStat* a, NativeStat* b) { return a->mNs > b->mNs; });
+  std::string out;
+  char line[160];
+  snprintf(line, sizeof line, "natives %llu %.1f", (unsigned long long)calls, ns / 1e6);
+  out += line;
+  for (size_t i = 0; i < stats.size() && i < aMax; i++) {
+    snprintf(line, sizeof line, "\n%s %llu %.1f", stats[i]->mName, (unsigned long long)stats[i]->mCalls, stats[i]->mNs / 1e6);
+    out += line;
+  }
+  for (NativeStat* s : stats) s->mCalls = s->mNs = 0;
+  size_t n = std::min(out.size(), aLen);
+  memcpy(aOut, out.data(), n);
+  return n;
+}
 #define THIS_NODE                              \
   JS::CallArgs args = JS::CallArgsFromVp(argc, vp); \
   uint32_t self;                               \
@@ -4080,7 +4168,8 @@ NATIVE(Global_mrtEnterCallback) {
   return true;
 }
 
-NATIVE(Global_mrtLeaveCallback) {
+// (not timed: the microtask checkpoint runs the page's scripts, whose own natives are timed)
+static bool Global_mrtLeaveCallback(JSContext* cx, unsigned argc, JS::Value* vp) {
   JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
   args.rval().setUndefined();
   MrtJs* js = tJs;
