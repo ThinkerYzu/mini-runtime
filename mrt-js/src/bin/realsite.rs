@@ -404,7 +404,7 @@ struct LoopProfile {
     wait_ms: f64,
     upkeep_ms: f64,
     by_timer: Option<HashMap<String, (usize, f64)>>,
-    /// MRT_LOOP_TRACE=1: on stderr, each task or flush over 30 ms, each wait answer with the owner's
+    /// MRT_LOOP_TRACE=1: on stderr, each task over 30 ms, each flush over 30 ms or that sent the tab something, each wait answer with the owner's
     /// input, and each input task with how long after its input's arrival it ran (task 0f15b)
     trace: Option<Instant>,
 }
@@ -481,7 +481,9 @@ impl LoopProfile {
         let t = Instant::now();
         let ops = page.eval_number(if force { "__mrt.mirrorFlush(true)" } else { "__mrt.mirrorFlush(false)" }, "driver");
         let ms = t.elapsed().as_secs_f64() * 1000.0;
-        if let Some(since) = self.trace.filter(|_| ms > 30.0) {
+        // (each flush that sends the tab something, to tell an update's wait for its flush from the
+        // flush itself, task 9caa0)
+        if let Some(since) = self.trace.filter(|_| ms > 30.0 || ops > 0.0) {
             eprintln!("trace {:.0}: flush {ms:.0} ms, {ops} ops", since.elapsed().as_secs_f64() * 1000.0);
         }
         self.mirror_flushes += 1;
