@@ -439,6 +439,9 @@ impl LoopProfile {
 
     /// One due task run (Page::run_timers_stepwise); false when none was due by `now`.
     fn task(&mut self, page: &mut Page, now: u32) -> bool {
+        if self.trace.is_some() {
+            mrt_js::take_task_times();
+        }
         let t = Instant::now();
         if page.run_timers_stepwise(now, 1) != 1 {
             return false;
@@ -455,7 +458,13 @@ impl LoopProfile {
             let key = page.eval_string("__mrt.lastTimerKey()", "driver");
             let late = page.eval_number("__mrt.lastTimerLate()", "driver");
             if ms > 30.0 || key.contains("inputGroups") {
-                eprintln!("trace {:.0}: task {ms:.0} ms, {late:.0} ms late: {key}", since.elapsed().as_secs_f64() * 1000.0);
+                // what of the task was layout and bridge; the rest is the page's scripts and the DOM
+                let tt = mrt_js::take_task_times();
+                let split = format!(
+                    "flushes {} {:.0} ms (attach {:.0} style {:.0} frames {:.0} reflow {:.0} boxes {:.0} state {:.0}), reads {} {:.0} ms, bridge {} {:.0} ms",
+                    tt.flushes, tt.flush_ms, tt.attach_ms, tt.style_ms, tt.construct_ms, tt.reflow_ms, tt.boxes_ms, tt.state_ms, tt.reads, tt.read_ms, tt.bridge, tt.bridge_ms
+                );
+                eprintln!("trace {:.0}: task {ms:.0} ms, {late:.0} ms late, {split}: {key}", since.elapsed().as_secs_f64() * 1000.0);
             }
         }
         true

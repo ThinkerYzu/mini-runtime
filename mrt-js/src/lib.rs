@@ -11,7 +11,7 @@ mod worker;
 
 use std::ffi::{c_char, c_void, CString};
 
-pub use host::{linked_sheets_bytes, replay_flushes, Host};
+pub use host::{linked_sheets_bytes, replay_flushes, take_task_times, Host, TaskTimes};
 pub use mrt_layout;
 pub use mrt_style;
 use mrt_style::mrt_dom::{Dom, Kind, NodeId, DOCUMENT, NS_HTML};

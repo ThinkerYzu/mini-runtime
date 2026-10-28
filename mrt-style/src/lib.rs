@@ -174,6 +174,19 @@ pub struct StyleDom {
     pub link_sheets: HashMap<NodeId, std::sync::Arc<str>>,
     /// (sheet name, parse errors) for each sheet added, user-agent sheets first.
     pub parse_errors: Vec<(String, usize)>,
+    /// The user-agent sheets' entries of `parse_errors`, from the stylist's making (a change of the
+    /// page's sheets alone keeps the stylist, and its user-agent sheets).
+    ua_parse_errors: Vec<(String, usize)>,
+    /// For each sheet owner (a `<style>` or `<link>` by node, a constructed sheet by its id and how
+    /// many times the adopted list had it before) whose parsed sheet an earlier one in the page's list
+    /// has too (the cache shares one per text): the sheet made for it, sharing the parsed contents,
+    /// and the cached sheet it was made from. The stylist holds a sheet once (Stylist::remove_stylesheet
+    /// panics on one it no longer has, task 9caa0), and so does the page's list with these; Gecko gives
+    /// each owner a StyleSheet of its own, sharing contents through its sheet cache too.
+    twins: HashMap<(NodeId, u32), (DocumentStyleSheet, DocumentStyleSheet)>,
+    /// What the page's sheet changes since the last `flush_stylist` invalidate (Stylist::flush), for
+    /// it to mark on the elements: a stylist kept through a change of the page's sheets.
+    sheet_invalidations: bool,
     /// The parsed sheets of earlier style builds of the same page, given back by `take_sheet_cache`.
     sheet_cache: SheetCache,
     /// The viewport the device was made for (a new stylist needs a new device).
@@ -578,6 +591,9 @@ impl StyleDom {
             author_sheets: Vec::new(),
             link_sheets,
             parse_errors: Vec::new(),
+            ua_parse_errors: Vec::new(),
+            twins: HashMap::new(),
+            sheet_invalidations: false,
             sheet_cache,
             viewport,
             sheets_signature: Vec::new(),
@@ -603,17 +619,35 @@ impl StyleDom {
             signature.push((*root, 0));
         }
         if signature == self.sheets_signature && !self.sheets_signature.is_empty() {
+            self.parse_errors.extend(self.ua_parse_errors.iter().cloned());
+            return false;
+        }
+        // only the page's own sheets changed (a <style> added, removed, moved or given new text): the
+        // stylist keeps its other sheets and gets the changes one by one, and the next flush_stylist
+        // restyles the elements they can affect (Gecko: ServoStyleSet::AppendStyleSheet and the others,
+        // then Servo_StyleSet_FlushStyleSheets's StylesheetInvalidationSet::process_style); a new
+        // stylist, the elements' styles all thrown away and every frame built again, cost Google
+        // Images ~30 ms each time it moves its <style> elements as a preview opens (task 9caa0)
+        let page_part = |sig: &[(NodeId, usize)]| sig.iter().filter(|(t, _)| *t != DOCUMENT).copied().collect::<Vec<_>>();
+        if !self.sheets_signature.is_empty() && page_part(&signature) == page_part(&self.sheets_signature) {
+            self.change_page_sheets(&page);
+            self.sheets_signature = signature;
+            self.author_sheets = page;
+            self.parse_errors.extend(self.ua_parse_errors.iter().cloned());
             return false;
         }
         self.sheets_signature = signature;
+        self.sheet_invalidations = false;
 
         let quirks = quirks_of(self.tree.mode());
         self.stylist = Stylist::new(make_device(quirks, self.viewport), quirks);
         let ua_sheets = FIREFOX_UA.iter().filter(|(name, _)| *name != "quirk.css" || quirks == QuirksMode::Quirks);
+        self.ua_parse_errors.clear();
         for (name, sheet, errors) in ua_sheets_for(&self.tree, ua_sheets) {
             self.stylist.append_stylesheet(sheet, &UA_LOCK.read());
-            self.parse_errors.push((name.to_string(), errors));
+            self.ua_parse_errors.push((name.to_string(), errors));
         }
+        self.parse_errors.extend(self.ua_parse_errors.iter().cloned());
         for sheet in &page {
             self.stylist.append_stylesheet(sheet.clone(), &self.tree.guard.read());
         }
@@ -629,6 +663,35 @@ impl StyleDom {
             self.tree.shadow_styles.insert(root, styles);
         }
         true
+    }
+
+    /// The stylist's author sheets changed from `author_sheets` to `page` in place: the sheets gone
+    /// removed, the new ones inserted where they go, and the sheets that moved (a `<style>` put
+    /// elsewhere in the tree: Google moves them as a preview opens) removed and inserted again, as
+    /// Gecko's StyleSheetRemoved and StyleSheetAdded do. The sheets that stay are the longest run of
+    /// kept sheets still in their old order, so that as few as possible move.
+    fn change_page_sheets(&mut self, page: &[DocumentStyleSheet]) {
+        let id = |s: &DocumentStyleSheet| (&*s.0 as *const Stylesheet) as usize;
+        let old_index: HashMap<usize, usize> = self.author_sheets.iter().enumerate().map(|(i, s)| (id(s), i)).collect();
+        let kept: Vec<usize> = page.iter().map(id).filter(|i| old_index.contains_key(i)).collect();
+        let stay = longest_in_order(&kept, &old_index);
+        let new: std::collections::HashSet<usize> = page.iter().map(id).collect();
+        let guard = self.tree.guard.read();
+        for sheet in self.author_sheets.iter().filter(|s| !new.contains(&id(s)) || !stay.contains(&id(s))) {
+            self.stylist.remove_stylesheet(sheet.clone(), &guard);
+        }
+        // each sheet not staying before the next staying one (in the stylist already), or at the end
+        for (i, sheet) in page.iter().enumerate() {
+            if stay.contains(&id(sheet)) {
+                continue;
+            }
+            match page[i + 1..].iter().find(|s| stay.contains(&id(s))) {
+                Some(before) => self.stylist.insert_stylesheet_before(sheet.clone(), before.clone(), &guard),
+                None => self.stylist.append_stylesheet(sheet.clone(), &guard),
+            }
+        }
+        drop(guard);
+        self.sheet_invalidations = true;
     }
 
     /// Put the DOM back (`detach_dom` took it) after it changed as `ops` say, and make the next
@@ -964,14 +1027,50 @@ impl StyleDom {
         // (a disabled sheet stays in the document's list, and out of the cascade: StyleSheet::SetDisabled)
         for id in Self::sheet_owners(&self.tree.dom, self.tree.doc, &self.link_sheets) {
             if !self.tree.dom.owner_sheet_disabled(id) {
-                out.push(self.owner_sheet(id));
+                out.push(((id, u32::MAX), self.owner_sheet(id)));
             }
         }
+        let mut times: HashMap<u32, u32> = HashMap::new();
         for id in self.tree.dom.adopted_sheets(self.tree.doc).to_vec() {
             if !self.tree.dom.constructed_sheets[id as usize].disabled {
-                out.push(self.adopted_sheet(id, adopted));
+                let n = times.entry(id).or_default();
+                out.push(((NONE, id << 8 | (*n).min(255)), self.adopted_sheet(id, adopted)));
+                *n += 1;
             }
         }
+        self.distinct_sheets(out)
+    }
+
+    /// `sheets`, by owner (see `twins`), with each sheet that an earlier owner in the list has too
+    /// replaced by its owner's twin: a sheet of its own around the same parsed contents.
+    fn distinct_sheets(&mut self, sheets: Vec<((NodeId, u32), DocumentStyleSheet)>) -> Vec<DocumentStyleSheet> {
+        let id = |s: &DocumentStyleSheet| (&*s.0 as *const Stylesheet) as usize;
+        let mut seen = std::collections::HashSet::new();
+        let mut twins = HashMap::new();
+        let mut out = Vec::with_capacity(sheets.len());
+        for (owner, sheet) in sheets {
+            if seen.insert(id(&sheet)) {
+                out.push(sheet);
+                continue;
+            }
+            let twin = match self.twins.remove(&owner) {
+                Some((twin, of)) if id(&of) == id(&sheet) => twin,
+                _ => {
+                    let guard = self.tree.guard.read();
+                    let contents = sheet.0.contents.read_with(&guard).clone();
+                    drop(guard);
+                    DocumentStyleSheet(ServoArc::new(Stylesheet {
+                        contents: sheet.0.shared_lock.wrap(contents),
+                        shared_lock: sheet.0.shared_lock.clone(),
+                        media: sheet.0.media.clone(),
+                        disabled: std::sync::atomic::AtomicBool::new(false),
+                    }))
+                }
+            };
+            twins.insert(owner, (twin.clone(), sheet));
+            out.push(twin);
+        }
+        self.twins = twins;
         out
     }
 
@@ -982,7 +1081,13 @@ impl StyleDom {
             let tree = &self.tree;
             let _scope = TreeScope::enter(tree);
             let guards = StylesheetGuards { author: &tree.guard.read(), ua_or_user: &UA_LOCK.read() };
-            self.stylist.flush(&guards);
+            let invalidations = self.stylist.flush(&guards);
+            // (a new stylist: every element is restyled anyway)
+            if std::mem::take(&mut self.sheet_invalidations) {
+                if let Some(root) = tree.handle(tree.doc).first_element_child() {
+                    invalidations.process_style(root, Some(&tree.snapshots));
+                }
+            }
         }
         // each shadow tree's cascade data, after the document's (Gecko: ServoStyleSet::UpdateStylist
         // flushes the shadow roots' author styles with the stylist's)
@@ -1457,4 +1562,29 @@ fn flattened_children(dom: &Dom, node: NodeId) -> Vec<NodeId> {
         }
     }
     dom.children(node).collect()
+}
+
+/// Of `sheets` (sheet ids in their new order), the longest subsequence whose positions in `old_index`
+/// increase: the sheets that can stay where they are in the stylist (patience sorting, O(n log n)).
+fn longest_in_order(sheets: &[usize], old_index: &HashMap<usize, usize>) -> std::collections::HashSet<usize> {
+    // tails[k]: the index in `sheets` of the smallest old position ending an increasing run of k + 1
+    let mut tails: Vec<usize> = Vec::new();
+    let mut prev: Vec<Option<usize>> = vec![None; sheets.len()];
+    for (i, s) in sheets.iter().enumerate() {
+        let pos = old_index[s];
+        let k = tails.partition_point(|&t| old_index[&sheets[t]] < pos);
+        prev[i] = k.checked_sub(1).map(|k| tails[k]);
+        if k == tails.len() {
+            tails.push(i);
+        } else {
+            tails[k] = i;
+        }
+    }
+    let mut stay = std::collections::HashSet::new();
+    let mut at = tails.last().copied();
+    while let Some(i) = at {
+        stay.insert(sheets[i]);
+        at = prev[i];
+    }
+    stay
 }

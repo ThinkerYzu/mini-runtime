@@ -176,6 +176,71 @@ const CASES: &[(&str, &str, &[&str])] = &[
         &["100 100px", "width: 250px; padding-left: 5px; 255", "255 8 8"],
     ),
     (
+        // the boxes read from the layout thread as they are asked for (task 9caa0): the same element
+        // twice in one DOM generation, an element without a frame, and each after a change
+        "layout reads of single elements",
+        r#"<div id=a style="width:100px;height:40px">x</div><div id=n style="display:none;height:10px">y</div>
+        <div id=s style="width:50px;height:30px"></div><script>
+        const a = document.getElementById("a"), n = document.getElementById("n"), s = document.getElementById("s");
+        console.log(a.getBoundingClientRect().width, a.getBoundingClientRect().top, a.offsetHeight);
+        console.log(n.getBoundingClientRect().width, n.getBoundingClientRect().height, s.getBoundingClientRect().top);
+        a.style.height = "60px";
+        console.log(a.getBoundingClientRect().height, s.getBoundingClientRect().top);
+        n.style.display = "block";
+        console.log(n.getBoundingClientRect().top, n.getBoundingClientRect().height, s.getBoundingClientRect().top);
+        </script>"#,
+        &["100 8 40", "0 0 48", "60 68", "68 10 78"],
+    ),
+    (
+        // a <style> added, given new text, moved and removed after the first layout: the stylist keeps its
+        // other sheets and restyles what the change can match (task 9caa0), including a sheet put
+        // before the one it overrides, an element matched only by the new sheet's selector, and one
+        // its rules no longer match
+        "page sheets changed after layout",
+        r##"<style>.w { width: 50px }</style><div id=a class=w>a</div><div id=b>b</div><p id=c>c</p><script>
+        const w = id => document.getElementById(id).getBoundingClientRect().width;
+        console.log(w("a"), w("b") > 100, w("c") > 100);
+        const s = document.createElement("style");
+        s.textContent = "#b { width: 70px } p { width: 30px }";
+        document.head.appendChild(s);
+        console.log(w("a"), w("b"), w("c"));
+        const first = document.createElement("style");
+        first.textContent = ".w { width: 90px } #b { width: 10px }";
+        document.head.insertBefore(first, document.head.firstChild);
+        console.log(w("a"), w("b"), w("c"));
+        s.textContent = "p { width: 40px }";
+        console.log(w("a"), w("b"), w("c"));
+        // moved: the sheets in a new order, none added or removed (the later rule wins); the first
+        // <style> is in the body, after the head's
+        const orig = document.body.querySelector("style");
+        document.head.insertBefore(orig, first);
+        console.log(w("a"), w("b"), w("c"));
+        document.body.appendChild(orig);
+        console.log(w("a"), w("b"), w("c"));
+        document.head.lastChild.remove();
+        first.remove();
+        console.log(w("a"), w("b") > 100, w("c") > 100);
+        </script>"##,
+        &["50 true true", "50 70 30", "50 70 30", "50 10 40", "90 10 40", "50 10 40", "50 true true"],
+    ),
+    (
+        // two <style> elements with the same text share one parsed sheet: one of them added, then both
+        // removed (task 9caa0: the stylist had the sheet once and was asked to remove it twice)
+        "page sheets with the same text",
+        r##"<style>#d { width: 60px }</style><div id=d>d</div><script>
+        const w = () => document.getElementById("d").getBoundingClientRect().width;
+        console.log(w());
+        const twin = document.createElement("style");
+        twin.textContent = "#d { width: 60px }";
+        document.head.appendChild(twin);
+        console.log(w());
+        twin.remove();
+        document.body.querySelector("style").remove();
+        console.log(w() > 100);
+        </script>"##,
+        &["60", "60", "true"],
+    ),
+    (
         // the root element's primary frame (nsCSSFrameConstructor::ConstructDocElementFrame); release
         // Firefox prints the same line
         "the root element's box",
@@ -881,6 +946,27 @@ fn hibernation_checks() -> usize {
     usize::from(!ok)
 }
 
+/// The style data dropped (Page::drop_kept_style) with the DOM unchanged: the boxes of the last flush
+/// still answer layout reads, also of elements not read before it, without another flush (task 9caa0).
+/// Returns the failures.
+fn kept_boxes_checks() -> usize {
+    let html = r#"<!doctype html><html><body><div id=a style="width:100px;height:40px">x</div>
+    <div id=b style="width:70px;height:20px">y</div><p id=n style="display:none">z</p></body></html>"#;
+    let mut page = Page::new(Dom::parse(html));
+    page.run_scripts("kept boxes");
+    page.eval("console.log(document.getElementById('a').getBoundingClientRect().width)", "check");
+    let flushes = page.flushes();
+    page.drop_kept_style();
+    page.eval("const r = id => document.getElementById(id).getBoundingClientRect(); console.log(r('a').width, r('b').width, r('b').top, r('n').width)", "check");
+    let want = ["100", "100 70 48 0"];
+    let ok = page.errors() == 0 && page.console() == want && page.flushes() == flushes;
+    println!("{} layout reads after the style data is dropped", if ok { "ok  " } else { "FAIL" });
+    if !ok {
+        println!("  want: {want:?}, {flushes} flushes\n  got:  {:?}, {} flushes (errors: {})", page.console(), page.flushes(), page.errors());
+    }
+    usize::from(!ok)
+}
+
 /// A hibernated page woken at 2,000 ms (Page::wake) is a visible tab again: its
 /// document gets `visibilitychange` in a task and is visible, what waited runs at once (the timeouts
 /// the 1 s gate held, the animation frame callbacks at the first tick), and timeouts run at their own
@@ -953,7 +1039,7 @@ fn main() {
     let failures = std::thread::Builder::new()
         .stack_size(2 << 30)
         .spawn(|| {
-            let mut failures = global_checks() + hibernation_checks() + wake_checks() + input_order_checks();
+            let mut failures = global_checks() + hibernation_checks() + wake_checks() + input_order_checks() + kept_boxes_checks();
             for (name, body, want) in CASES {
                 let (got, errors) = run_case(body);
                 let ok = errors == 0 && got.iter().map(String::as_str).eq(want.iter().copied());

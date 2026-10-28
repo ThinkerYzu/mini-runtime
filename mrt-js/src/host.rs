@@ -172,10 +172,15 @@ struct PresShell {
     layout_thread: Option<LayoutThread>,
     /// The parsed sheets kept through hibernation (SPEC decision 22), for the next layout thread.
     kept_sheets: Option<SheetCache>,
-    /// Per element with a frame: its bounding client rect (x, y, width, height), then its client area and
-    /// scroll size (clientWidth, clientHeight, scrollWidth, scrollHeight), in CSS px; for one DOM
-    /// generation and viewport.
-    boxes: Option<(u64, Option<(i32, i32)>, HashMap<NodeId, [f64; 8]>)>,
+    /// For one DOM generation and viewport, the elements whose boxes were read since its flush: the
+    /// bounding client rect (x, y, width, height), then the client area and scroll size (clientWidth,
+    /// clientHeight, scrollWidth, scrollHeight), in CSS px; None for an element without a frame. Filled
+    /// as layout reads ask (`layout_box`), from the layout thread's frames: reading every element's
+    /// after each flush cost as much as the reflow on Google Images (task 9caa0).
+    boxes: Option<(u64, Option<(i32, i32)>, HashMap<NodeId, Option<[f64; 8]>>)>,
+    /// Whether `boxes` has every element's that has a frame, so that the others have none: after
+    /// the layout panicked, or the frames were dropped with the boxes kept (`drop_kept_style`).
+    boxes_complete: bool,
     /// The root scroll offset the boxes were read at (app units): they are in client coordinates.
     boxes_scroll: (i32, i32),
     /// The element scroll generation the boxes were read at.
@@ -195,6 +200,7 @@ impl PresShell {
             layout_thread: None,
             kept_sheets: None,
             boxes: None,
+            boxes_complete: false,
             boxes_scroll: (0, 0),
             boxes_element_scroll: 0,
             subdocument_sizes: HashMap::new(),
@@ -252,6 +258,14 @@ impl Host {
         self.cssom.clear();
         for shell in self.shells.values_mut() {
             if let Some(thread) = &shell.layout_thread {
+                // the boxes of the last flush still answer layout reads until the DOM changes: all of
+                // them read first, as the frames go
+                if let Some(cached) = shell.boxes.as_mut().filter(|_| !shell.boxes_complete) {
+                    let (dom, boxes) = thread.boxes(std::mem::take(&mut self.dom), None);
+                    self.dom = dom;
+                    cached.2 = boxes.into_iter().map(|(n, b)| (n, Some(b))).collect();
+                    shell.boxes_complete = true;
+                }
                 // (the frames read the DOM while they are destroyed: it goes to the thread and back)
                 self.dom = thread.drop_style(std::mem::take(&mut self.dom));
             }
@@ -295,10 +309,18 @@ impl Host {
         let docs: Vec<NodeId> = self.shells.keys().copied().collect();
         let mut all = BTreeMap::new();
         for doc in docs {
-            if self.flush_document(doc) {
-                if let Some(b) = &self.shells[&doc].boxes {
-                    all.insert(doc, b.2.clone());
-                }
+            if self.flush_document(doc) && self.shells[&doc].boxes.is_some() {
+                let shell = &self.shells[&doc];
+                let boxes = match &shell.layout_thread {
+                    _ if shell.boxes_complete => shell.boxes.as_ref().unwrap().2.iter().filter_map(|(&n, b)| Some((n, (*b)?))).collect(),
+                    Some(thread) => {
+                        let (dom, boxes) = thread.boxes(std::mem::take(&mut self.dom), None);
+                        self.dom = dom;
+                        boxes
+                    }
+                    None => HashMap::new(),
+                };
+                all.insert(doc, boxes);
             }
         }
         all
@@ -567,11 +589,12 @@ impl Host {
             let thread = shell.layout_thread.get_or_insert_with(|| LayoutThread::start(shell.kept_sheets.take()));
             let reply = thread.flush(request);
             self.dom = reply.dom;
-            let (boxes, subdocuments) = match reply.boxes {
-                Some(boxes) => {
+            shell.boxes_complete = reply.boxes.is_none();
+            let subdocuments = match reply.boxes {
+                Some(_) => {
                     let (flags, styled) = reply.restyle_state;
                     shell.restyle.reset(flags, styled);
-                    (boxes, reply.subdocuments)
+                    reply.subdocuments
                 }
                 // the layout panicked (a feature that is not ported, GAPS C): the thread has ended,
                 // with the frames it had; the next flush starts another
@@ -579,10 +602,10 @@ impl Host {
                     self.layout_panics += 1;
                     shell.layout_thread.take().unwrap().join();
                     shell.restyle.reset(HashMap::new(), Default::default());
-                    (HashMap::new(), HashMap::new())
+                    HashMap::new()
                 }
             };
-            shell.boxes = Some((self.generation, Some(viewport), boxes));
+            shell.boxes = Some((self.generation, Some(viewport), HashMap::new()));
             shell.boxes_scroll = scroll;
             shell.boxes_element_scroll = self.element_scroll_generation;
             shell.subdocument_sizes = subdocuments;
@@ -629,7 +652,24 @@ impl Host {
         if !self.flush_document(doc) {
             return None;
         }
-        self.shells[&doc].boxes.as_ref().and_then(|b| b.2.get(&node).copied())
+        let shell = self.shells.get_mut(&doc).unwrap();
+        let cached = shell.boxes.as_mut()?;
+        if let Some(b) = cached.2.get(&node) {
+            return *b;
+        }
+        if shell.boxes_complete {
+            return None;
+        }
+        let b = match &shell.layout_thread {
+            Some(thread) => {
+                let (dom, mut boxes) = thread.boxes(std::mem::take(&mut self.dom), Some(node));
+                self.dom = dom;
+                boxes.remove(&node)
+            }
+            None => None,
+        };
+        cached.2.insert(node, b);
+        b
     }
 
     /// The attached viewer resized the top-level viewport. The next flush updates
@@ -1000,6 +1040,7 @@ struct LayoutRequest {
 /// recorder reads (the selector flags, the styled elements).
 struct LayoutReply {
     dom: Dom,
+    /// The answer to a Boxes query; for a flush, Some (empty) when its layout did not panic.
     boxes: Option<HashMap<NodeId, [f64; 8]>>,
     restyle_state: (HashMap<NodeId, u32>, std::collections::HashSet<NodeId>),
     /// The answer to a ComputedValue query.
@@ -1040,6 +1081,9 @@ enum LayoutMessage {
     NodesFromPoint { dom: Dom, point: (i32, i32), port: (i32, i32) },
     /// An element's innerText (PresShellFrames::InnerText), with the DOM as for ComputedValue.
     InnerText { dom: Dom, node: NodeId },
+    /// The boxes of one element (`read_box`), or of every element with a frame (None), with the DOM
+    /// as for ComputedValue.
+    Boxes { dom: Dom, node: Option<NodeId> },
 }
 
 /// A question an IntersectionObserver's update asks a document's frames, in app units relative to
@@ -1107,6 +1151,10 @@ impl LayoutThread {
                             let (dom, inner_text) = inner_text(&mut state, dom, node);
                             let _ = reply_tx.send(LayoutReply { dom, boxes: None, restyle_state: Default::default(), computed: String::new(), subdocuments: HashMap::new(), offsets: None, resize_boxes: Vec::new(), intersections: Vec::new(), hits: Vec::new(), inner_text });
                         }
+                        LayoutMessage::Boxes { dom, node } => {
+                            let (dom, boxes) = boxes_of(&mut state, dom, node);
+                            let _ = reply_tx.send(LayoutReply { dom, boxes: Some(boxes), restyle_state: Default::default(), computed: String::new(), subdocuments: HashMap::new(), offsets: None, resize_boxes: Vec::new(), intersections: Vec::new(), hits: Vec::new(), inner_text: None });
+                        }
                         LayoutMessage::Flush(request) => {
                             if let Some(recorder) = recorder.as_mut().filter(|_| request.doc == mrt_style::mrt_dom::DOCUMENT) {
                                 recorder.record(request.flush, &request.dom, &request.link_sheets, &request.ops, &request.frame_ops);
@@ -1127,44 +1175,63 @@ impl LayoutThread {
     }
 
     fn flush(&self, request: LayoutRequest) -> LayoutReply {
+        let t = std::time::Instant::now();
         self.requests.send(LayoutMessage::Flush(request)).expect("the layout thread ended");
-        self.replies.recv().expect("the layout thread ended without giving the DOM back")
+        let reply = self.replies.recv().expect("the layout thread ended without giving the DOM back");
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        add_task_times(|tt| {
+            tt.flushes += 1;
+            tt.flush_ms += ms;
+        });
+        reply
+    }
+
+    /// Any other request, and its reply (counted in `TaskTimes::reads`).
+    fn ask(&self, message: LayoutMessage) -> LayoutReply {
+        let t = std::time::Instant::now();
+        self.requests.send(message).expect("the layout thread ended");
+        let reply = self.replies.recv().expect("the layout thread ended without giving the DOM back");
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        add_task_times(|tt| {
+            tt.reads += 1;
+            tt.read_ms += ms;
+        });
+        reply
     }
 
     fn computed_value(&self, dom: Dom, node: NodeId, pseudo: Option<mrt_style::style::selector_parser::PseudoElement>, name: &str) -> (Dom, String) {
-        self.requests.send(LayoutMessage::ComputedValue { dom, node, pseudo, name: name.to_string() }).expect("the layout thread ended");
-        let reply = self.replies.recv().expect("the layout thread ended without giving the DOM back");
+        let reply = self.ask(LayoutMessage::ComputedValue { dom, node, pseudo, name: name.to_string() });
         (reply.dom, reply.computed)
     }
 
     fn offset_rect(&self, dom: Dom, node: NodeId) -> (Dom, Option<(NodeId, [i32; 4])>) {
-        self.requests.send(LayoutMessage::OffsetRect { dom, node }).expect("the layout thread ended");
-        let reply = self.replies.recv().expect("the layout thread ended without giving the DOM back");
+        let reply = self.ask(LayoutMessage::OffsetRect { dom, node });
         (reply.dom, reply.offsets)
     }
 
     fn resize_observer_boxes(&self, dom: Dom, nodes: Vec<NodeId>) -> (Dom, Vec<[f64; 11]>) {
-        self.requests.send(LayoutMessage::ResizeObserverBoxes { dom, nodes }).expect("the layout thread ended");
-        let reply = self.replies.recv().expect("the layout thread ended without giving the DOM back");
+        let reply = self.ask(LayoutMessage::ResizeObserverBoxes { dom, nodes });
         (reply.dom, reply.resize_boxes)
     }
 
     fn intersections(&self, dom: Dom, asks: Vec<IntersectionAsk>, scroll_margin: IntersectionMargin) -> (Dom, Vec<Vec<i32>>) {
-        self.requests.send(LayoutMessage::Intersections { dom, asks, scroll_margin }).expect("the layout thread ended");
-        let reply = self.replies.recv().expect("the layout thread ended without giving the DOM back");
+        let reply = self.ask(LayoutMessage::Intersections { dom, asks, scroll_margin });
         (reply.dom, reply.intersections)
     }
 
     fn nodes_from_point(&self, dom: Dom, point: (i32, i32), port: (i32, i32)) -> (Dom, Vec<NodeId>) {
-        self.requests.send(LayoutMessage::NodesFromPoint { dom, point, port }).expect("the layout thread ended");
-        let reply = self.replies.recv().expect("the layout thread ended without giving the DOM back");
+        let reply = self.ask(LayoutMessage::NodesFromPoint { dom, point, port });
         (reply.dom, reply.hits)
     }
 
     fn inner_text(&self, dom: Dom, node: NodeId) -> (Dom, Option<String>) {
-        self.requests.send(LayoutMessage::InnerText { dom, node }).expect("the layout thread ended");
-        let reply = self.replies.recv().expect("the layout thread ended without giving the DOM back");
+        let reply = self.ask(LayoutMessage::InnerText { dom, node });
         (reply.dom, reply.inner_text)
+    }
+
+    fn boxes(&self, dom: Dom, node: Option<NodeId>) -> (Dom, HashMap<NodeId, [f64; 8]>) {
+        let reply = self.ask(LayoutMessage::Boxes { dom, node });
+        (reply.dom, reply.boxes.unwrap_or_default())
     }
 
     fn drop_style(&self, dom: Dom) -> Dom {
@@ -1388,16 +1455,30 @@ fn apply_frame_changes(frames: &mut PresShellFrames, dom: &Dom, frame_ops: &[Fra
 /// The boxes of every element with a frame, from the kept frames: what getBoundingClientRect gives
 /// (GetBoundingClientRect: continuations and transforms included), then the client and scroll sizes.
 fn read_boxes(frames: &PresShellFrames) -> HashMap<NodeId, [f64; 8]> {
-    frames
-        .ElementFrames()
-        .into_iter()
-        .map(|(node, frame)| {
-            let (x, y, w, h) = BoundingClientRectInCSSPixels(frame);
-            // (a scrolled container's, from before its children moved)
-            let (cw, ch, sw, sh) = frames.mElementScrollSizes.get(&node).copied().unwrap_or_else(|| ClientAreaAndScrollSize(frame));
-            (node, [x, y, w, h, cw, ch, sw, sh])
-        })
-        .collect()
+    frames.ElementFrames().into_iter().map(|(node, frame)| (node, read_box(frames, node, frame))).collect()
+}
+
+/// The boxes of element `node`, whose primary frame is `frame` (see `PresShell::boxes`).
+fn read_box(frames: &PresShellFrames, node: NodeId, frame: mrt_layout::nsIFrame) -> [f64; 8] {
+    let (x, y, w, h) = BoundingClientRectInCSSPixels(frame);
+    // (a scrolled container's, from before its children moved)
+    let (cw, ch, sw, sh) = frames.mElementScrollSizes.get(&node).copied().unwrap_or_else(|| ClientAreaAndScrollSize(frame));
+    [x, y, w, h, cw, ch, sw, sh]
+}
+
+/// The Boxes query on the layout thread, from the frames of the last flush: element `node`'s boxes,
+/// or every element's (None); none for an element without a frame, or after a panic.
+fn boxes_of(state: &mut LayoutState, dom: Dom, node: Option<NodeId>) -> (Dom, HashMap<NodeId, [f64; 8]>) {
+    let (Some(sd), Some(frames)) = (state.style.as_mut(), state.frames.as_ref()) else {
+        return (dom, HashMap::new());
+    };
+    sd.attach_dom_unchanged(dom);
+    let boxes = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match node {
+        Some(node) => mrt_layout::nsIContent::FromNodeId(node).GetPrimaryFrame().map(|frame| (node, read_box(frames, node, frame))).into_iter().collect(),
+        None => read_boxes(frames),
+    }))
+    .unwrap_or_default();
+    (state.style.as_mut().unwrap().detach_dom(), boxes)
 }
 
 /// One flush on the layout thread: the frames' removals applied to the kept frames, the page restyled
@@ -1473,9 +1554,17 @@ fn layout_flush(state: &mut LayoutState, request: LayoutRequest) -> (LayoutReply
         let t5 = std::time::Instant::now();
         f.ReflowDirty(full_reflow && !rebuilt);
         let t6 = std::time::Instant::now();
-        let boxes = read_boxes(f);
+        // (the boxes are read as they are asked for, Boxes; all of them only to check the flush)
+        let boxes = if verify { read_boxes(f) } else { HashMap::new() };
         let subdocuments = f.SubdocumentSizes().into_iter().collect::<HashMap<_, _>>();
         let t7 = std::time::Instant::now();
+        add_task_times(|tt| {
+            tt.attach_ms += ms(t0, t1);
+            tt.style_ms += ms(t1, t4);
+            tt.construct_ms += ms(t4, t5);
+            tt.reflow_ms += ms(t5, t6);
+            tt.boxes_ms += ms(t6, t7);
+        });
         if times {
             eprintln!(
                 "FLUSHTIME sheets {:.1} removals {:.1} stylist {:.1} resolve {:.1} construct {:.1} reflow {:.1} read {:.1} layout {:.1} ops {ops} frameops {fops} damaged {} rebuilt {} removed {} reconstructs {} inserted {} containers {}",
@@ -1507,9 +1596,12 @@ fn layout_flush(state: &mut LayoutState, request: LayoutRequest) -> (LayoutReply
                 };
                 verify_flush(request.flush, doc, (width, height), &boxes, dom, link_sheets, &dump);
             }
+            let t8 = std::time::Instant::now();
             let sd = state.style.as_mut().unwrap();
             let restyle_state = sd.restyle_state();
-            (LayoutReply { dom: sd.detach_dom(), boxes: Some(boxes), restyle_state, computed: String::new(), subdocuments, offsets: None, resize_boxes: Vec::new(), intersections: Vec::new(), hits: Vec::new(), inner_text: None }, false)
+            let dom = sd.detach_dom();
+            add_task_times(|tt| tt.state_ms += t8.elapsed().as_secs_f64() * 1000.0);
+            (LayoutReply { dom, boxes: Some(boxes), restyle_state, computed: String::new(), subdocuments, offsets: None, resize_boxes: Vec::new(), intersections: Vec::new(), hits: Vec::new(), inner_text: None }, false)
         }
         Err(_) => {
             // (the frames are left to the thread's end: their stores may be half built)
@@ -2070,6 +2162,41 @@ extern "C" fn mrt_dom_client_scroll(h: *mut c_void, id: u32, out: *mut f64) -> i
 /// fetched again; it is outside the arena and counted apart (`linked_sheets_bytes`).
 static LINKED_SHEETS: LazyLock<Mutex<HashMap<String, Arc<str>>>> = LazyLock::new(Default::default);
 
+/// What the page's thread spent waiting on its layout threads and on the bridge since the last
+/// `take_task_times`: realsite's MRT_LOOP_TRACE prints it for each long task (task 9caa0). The flush
+/// phases are measured on the layout thread, the rest on the page's.
+#[derive(Default, Clone, Copy)]
+pub struct TaskTimes {
+    /// layout flushes and their round trips
+    pub flushes: usize,
+    pub flush_ms: f64,
+    /// of those, restyling (removals, rule tables, style resolution), frame changes and reflow
+    pub style_ms: f64,
+    pub construct_ms: f64,
+    pub reflow_ms: f64,
+    /// and around them: attaching the DOM, reading every box, and the restyle state given back
+    pub attach_ms: f64,
+    pub boxes_ms: f64,
+    pub state_ms: f64,
+    /// the other layout-thread requests (computed values, offsets, observers, hit tests, innerText)
+    pub reads: usize,
+    pub read_ms: f64,
+    /// bridge requests and their round trips
+    pub bridge: usize,
+    pub bridge_ms: f64,
+}
+
+static TASK_TIMES: Mutex<TaskTimes> = Mutex::new(TaskTimes { flushes: 0, flush_ms: 0.0, style_ms: 0.0, construct_ms: 0.0, reflow_ms: 0.0, attach_ms: 0.0, boxes_ms: 0.0, state_ms: 0.0, reads: 0, read_ms: 0.0, bridge: 0, bridge_ms: 0.0 });
+
+/// The `TaskTimes` summed since the last call, which starts them again.
+pub fn take_task_times() -> TaskTimes {
+    std::mem::take(&mut *TASK_TIMES.lock().unwrap())
+}
+
+fn add_task_times(f: impl FnOnce(&mut TaskTimes)) {
+    f(&mut TASK_TIMES.lock().unwrap());
+}
+
 /// The bytes of text in the linked-sheet cache, and the number of sheets.
 pub fn linked_sheets_bytes() -> (usize, usize) {
     let cache = LINKED_SHEETS.lock().unwrap();
@@ -2131,6 +2258,7 @@ impl Host {
     pub fn bridge_request(&mut self, req: &str) -> String {
         use std::io::{BufRead, Write};
         self.bridge_calls += 1;
+        let t = std::time::Instant::now();
         let mut stdout = std::io::stdout().lock();
         stdout.write_all(req.as_bytes()).and_then(|_| stdout.write_all(b"\n")).and_then(|_| stdout.flush()).expect("bridge: the driver went away");
         let mut line = String::new();
@@ -2138,6 +2266,11 @@ impl Host {
         if line.is_empty() {
             panic!("bridge: the driver closed the pipe");
         }
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        add_task_times(|tt| {
+            tt.bridge += 1;
+            tt.bridge_ms += ms;
+        });
         line.trim_end_matches('\n').to_string()
     }
 }
