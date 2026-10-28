@@ -1,6 +1,13 @@
 // Shared browser media executor: native decoding, MSE and playback events.
 globalThis.createMrtMedia = function(W, getNodes, getIds, emit, bounded = false, onHold = () => {}) {
-let active = true, pendingBytes = 0, pendingOps = 0;
+let active = true;
+// The bytes and ops queued here, the live page's apart from a new viewer's replay of retained
+// sources (bounded separately): counted together, a replay of preloaded sources refused the live
+// appends of the source the page plays, which then never got a frame (B220, task f378d)
+const pending = {live: {bytes: 0, ops: 0}, replay: {bytes: 0, ops: 0}};
+const pendingOf = op => pending[op.replay ? "replay" : "live"];
+const unsendBytes = op => { pendingOf(op).bytes -= op._transportBytes || 0; op._transportBytes = 0; };
+const unqueue = op => { unsendBytes(op); pendingOf(op).ops--; };
 const queue = {push: m => { if (active) emit(m); }};
 const elements = new Map(), restored = new Set(), roots = new Set(), urls = new Set();
 const num = v => (typeof v === "number" && !Number.isFinite(v) ? String(v) : v);
@@ -78,19 +85,20 @@ const bytesOf = b64 => {
   return Promise.resolve(bytes);
 };
 const report = (rec, op, error) => {
-  pendingBytes -= op._transportBytes || 0; op._transportBytes = 0;
+  unsendBytes(op);
   const sb = rec.sbs.get(op.sb);
   let buffered = [];
   try { buffered = sb ? ranges(sb.buffered) : []; } catch (e) {}
   if (error && rec.replaying) { lose(rec, error); return; }
-  queue.push({ type: "media", k: "sb", sb: op.sb, n: op.n, buffered, dur: num(rec.ms.duration), error: error || null });
+  // (a piece of a larger append says which: the runtime's append ends with the last, mediaLink.flush)
+  queue.push(Object.assign({ type: "media", k: "sb", sb: op.sb, n: op.n, buffered, dur: num(rec.ms.duration), error: error || null },
+    op.more === undefined ? {} : { part: op.part, more: op.more }));
 };
 const fail = (rec, op, e) => { rec.busy = false; rec.current = null; report(rec, op, e.name + ": " + e.message); };
 function release(rec) {
   rec.lost = true; W.clearTimeout(rec.timer);
-  for (const op of rec.queue) pendingBytes -= op._transportBytes || 0;
-  pendingOps -= rec.queue.length;
-  if (rec.current) pendingBytes -= rec.current._transportBytes || 0;
+  for (const op of rec.queue) unqueue(op);
+  if (rec.current) unsendBytes(rec.current);
   rec.queue = []; rec.current = null; sources.delete(rec.id);
   const url = rec.el && ownURL.get(rec.el);
   if (url) { W.URL.revokeObjectURL(url); urls.delete(url); ownURL.delete(rec.el); }
@@ -99,15 +107,15 @@ function lose(rec, message) {
   if (rec.lost || !active) return;
   rec.lost = true; rec.replaying = false;
   W.clearTimeout(rec.timer);
-  for (const op of rec.queue) pendingBytes -= op._transportBytes || 0;
-  pendingOps -= rec.queue.length; rec.queue = [];
-  if (rec.current) pendingBytes -= rec.current._transportBytes || 0;
+  for (const op of rec.queue) unqueue(op);
+  rec.queue = [];
+  if (rec.current) unsendBytes(rec.current);
   rec.current = null; rec.busy = false;
   queue.push({type:"media", k:"loss", ms:rec.id, message});
 }
 function pump(rec) {
   while (active && !rec.lost && rec.open && !rec.busy && rec.queue.length) {
-    const op = rec.queue.shift(); pendingOps--;
+    const op = rec.queue.shift(); pendingOf(op).ops--;
     try { step(rec, op); } catch (e) {
       if (rec.replaying) lose(rec, e.name + ": " + e.message);
       else if (op.o === "append" || op.o === "remove") fail(rec, op, e);
@@ -232,12 +240,12 @@ const apply = op => {
     case "abort": {
       const rec = sources.get(op.ms);
       if (!rec) return;
-      if (op.replay) { rec.queue.push(op); pendingOps++; pump(rec); return; }
+      if (op.replay) { rec.queue.push(op); pendingOf(op).ops++; pump(rec); return; }
       rec.queue = rec.queue.filter(o => {
         if (o.sb !== op.sb || (o.o !== "append" && o.o !== "remove")) return true;
-        pendingBytes -= o._transportBytes || 0; pendingOps--; return false;
+        unqueue(o); return false;
       });
-      if (rec.current && rec.current.sb === op.sb) { pendingBytes -= rec.current._transportBytes || 0; rec.current._transportBytes = 0; rec.current = null; rec.busy = false; }
+      if (rec.current && rec.current.sb === op.sb) { unsendBytes(rec.current); rec.current = null; rec.busy = false; }
       const sb = rec.sbs.get(op.sb);
       try { if (sb && rec.ms.readyState === "open") sb.abort(); } catch (e) {}
       pump(rec);
@@ -246,17 +254,18 @@ const apply = op => {
   }
   const rec = sources.get(op.ms);
   if (!rec || rec.lost) {
-    if (op.o === "append" || op.o === "remove") queue.push({type:"media", k:"sb", sb:op.sb, n:op.n, buffered:[], error:"InvalidStateError: MediaSource unavailable"});
+    if (op.o === "append" || op.o === "remove") queue.push({type:"media", k:"sb", sb:op.sb, n:op.n, part:op.part, more:op.more, buffered:[], error:"InvalidStateError: MediaSource unavailable"});
     return;
   }
   const bytes = op.b64 ? op.b64.length * 3 / 4 : 0;
+  const count = pendingOf(op);
   if (bounded && (bytes > 4 * 1024 * 1024 ||
-      pendingBytes + bytes > (op.replay ? 16 : 8) * 1024 * 1024 || pendingOps >= (op.replay ? 10000 : 1024))) {
+      count.bytes + bytes > (op.replay ? 16 : 8) * 1024 * 1024 || count.ops >= (op.replay ? 10000 : 1024))) {
     if (rec.replaying) lose(rec, "QuotaExceededError: media replay queue full");
     else if (op.o === "append" || op.o === "remove") report(rec, op, "QuotaExceededError: media transport queue full");
     return;
   }
-  op._transportBytes = bytes; pendingBytes += bytes; pendingOps++;
+  op._transportBytes = bytes; count.bytes += bytes; count.ops++;
   rec.queue.push(op);
   pump(rec);
 };
@@ -269,7 +278,7 @@ return {
     try { apply(op); }
     catch (e) {
       if (op.o === "play") queue.push({type:"media", k:"play", p:op.p, ok:false, name:e.name, message:e.message});
-      else if (op.o === "append" || op.o === "remove") queue.push({type:"media", k:"sb", sb:op.sb, n:op.n, buffered:[], error:e.name+": "+e.message});
+      else if (op.o === "append" || op.o === "remove") queue.push({type:"media", k:"sb", sb:op.sb, n:op.n, part:op.part, more:op.more, buffered:[], error:e.name+": "+e.message});
     }
   },
   dispose() {
@@ -280,7 +289,7 @@ return {
     for (const el of elements.values()) { el.pause(); if (ownURL.has(el)) { el.removeAttribute("src"); el.load(); } }
     for (const rec of sources.values()) { W.clearTimeout(rec.timer); rec.queue = []; rec.current = null; }
     for (const url of urls) W.URL.revokeObjectURL(url);
-    pendingBytes = pendingOps = 0;
+    for (const count of Object.values(pending)) count.bytes = count.ops = 0;
     sources.clear(); elements.clear(); roots.clear(); urls.clear();
   }
 };

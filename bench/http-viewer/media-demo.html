@@ -21,7 +21,10 @@ async function build(){
   if(kind===type)videoBytes=bytes;
   const done=once(sb,'updateend');sb.appendBuffer(bytes);await done;
   if(!sb.buffered.length)throw new Error('No buffered range');
-  try { sb.appendBuffer(new Uint8Array(4*1024*1024+1)); throw new Error('Oversized append accepted'); }
+  // Gecko refuses an append over the buffer's eviction threshold (150 MB video, 20 MB audio); a
+  // smaller one goes to the viewer in pieces (task f378d)
+  const limit=(kind.startsWith('audio/')?20:150)*1024*1024;
+  try { sb.appendBuffer(new Uint8Array(limit+1)); throw new Error('Oversized append accepted'); }
   catch(e){if(e.name!=='QuotaExceededError'||sb.updating)throw e;}
  }
  if(video.readyState<3)await once(video,'canplay');log('MSE_READY');

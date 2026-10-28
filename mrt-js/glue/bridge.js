@@ -5196,6 +5196,7 @@
   // of an element with no source (YouTube's load() before it attaches one) leaves it as it is.
   function abortExistingLoad(el) {
     if (!el._mediaSource && !el._mediaBlob && !el.getAttribute("src")) return;
+    mediaLink.abortWaiting(el);
     el._currentTime = 0; el._mediaAt = clockNow();
     el._paused = true; el._seeking = false; el._ended = false; el._readyState = 0;
   }
@@ -5304,8 +5305,10 @@
     appendBuffer(data) {
       if (!this._ms || this._updating) throw domError("InvalidStateError");
       if (this._ms._element && this._ms._element._error) throw domError("InvalidStateError");
-      if (env.httpViewer && ((data?.byteLength || 0) > 4 * 1024 * 1024 ||
-          mediaLink.pendingBytes + (data?.byteLength || 0) > 8 * 1024 * 1024)) throw domError("QuotaExceededError");
+      // Gecko refuses only an append larger than the buffer's eviction threshold (PrepareAppend,
+      // TrackBuffersManager::EvictData: media.mediasource.eviction_threshold, 150 MB for a video
+      // buffer, 20 MB for an audio one); the viewer gets a larger one in pieces (mediaLink.flush)
+      if (env.httpViewer && (data?.byteLength || 0) > (/^\s*audio\//i.test(this._type) ? 20 : 150) * 1024 * 1024) throw domError("QuotaExceededError");
       if (this._ms._readyState === "ended") this._ms._setReadyState("open");
       this._updating = true;
       queueEvent(this, "updatestart");
@@ -5314,7 +5317,15 @@
         this._n = (this._n || 0) + 1;
         this._op = "append";
         mediaLink.stats.bytes += bytes.length;
-        mediaLink.msOp(this._ms, { o: "append", sb: mediaLink.id(this), n: this._n, b64: toBase64(bytes) });
+        // in pieces of at most MEDIA_PIECE bytes, appended in turn (a byte stream may be cut
+        // anywhere); the append ends with its last piece's (B220, task f378d: Instagram's reel
+        // segments of 4.1 to 7.6 MiB were refused on every retry, and the reel never started)
+        const last = Math.max(0, Math.ceil(bytes.length / MEDIA_PIECE) - 1);
+        for (let part = 0; part <= last; part++) {
+          const op = { o: "append", sb: mediaLink.id(this), n: this._n, b64: toBase64(bytes.subarray(part * MEDIA_PIECE, (part + 1) * MEDIA_PIECE)) };
+          if (last) Object.assign(op, { part, more: part < last });
+          mediaLink.msOp(this._ms, op);
+        }
         return;
       }
       const appending = this._appending = {};
@@ -5361,7 +5372,7 @@
     // the tab's append or remove `n` ended (mediaEvents): the tab's ranges and the source's duration,
     // then update and updateend, or error and updateend; nothing for one aborted since
     _tabDone(m) {
-      if (m.n !== this._n || !this._updating) return;
+      if (m.n !== this._n || !this._updating || (m.more && !m.error)) return;
       this._updating = false;
       this._ranges = m.buffered.map(r => r.map(mediaValue));
       if (this._ms && m.dur !== undefined) this._ms._duration = mediaValue(m.dur);
@@ -9185,14 +9196,34 @@
   // none (SPEC decision 11). A number that JSON cannot carry (NaN, Infinity) is sent as its string.
   const mediaNum = v => (typeof v === "number" && !Number.isFinite(v) ? String(v) : v);
   const mediaValue = v => (typeof v === "string" ? Number(v) : v);
+  // the largest piece of an append one op carries (the viewer's 4 MiB per op, as it counts base64:
+  // a multiple of 3, so no padding takes it over), and the segment bytes sent to the viewer that it
+  // has not yet answered (the viewer's own bound on queued live bytes; one flush's 8 MiB, 10.7 MiB
+  // as base64, also fits the update journal, task d71f3)
+  const MEDIA_PIECE = 4 * 1024 * 1024 - (4 * 1024 * 1024) % 3, MEDIA_IN_FLIGHT = 8 * 1024 * 1024;
   const mediaLink = {
     on: () => mirror.on || !!env.httpViewer,
-    // pendingBytes: the segment bytes queued since the last flush (appendBuffer's 8 MiB transport
-    // limit). A flush sends the queues of the elements in the copy and leaves the others' until they
-    // are, so it starts the count again: those wait outside the transport (B212 follow-up, task
-    // daa9b: Instagram's preloaded reels, never in the copy, held their first segments' bytes in
-    // the count for good, and each later append over what was left was refused)
-    available: false, epoch: 0, pendingBytes: 0,
+    // inFlight: the append pieces sent to the viewer and not yet answered, by "sb:n:part" ({bytes,
+    // ms}). A flush sends a piece while they total under MEDIA_IN_FLIGHT (or none is out) and
+    // leaves the rest of its element's queue for a later flush: appendBuffer itself refuses no
+    // segment for the transport (B220, task f378d). Ops queued for elements not in the copy are not
+    // counted (B212 follow-up, task daa9b).
+    available: false, epoch: 0, inFlight: new Map(), inFlightBytes: 0,
+    admit(op) {
+      const bytes = op.b64.length * 3 / 4;
+      if (this.inFlightBytes && this.inFlightBytes + bytes > MEDIA_IN_FLIGHT) return false;
+      this.inFlight.set(op.sb + ":" + op.n + ":" + (op.part || 0), { bytes, ms: op.ms });
+      this.inFlightBytes += bytes;
+      return true;
+    },
+    // pieces the viewer answered, or dropped without an answer (an abort of their buffer, a
+    // detach or new attach of their source, a lost source)
+    answered(match) {
+      for (const [key, entry] of this.inFlight) {
+        if (!match(key, entry)) continue;
+        this.inFlight.delete(key); this.inFlightBytes -= entry.bytes;
+      }
+    },
     history: new Map(), historyBytes: 0, historyOps: 0,
     // A source whose next op would take the retained history over its budget (B181, task 19b81)
     // keeps playing: its history is freed and no more of it is kept (`dropped`), its ops still go
@@ -9248,8 +9279,8 @@
           if (rec && !this.available) rec.live = false;
           if (rec && !rec.dropped) {
             if (op.o === "abort") {
-              const at = rec.ops.findIndex(o => o.sb === op.sb && o.n === op.n && (o.o === "append" || o.o === "remove"));
-              if (at >= 0) {
+              // (every piece of the aborted append)
+              for (let at; (at = rec.ops.findIndex(o => o.sb === op.sb && o.n === op.n && (o.o === "append" || o.o === "remove"))) >= 0;) {
                 const bytes = JSON.stringify(rec.ops[at]).length * 2;
                 rec.ops.splice(at, 1); rec.bytes -= bytes; this.historyBytes -= bytes; this.historyOps--;
               }
@@ -9265,7 +9296,8 @@
         }
         if (!this.available && op.o !== "attach") return;
       }
-      if (op.b64) this.pendingBytes += op.b64.length * 3 / 4;
+      if (op.o === "abort") this.answered(key => key.startsWith(op.sb + ":"));
+      else if (op.o === "detach" || op.o === "attach") this.answered((_, entry) => entry.ms === op.ms || this.objs.get(entry.ms)?._element === el);
       op.seq = el._mediaSeq = ++this.seq;
       // a new load (AbortExistingLoads): the tab's events for the element from before it are dropped
       if (op.o === "load" || op.o === "attach" || op.o === "detach") el._mediaLoadSeq = op.seq;
@@ -9281,18 +9313,36 @@
     },
     // HTMLMediaElement::Play: paused at once, the promise settled by the tab's play()
     // (the current time held where it was: it moves on from now, not from the tab's last report;
-    // an element that ended seeks to the start, as HTMLMediaElement::Play does)
+    // an element that ended seeks to the start, as HTMLMediaElement::Play does). With no viewer
+    // attached, the play waits for the next one (`waiting`), as a visible tab's play() waits for
+    // its media: refusing it left Instagram's first reel paused when the page asked before the
+    // viewer came (B220, task f378d)
     play(el) {
-      if (env.httpViewer && !this.available) return Promise.reject(new DOMException("No media viewer attached", "NotSupportedError"));
       el._currentTime = this.currentTime(el);
       if (el._ended) { el._ended = false; el._currentTime = 0; el._seeking = true; }
       el._mediaAt = clockNow();
       el._paused = false;
       const p = this.next++;
       this.stats.plays++;
-      return new Promise((resolve, reject) => { this.plays.set(p, [resolve, reject, el]); this.send(el, { o: "play", p }); });
+      return new Promise((resolve, reject) => {
+        this.plays.set(p, [resolve, reject, el]);
+        if (env.httpViewer && !this.available) this.waiting.set(p, el); else this.send(el, { o: "play", p });
+      });
+    },
+    // the plays made with no viewer: sent to a viewer when it attaches, or rejected as Gecko's
+    // pause() and load() reject pending play promises (AbortError)
+    waiting: new Map(),
+    abortWaiting(el) {
+      for (const [p, target] of this.waiting) {
+        if (target !== el) continue;
+        this.waiting.delete(p);
+        const settle = this.plays.get(p);
+        this.plays.delete(p);
+        if (settle) global.__mrt.queueTask(() => settle[1](new DOMException("The operation was aborted. ", "AbortError")));
+      }
     },
     pause(el) {
+      this.abortWaiting(el);
       el._currentTime = this.currentTime(el);
       el._mediaAt = clockNow();
       el._paused = true;
@@ -9363,12 +9413,15 @@
           }
           continue;
         }
-        for (const op of q) { op.el = rec.i; ops.push(["m", op]); }
+        let sent = 0;
+        for (const op of q) {
+          if (op.b64 && !this.admit(op)) break;
+          op.el = rec.i; ops.push(["m", op]); sent++;
+        }
         this.els.set(rec.i, new WeakRef(el));
-        this.stats.ops += q.length;
-        this.queues.delete(el);
+        this.stats.ops += sent;
+        if (sent === q.length) this.queues.delete(el); else this.queues.set(el, q.slice(sent));
       }
-      this.pendingBytes = 0;
     },
   };
   // HTTP decoder state is ephemeral; bounded source commands reconstruct it.
@@ -9381,7 +9434,7 @@
       if (mediaLink.available) {
         for (const [, reject] of mediaLink.plays.values())
           global.__mrt.queueTask(() => reject(new DOMException("Media viewer disconnected", "AbortError")));
-        mediaLink.plays.clear(); mediaLink.queues.clear(); mediaLink.pendingBytes = 0;
+        mediaLink.plays.clear(); mediaLink.queues.clear();
         for (const ref of mediaLink.els.values()) {
           const el = ref.deref();
           if (!el) continue;
@@ -9391,7 +9444,13 @@
         }
       }
     }
+    // a new viewer answers none of the pieces sent to the last
+    if (state.epoch !== mediaLink.epoch) mediaLink.answered(() => true);
     mediaLink.epoch = state.epoch; mediaLink.available = state.attached;
+    if (mediaLink.available) {
+      for (const [p, el] of mediaLink.waiting) if (mediaLink.plays.has(p)) mediaLink.send(el, { o: "play", p });
+      mediaLink.waiting.clear();
+    }
   };
   // What the tab sent back since the last wait: {k: "el", el, ev, s, seq} a media event of a copy
   // element and its state, fired as a task with the state set just before (but what the page set
@@ -9432,8 +9491,10 @@
           el.dispatchEvent(e);
         });
       } else if (m.k === "loss") {
+        mediaLink.answered((_, entry) => entry.ms === m.ms);
         queueMedia(() => mediaLink.lose(m.ms, m.message || "Media reconstruction failed; rebuild MediaSource"));
       } else if (m.k === "sb") {
+        mediaLink.answered(key => key === m.sb + ":" + m.n + ":" + (m.part || 0));
         const sb = mediaLink.objs.get(m.sb);
         if (sb) queueMedia(() => sb._tabDone(m));
       } else if (m.k === "ms") {

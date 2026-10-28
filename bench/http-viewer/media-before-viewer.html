@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><video id="a" muted></video><video id="b" muted></video><video id="c" muted></video>
+<script>
+// Runtime protocol fixture (B220, task f378d): the test supplies codec/source/buffer/play replies.
+// Before any viewer attaches, the page plays one video, as Instagram plays its first reel while the
+// viewer is still coming, and plays then pauses another. Once the sources open, two videos each
+// append 6 MiB at once: more than one op carries, and more than the viewer takes unanswered.
+const type='video/mp4; codecs="avc1.42c01e"';
+const once=(o,t)=>new Promise(r=>o.addEventListener(t,r,{once:true}));
+const [a,b,c]=['a','b','c'].map(id=>document.getElementById(id));
+const sources=[a,c].map(v=>{const ms=new MediaSource();v.src=URL.createObjectURL(ms);return ms;});
+b.src=URL.createObjectURL(new MediaSource());
+a.play().then(()=>console.log('PLAY_A ok'),e=>console.log('PLAY_A '+e.name));
+b.play().then(()=>console.log('PLAY_B ok'),e=>console.log('PLAY_B '+e.name+' paused '+b.paused));
+b.pause();
+console.log('BEFORE_VIEWER paused '+a.paused);
+(async()=>{
+ await Promise.all(sources.map(ms=>once(ms,'sourceopen')));
+ const done=sources.map(async(ms,i)=>{
+  const sb=ms.addSourceBuffer(type);
+  let ends=0;sb.addEventListener('updateend',()=>ends++);
+  sb.addEventListener('error',()=>console.log('APPEND_ERROR '+i));
+  sb.appendBuffer(new Uint8Array(6*1024*1024));
+  await once(sb,'updateend');
+  await new Promise(r=>setTimeout(r,300));
+  console.log('APPENDED '+i+' updateends '+ends+' updating '+sb.updating);
+ });
+ await Promise.all(done);
+ console.log('ALL_APPENDED');
+})().catch(e=>console.log('FIXTURE_ERROR '+e.name+' '+e.message));
+</script>

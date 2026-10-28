@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import hashlib
 import selectors
+import shutil
 import socket
 import statistics
 import struct
@@ -734,6 +735,45 @@ class Protocol(unittest.TestCase):
         with self.assertRaises(ValueError):
             v.input(session, seq, [wheel])
 
+    @unittest.skipUnless(shutil.which("node"), "needs node to run the viewer's media.js")
+    def test_media_live_appends_beside_replay(self):
+        # B220 (task f378d): a new viewer's replay of retained sources (here 12 MiB of appends still
+        # queued) does not use up the live page's 8 MiB of queued bytes: the page's own append to
+        # the source it plays is taken, not refused as "media transport queue full"
+        script = (HERE / "http-viewer" / "media.js").read_text() + """
+// a window with MediaSources that open at once and SourceBuffers that keep their appends pending
+class Target { constructor() { this.l = {}; } addEventListener(t, f) { (this.l[t] = this.l[t] || []).push(f); } removeEventListener() {}
+  fire(t) { for (const f of this.l[t] || []) f({type: t}); } }
+const appended = [];
+class SourceBuffer extends Target { get buffered() { return {length: 0}; } appendBuffer(b) { appended.push(b.length); } }
+class MediaSource extends Target { constructor() { super(); this.readyState = "open"; setTimeout(() => this.fire("sourceopen"), 0); }
+  addSourceBuffer() { return new SourceBuffer(); } }
+const W = Object.assign(new Target(), {MediaSource, Uint8Array, atob, setTimeout, clearTimeout, navigator: {},
+  URL: {createObjectURL: () => "blob:x", revokeObjectURL() {}}});
+const video = id => Object.assign(new Target(), {id, nodeType: 1, localName: "video", getAttribute: () => null});
+const nodes = new Map([[1, video(1)], [2, video(2)]]), sent = [];
+const media = createMrtMedia(W, () => nodes, () => new Map(), m => sent.push(m), true);
+const b64 = n => Buffer.alloc(n).toString("base64");
+// a retained source replayed to the new viewer: 12 MiB of appends, the first one in its SourceBuffer
+media.apply({o: "attach", ms: 10, el: 1, replay: true});
+media.apply({o: "addsb", ms: 10, sb: 11, type: "video/mp4", replay: true});
+for (let n = 1; n <= 3; n++) media.apply({o: "append", ms: 10, sb: 11, n, b64: b64(4 * 1024 * 1024 - 1), replay: true});
+// the page's own source, live
+media.apply({o: "attach", ms: 20, el: 2});
+media.apply({o: "addsb", ms: 20, sb: 21, type: "video/mp4"});
+media.apply({o: "append", ms: 20, sb: 21, n: 1, b64: b64(1024 * 1024)});
+setTimeout(() => setTimeout(() => {
+  console.log(JSON.stringify({appended, reports: sent.filter(m => m.k === "sb" || m.k === "loss")}));
+  process.exit(0);
+}, 0), 0);
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertEqual(out["reports"], [])
+        # the replay's first append and the live one reached their SourceBuffers
+        self.assertEqual(out["appended"], [4 * 1024 * 1024 - 1, 1024 * 1024])
+
     def test_largest_media_update_fits_the_journal(self):
         # One flush may carry appendBuffer's 8 MiB of pending segment bytes, 10.7 MiB as base64: the
         # default journal holds it after an unacknowledged update instead of resynchronizing (d71f3)
@@ -1284,6 +1324,8 @@ class Runtime(unittest.TestCase):
             page = "media-out-of-copy.html"
         if self._testMethodName == "test_media_replay_after_queued_input":
             page = "media-reattach-input.html"
+        if self._testMethodName == "test_media_play_before_viewer_and_large_appends":
+            page = "media-before-viewer.html"
         if self._testMethodName == "test_browser_media":
             page = "media-demo.html"
         if self._testMethodName == "test_browser_media_large_replay":
@@ -1567,7 +1609,9 @@ class Runtime(unittest.TestCase):
                         m = op[1]
                         sent.append(m)
                         if m["o"] == "attach": events.append({"k":"ms", "ms":m["ms"], "ev":"sourceopen"})
-                        elif m["o"] == "append": events.append({"k":"sb", "sb":m["sb"], "n":m["n"], "buffered":[], "dur":1})
+                        # (a piece of a larger append is answered as one, as media.js reports it)
+                        elif m["o"] == "append": events.append({"k":"sb", "sb":m["sb"], "n":m["n"], "buffered":[], "dur":1,
+                                                                **({"part":m["part"], "more":m["more"]} if "more" in m else {})})
                 if events:
                     self.call("media-events", {"session":session, "epoch":reply["mediaEpoch"], "events":events})
                 if after: self.call("input", {"session":session, "ack":after, "events":[]})
@@ -1579,8 +1623,11 @@ class Runtime(unittest.TestCase):
         session = self.call("attach", {"runtime":"demo", "viewport":[800,600]})["session"]
         if unlimited:
             text = serve(session, "UNLIMITED_DONE")
-            for marker in ("UNLIMITED_BYTES", "UNLIMITED_COMMANDS", "LIVE_APPEND_QUOTA"):
+            for marker in ("UNLIMITED_BYTES", "UNLIMITED_COMMANDS", "LIVE_APPEND_PIECES"):
                 self.assertIn(marker, text)
+            # the 5 MiB append: a piece of just under 4 MiB, then the rest
+            self.assertEqual([(m["part"], m["more"], len(base64.b64decode(m["b64"]))) for m in sent if m["o"] == "append" and "part" in m],
+                             [(0, True, (4 << 20) - (4 << 20) % 3), (1, False, (5 << 20) - (4 << 20) + (4 << 20) % 3)])
         else:
             text = serve(session, "BEFORE_RECONNECT")
             self.assertIn("LIVE_PAST_BUDGET 20", text)
@@ -1646,6 +1693,71 @@ class Runtime(unittest.TestCase):
         self.assertIn("IN_COPY_APPENDED", text)
         # the four in-copy appends, then the put-back video's; the other two removed ones never left
         self.assertEqual(sum(1 for m in sent if m["o"] == "append"), 5, [m["o"] for m in sent])
+        self.call("stop", {})
+
+    def test_media_play_before_viewer_and_large_appends(self):
+        # B220 (task f378d): a play() made before any viewer waits for the first one instead of being
+        # refused (a pause() before then rejects it, as Gecko's does); appends larger than one op
+        # carries go in pieces of at most 4 MiB and end with the last; the pieces the viewer has
+        # not answered stay within 8 MiB, the rest waiting for later flushes
+        log = self.root / "logs" / "demo.log"
+        end = time.monotonic() + 30
+        while "BEFORE_VIEWER" not in (log.read_text() if log.exists() else ""):
+            self.assertLess(time.monotonic(), end, "the page did not start before the viewer")
+            time.sleep(0.1)
+        time.sleep(1)
+        text = log.read_text()
+        self.assertIn("BEFORE_VIEWER paused false", text)
+        self.assertIn("PLAY_B AbortError paused true", text)
+        self.assertNotIn("PLAY_A", text)
+        session = self.call("attach", {"runtime": "demo", "viewport": [800, 600]})["session"]
+        plays, pieces, unanswered, peak, after = [], [], [], 0, 0
+        end = time.monotonic() + 45
+        while time.monotonic() < end:
+            reply = self.call("poll?session=" + session + "&after=" + str(after))
+            if reply.get("mediaType"):
+                self.call("media-type", {"session": session, "id": reply["mediaType"]["id"], "reply": [True, "probably"]})
+            # the viewer answers what it was sent before this poll; what this poll brings is in flight
+            events = [{"k": "sb", "sb": m["sb"], "n": m["n"], "buffered": [], "dur": 1, **({"part": m["part"], "more": m["more"]} if "more" in m else {})}
+                      for m in unanswered]
+            unanswered = []
+            for batch in reply["batches"]:
+                after = batch["seq"]
+                for op in batch["ops"]:
+                    if op[0] != "m":
+                        continue
+                    m = op[1]
+                    if m["o"] == "attach":
+                        events.append({"k": "ms", "ms": m["ms"], "ev": "sourceopen"})
+                    elif m["o"] == "play":
+                        plays.append(m)
+                        events.append({"k": "play", "p": m["p"], "ok": True})
+                    elif m["o"] == "append" and not m.get("replay"):
+                        pieces.append({k: m.get(k) for k in ("sb", "n", "part", "more")} | {"bytes": len(base64.b64decode(m["b64"])), "counted": len(m["b64"]) * 3 / 4})
+                        unanswered.append(m)
+            peak = max(peak, sum(len(m["b64"]) * 3 // 4 for m in unanswered))
+            if events:
+                self.call("media-events", {"session": session, "epoch": reply["mediaEpoch"], "events": events})
+            if after:
+                self.call("input", {"session": session, "ack": after, "events": []})
+            text = log.read_text()
+            self.assertNotIn("FIXTURE_ERROR", text)
+            self.assertNotIn("APPEND_ERROR", text)
+            if "ALL_APPENDED" in text and "PLAY_A" in text:
+                break
+        else:
+            self.fail("fixture did not finish: " + log.read_text())
+        self.assertIn("PLAY_A ok", text)
+        self.assertEqual(len(plays), 1, plays)
+        # each 6 MiB append: a piece just under 4 MiB (as the viewer counts its base64), then the
+        # rest; one updateend, after the last
+        piece = (4 << 20) - (4 << 20) % 3
+        self.assertEqual(sorted((p["part"], p["more"], p["bytes"]) for p in pieces),
+                         [(0, True, piece), (0, True, piece), (1, False, (6 << 20) - piece), (1, False, (6 << 20) - piece)], pieces)
+        self.assertTrue(all(p["counted"] <= 4 << 20 for p in pieces), pieces)
+        self.assertIn("APPENDED 0 updateends 1 updating false", text)
+        self.assertIn("APPENDED 1 updateends 1 updating false", text)
+        self.assertLessEqual(peak, 8 << 20)
         self.call("stop", {})
 
     def test_media_events_before_load_dropped(self):

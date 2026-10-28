@@ -28,7 +28,7 @@ ASSETS = Path(__file__).with_name("http-viewer")
 MAX_BODY = 1024 * 1024
 MAX_GL = 8 * 1024 * 1024
 # The update journal's byte budget. It must hold the largest update the runtime sends: one flush may
-# carry 8 MiB of media segments (appendBuffer's transport limit in bridge.js), 10.7 MiB as base64, and
+# carry 8 MiB of media segments (what bridge.js sends before the viewer answers), 10.7 MiB as base64, and
 # with an 8 MiB budget such a flush resynchronized on its own, even with nothing else unacknowledged
 # (task d71f3).
 JOURNAL_BYTES = 16 * 1024 * 1024
