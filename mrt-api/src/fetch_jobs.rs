@@ -68,13 +68,14 @@ impl Queue {
 pub struct Jobs {
     jobs: HashMap<String, Job>,
     queue: Arc<Mutex<Queue>>,
+    // The workers' connection pools (B222), made at the first start; each worker takes a share.
+    net: Option<fetch::Net>,
 }
 /// Runs one worker: fetches `first`, then the queued requests it frees room for, until none can start.
 ///
-/// The caller has already counted `first` as running.
-fn work(queue: Arc<Mutex<Queue>>, first: Request, stores: Arc<Mutex<Stores>>) {
+/// The caller has already counted `first` as running; `net` is its share of the jobs' connection pools.
+fn work(queue: Arc<Mutex<Queue>>, first: Request, stores: Arc<Mutex<Stores>>, mut net: fetch::Net) {
     let mut shared = stores;
-    let mut net = fetch::Net::from_env();
     let mut current = first;
     loop {
         let _ = current.started.set(Instant::now());
@@ -94,6 +95,12 @@ fn work(queue: Arc<Mutex<Queue>>, first: Request, stores: Arc<Mutex<Stores>>) {
     }
 }
 impl Jobs {
+    /// Drops the workers' idle connections (the `trim` op): the next start makes new pools; a
+    /// running worker keeps its share until it ends.
+    pub fn drop_idle(&mut self) {
+        self.net = None;
+    }
+
     pub fn handle(&mut self, req: &Value, stores: &Arc<Mutex<Stores>>) -> Result<Value, String> {
         match req["call"].as_str().unwrap_or("") {
             "start" => {
@@ -116,8 +123,9 @@ impl Jobs {
                     queue.take(&request);
                     let host = request.host.clone();
                     let (shared, stores) = (self.queue.clone(), stores.clone());
+                    let net = self.net.get_or_insert_with(fetch::Net::from_env).share();
                     let worker = std::thread::Builder::new().name(format!("fetch-{id}"))
-                        .spawn(move || work(shared, request, stores));
+                        .spawn(move || work(shared, request, stores, net));
                     if let Err(e) = worker {
                         queue.release(&host);
                         return Err(format!("mrt-api: fetch worker: {e}"));
@@ -236,6 +244,49 @@ mod tests {
         // no-cors from another origin: each answer is an opaque response, not an error
         for id in &ids { assert_eq!(poll_until_done(&mut jobs, &stores, id).unwrap()["type"], "opaque"); }
         assert_eq!(jobs.queue.lock().unwrap().running, 0);
+    }
+    // A keep-alive server that counts the connections made to it.
+    fn counting_server() -> (String, Arc<Mutex<usize>>) {
+        use std::net::TcpListener;
+        use std::io::{BufRead, BufReader, Write};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}/", listener.local_addr().unwrap().port());
+        let count = Arc::new(Mutex::new(0));
+        let counted = count.clone();
+        std::thread::spawn(move || for socket in listener.incoming() {
+            *counted.lock().unwrap() += 1;
+            let mut socket = socket.unwrap();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                loop {
+                    // one request's head (no body), then its answer on the same connection
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 { return; }
+                        if line == "\r\n" { break; }
+                    }
+                    if socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").is_err() { return; }
+                }
+            });
+        });
+        (url, count)
+    }
+    #[test]
+    fn jobs_in_turn_reuse_one_connection() {
+        // (B222) each worker used to open its own connection: a TCP and TLS handshake per beacon or image
+        let stores = Arc::new(Mutex::new(Stores::default()));
+        let mut jobs = Jobs::default();
+        let (url, count) = counting_server();
+        for _ in 0..3 {
+            let id = jobs.handle(&live_start(&url), &stores).unwrap()["job"].clone();
+            poll_until_done(&mut jobs, &stores, &id).unwrap();
+        }
+        assert_eq!(*count.lock().unwrap(), 1);
+        jobs.drop_idle();
+        let id = jobs.handle(&live_start(&url), &stores).unwrap()["job"].clone();
+        poll_until_done(&mut jobs, &stores, &id).unwrap();
+        assert_eq!(*count.lock().unwrap(), 2);
     }
     #[test]
     fn a_busy_host_does_not_hold_another_hosts_request() {

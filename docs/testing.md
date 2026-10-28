@@ -43,7 +43,7 @@ This local fixture checks redirect ownership independently of Google's traffic v
 | `Runtime.test_browser_svg_search` | Lazy replacement of a search field, SVG namespace detection, typing and value preservation after reconnect. |
 | `Runtime.test_browser_document_input` | Controlled textarea input and consecutive submissions. |
 | `Runtime.test_browser_slow_fetch` | Slow binary fetch/XHR, responsive input, cookies, errors, abort/reuse and reconnect. |
-| `Runtime.test_browser_slow_image` | Images loading as live jobs: the inserting task's change reaches the copy and input is taken while the image responses are held; load events with the size once they arrive. |
+| `Runtime.test_browser_slow_image` | Images and a beacon loading as live jobs: the inserting task's change reaches the copy and input is taken while the image responses and the beacon are held; `sendBeacon` returns true at once; load events with the size once they arrive. |
 | `Runtime.test_fragment_scroll` | No browser required: initial fragments, ID/name lookup, encoded/literal targets, repeat clicks, top/empty/missing targets, cancellation, history restoration and manual mode. |
 | `Runtime.test_browser_fragment_scroll` | Reference Firefox comparison, actual viewer link clicks, target scrolling and reconnect preservation. |
 | `Runtime.test_navigation_startup_redirects` | No browser required: immediate redirect chains, replace history, session storage, referrers, activation headers, failed successors and process cleanup. |

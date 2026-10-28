@@ -356,8 +356,17 @@
   const navigator = Object.assign({}, env.navigator);
   navigator.webdriver = false;
   navigator.javaEnabled = () => false;
+  // A beacon is queued and the call returns (B222): in the HTTP viewer it is a live fetch job of
+  // the API process, polled to its end in timer tasks and never answered to the page, so the task
+  // that sent it (Google's click handlers send several) does not wait for the transfer.
   navigator.sendBeacon = (url, data) => {
-    try { bridge("fetch", { url: resolve(url, pageURL.href), method: "POST", body: data == null ? null : String(data), noBody: true }); return true; } catch (e) { return false; }
+    try {
+      const request = { url: resolve(url, pageURL.href), method: "POST", body: data == null ? null : String(data), noBody: true };
+      if (env.fetchAsync) request.call = "start";
+      const r = bridge("fetch", request);
+      if (r && r.job) receiveResponse(r).catch(() => {});
+      return true;
+    } catch (e) { return false; }
   };
   // Media Session: nothing plays, so what a site sets is kept and never used
   navigator.mediaSession = { metadata: null, playbackState: "none", setActionHandler() {}, setPositionState() {}, setMicrophoneActive() {}, setCameraActive() {} };

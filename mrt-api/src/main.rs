@@ -48,9 +48,10 @@ unsafe extern "C" {
 /// The `trim` op, for the driver's memory measurement (BRIDGE_MEMORY, DESIGN "Phase 6"): what memory
 /// pressure would take from the process. The stores' caches and the idle connections go, then glibc
 /// gives its free pages back. The stores' contents, the crypto keys and open WebSockets stay.
-fn trim(stores: &store::Stores, net: &mut fetch::Net) -> Value {
+fn trim(stores: &store::Stores, net: &mut fetch::Net, jobs: &mut fetch_jobs::Jobs) -> Value {
     stores.shrink();
     net.drop_idle();
+    jobs.drop_idle();
     // SAFETY: malloc_trim only returns free heap memory to the system
     unsafe { malloc_trim(0) };
     Value::Null
@@ -117,7 +118,7 @@ fn main() {
                     Some("mediaType") => Ok(media::handle()),
                     Some("webgl") => webgl::handle(&req, &mut gl, &mut net, &mut stores),
                     Some("permissions") => stores.get(&site, &top, ancestor).and_then(|s| permissions::handle(&req, s)),
-                    Some("trim") => Ok(trim(&stores, &mut net)),
+                    Some("trim") => Ok(trim(&stores, &mut net, &mut fetch_jobs)),
                     op => Err(format!("mrt-api: no op {op:?}")),
                 };
                 // Existing API replies used serde_json's sorted object order.

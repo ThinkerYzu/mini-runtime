@@ -1162,6 +1162,9 @@ class Runtime(unittest.TestCase):
         # (B218) the runtime's requests for slow-image.gif wait for image_release
         self.image_requested = threading.Event()
         self.image_release = threading.Event()
+        # (B222) and its beacon to /slow-beacon waits for beacon_release
+        self.beacon_requested = threading.Event()
+        self.beacon_release = threading.Event()
 
         class Quiet(http.server.SimpleHTTPRequestHandler):
             def navigation(self, body=b""):
@@ -1216,6 +1219,11 @@ class Runtime(unittest.TestCase):
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if self.path == "/slow-beacon":
+                    runtime.beacon_requested.set()
+                    runtime.beacon_release.wait(10)
+                    self.send_response(204); self.end_headers()
+                    return
                 if not self.navigation(body):
                     self.send_response(405); self.send_header("Content-Length", "0"); self.end_headers()
 
@@ -1940,7 +1948,8 @@ class Runtime(unittest.TestCase):
     def test_browser_slow_image(self):
         """(B218) An image loads as a live job of the API process: the task that inserted it goes on,
         its change reaches the copy and input is taken while the image's response is held, and the
-        load event comes with the image's size once it arrives."""
+        load event comes with the image's size once it arrives. (B222) So does a beacon the same task
+        sends: sendBeacon returns true at once and input is taken while the server holds it."""
         from marionette_driver.marionette import Marionette
         import firefox_exit
         browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
@@ -1952,14 +1961,18 @@ class Runtime(unittest.TestCase):
             browser.switch_to_frame(browser.find_element("id", "page"))
             browser.find_element("id", "start").click()
             self.assertTrue(self.image_requested.wait(3), "the runtime's image request did not start")
+            self.assertTrue(self.beacon_requested.wait(3), "the runtime's beacon did not start")
             self.until(lambda: browser.execute_script('return document.getElementById("state").textContent === "inserted"'), timeout=2)
+            self.assertEqual(browser.execute_script('return document.getElementById("beacon").textContent'), "true")
             browser.find_element("id", "increment").click()
             self.until(lambda: browser.execute_script('return document.getElementById("count").textContent === "1"'), timeout=2)
             self.assertEqual(browser.execute_script('return document.getElementById("loaded").textContent'), "pending")
+            self.beacon_release.set()
             self.image_release.set()
             self.until(lambda: browser.execute_script('return document.getElementById("loaded").textContent === "3x2 true,3x2 true,3x2 true"'), timeout=5)
         finally:
             self.image_release.set()
+            self.beacon_release.set()
             firefox_exit.close(browser)
         self.call("stop", {})
         self.proc.wait(timeout=10)

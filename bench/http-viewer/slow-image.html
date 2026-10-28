@@ -1,10 +1,11 @@
 <!doctype html>
-<meta charset="utf-8"><title>Late image loads</title>
-<button id="start">Insert slow images</button>
+<meta charset="utf-8"><title>Late image loads and beacons</title>
+<button id="start">Insert slow images and send a beacon</button>
 <button id="increment">Count while waiting</button><output id="count">0</output>
-<p id="state">idle</p><p id="loaded">pending</p><div id="list"></div>
+<p id="state">idle</p><p id="beacon">unsent</p><p id="loaded">pending</p><div id="list"></div>
 <script>
-// (B218) a task that inserts images and changes the page: the change shows while the images load
+// (B218) a task that inserts images and changes the page: the change shows while the images load;
+// (B222) its beacon is held by the server too, and does not hold the task either
 const $ = id => document.getElementById(id);
 let count = 0;
 $('increment').onclick = () => $('count').textContent = String(++count);
@@ -18,6 +19,7 @@ $('start').onclick = () => {
     img.src = '/slow-image.gif?' + i;
     $('list').append(img);
   }
+  $('beacon').textContent = String(navigator.sendBeacon('/slow-beacon', 'ping'));
   $('state').textContent = 'inserted';
 };
 </script>

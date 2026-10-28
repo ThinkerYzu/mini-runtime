@@ -126,6 +126,20 @@ impl Net {
         }
     }
 
+    /// Another handle on the same connection pools, for a live job's worker thread (B222): its
+    /// requests reuse the connections the other workers left idle, as Gecko's loads share one
+    /// connection manager, instead of each job opening a new TCP and TLS connection. The preflight
+    /// cache starts empty.
+    pub fn share(&self) -> Net {
+        Net {
+            agent: self.agent.clone(),
+            fresh: self.fresh.clone(),
+            user_agent: self.user_agent.clone(),
+            accept_language: self.accept_language.clone(),
+            preflights: Vec::new(),
+        }
+    }
+
     /// Drops the agent's idle connections (their sockets and TLS buffers), as memory pressure would:
     /// a new agent from the same environment; the preflight cache is kept.
     pub fn drop_idle(&mut self) {
