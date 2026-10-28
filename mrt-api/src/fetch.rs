@@ -669,6 +669,14 @@ pub fn image(req: &Value, net: &mut Net, stores: &mut Stores) -> Result<Value, S
     handle_with_destination(req, net, stores, "image", PENDING)
 }
 
+/// An image request run by a live job (fetch_jobs, B218): as `image`, with the job's deadline
+/// instead of PENDING, and a network error when it passes.
+pub fn image_live(req: &Value, net: &mut Net, stores: &mut impl CookieStores, timeout: Duration) -> Result<Value, String> {
+    let mut request = req.clone();
+    request["_liveJob"] = json!(true);
+    handle_with_destination(&request, net, stores, "image", timeout)
+}
+
 fn handle_with_destination(req: &Value, net: &mut Net, stores: &mut impl CookieStores, destination: &str, timeout: Duration) -> Result<Value, String> {
     let s = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let url = Url::parse(&s("url")).map_err(|_| NETWORK_ERROR.to_string())?;

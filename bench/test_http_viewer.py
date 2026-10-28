@@ -1119,6 +1119,9 @@ class Runtime(unittest.TestCase):
         self.nav_requests = []
         self.slow_requested = threading.Event()
         self.slow_cookies = []
+        # (B218) the runtime's requests for slow-image.gif wait for image_release
+        self.image_requested = threading.Event()
+        self.image_release = threading.Event()
 
         class Quiet(http.server.SimpleHTTPRequestHandler):
             def navigation(self, body=b""):
@@ -1218,6 +1221,17 @@ class Runtime(unittest.TestCase):
                     try: self.wfile.write(bytes([255, 0, 65]))
                     except (BrokenPipeError, ConnectionResetError): pass
                     return
+                if self.path.startswith("/slow-image.gif?"):
+                    # a 3x2 GIF; the runtime's request (not the viewer browser's) waits for the test
+                    if "MiniRuntime/" in self.headers.get("User-Agent", ""):
+                        runtime.image_requested.set()
+                        runtime.image_release.wait(10)
+                    gif = base64.b64decode("R0lGODlhAwACAIAAAP///wAAACH5BAEAAAAALAAAAAADAAIAAAICjF8AOw==")
+                    self.send_response(200); self.send_header("Content-Type", "image/gif")
+                    self.send_header("Content-Length", str(len(gif))); self.end_headers()
+                    try: self.wfile.write(gif)
+                    except (BrokenPipeError, ConnectionResetError): pass
+                    return
                 if self.path == "/fast-reply":
                     self.send_response(200); self.send_header("Content-Length", "4"); self.end_headers()
                     self.wfile.write(b"fast"); return
@@ -1250,6 +1264,8 @@ class Runtime(unittest.TestCase):
             page = "shadow-adopted.html"
         if self._testMethodName == "test_browser_slow_fetch":
             page = "slow-fetch.html"
+        if self._testMethodName == "test_browser_slow_image":
+            page = "slow-image.html"
         if self._testMethodName == "test_browser_svg_search":
             source, page = HERE / "bridge-cases", "svg-element.html"
         if self._testMethodName == "test_browser_rule_style":
@@ -1798,6 +1814,40 @@ class Runtime(unittest.TestCase):
             self.assertEqual(len(self.slow_cookies), 3)
             self.assertTrue(all("slow=page" in c for c in self.slow_cookies), self.slow_cookies)
         finally:
+            firefox_exit.close(browser)
+        self.call("stop", {})
+        self.proc.wait(timeout=10)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual(self.proc.returncode, 0, result)
+        self.assertEqual(result["exit"], 0, result)
+        self.assertEqual(result["js_errors"], 0, result)
+        self.assertFalse(result["unsupported_ops"], result)
+        self.assertEqual(result["bridge_tab"], {"made": False})
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_slow_image(self):
+        """(B218) An image loads as a live job of the API process: the task that inserted it goes on,
+        its change reaches the copy and input is taken while the image's response is held, and the
+        load event comes with the image's size once it arrives."""
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        browser.start_session()
+        try:
+            browser.set_context("content"); browser.navigate(self.viewer_url)
+            self.until(lambda: browser.execute_script('return document.getElementById("status").textContent.startsWith("Connected")'))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", "start").click()
+            self.assertTrue(self.image_requested.wait(3), "the runtime's image request did not start")
+            self.until(lambda: browser.execute_script('return document.getElementById("state").textContent === "inserted"'), timeout=2)
+            browser.find_element("id", "increment").click()
+            self.until(lambda: browser.execute_script('return document.getElementById("count").textContent === "1"'), timeout=2)
+            self.assertEqual(browser.execute_script('return document.getElementById("loaded").textContent'), "pending")
+            self.image_release.set()
+            self.until(lambda: browser.execute_script('return document.getElementById("loaded").textContent === "3x2 true,3x2 true,3x2 true"'), timeout=5)
+        finally:
+            self.image_release.set()
             firefox_exit.close(browser)
         self.call("stop", {})
         self.proc.wait(timeout=10)

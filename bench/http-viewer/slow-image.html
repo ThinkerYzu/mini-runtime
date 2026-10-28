@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8"><title>Late image loads</title>
+<button id="start">Insert slow images</button>
+<button id="increment">Count while waiting</button><output id="count">0</output>
+<p id="state">idle</p><p id="loaded">pending</p><div id="list"></div>
+<script>
+// (B218) a task that inserts images and changes the page: the change shows while the images load
+const $ = id => document.getElementById(id);
+let count = 0;
+$('increment').onclick = () => $('count').textContent = String(++count);
+$('start').onclick = () => {
+  $('start').disabled = true;
+  const sizes = [];
+  for (let i = 0; i < 3; i++) {
+    const img = document.createElement('img');
+    img.onload = () => { sizes.push(img.naturalWidth + 'x' + img.naturalHeight + ' ' + img.complete); if (sizes.length === 3) $('loaded').textContent = sizes.join(','); };
+    img.onerror = () => $('loaded').textContent = 'error';
+    img.src = '/slow-image.gif?' + i;
+    $('list').append(img);
+  }
+  $('state').textContent = 'inserted';
+};
+</script>

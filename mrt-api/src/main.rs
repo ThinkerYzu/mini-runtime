@@ -110,6 +110,7 @@ fn main() {
                     Some("fetch") => fetch::handle(&req, &mut net, &mut *stores),
                     Some("ws") => ws::handle(&req, &ws_net, &mut sockets, &mut stores),
                     Some("env") => env::handle(&req),
+                    Some("image") if req.get("call").is_some() => fetch_jobs.handle(&req, &shared_stores),
                     Some("image") => image::handle(&req, &mut net, &mut stores),
                     Some("media") => fetch::media(&req, &mut net, &mut stores),
                     Some("idb") => stores.get(&site, &top, ancestor).and_then(|s| databases.entry((site.clone(),top.clone(),ancestor,field("origin"))).or_default().handle(&req,s)),

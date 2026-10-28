@@ -1,9 +1,10 @@
-//! Finite live HTTP fetches whose completion must not block the runtime (B185).
+//! Finite live HTTP fetches whose completion must not block the runtime (B185), and image loads
+//! (op "image", B218), which share their connection limits as Gecko's image loads do.
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use serde_json::{Value, json};
-use crate::{fetch, store::Stores};
+use crate::{fetch, image, store::Stores};
 
 // Workers at once, in all and per host (Firefox's max-persistent-connections-per-server).
 // Starts beyond them wait in a queue, as Firefox's connection manager queues them (B206).
@@ -77,11 +78,15 @@ fn work(queue: Arc<Mutex<Queue>>, first: Request, stores: Arc<Mutex<Stores>>) {
     let mut current = first;
     loop {
         let _ = current.started.set(Instant::now());
-        let result = fetch::live(&current.request, &mut net, &mut shared, Duration::from_secs(120)).map(|mut value| {
-            // Real time passed while the page was running, not virtual replay time.
-            value["took"] = json!(0);
-            value
-        });
+        let result = if current.request["op"] == "image" {
+            image::live(&current.request, &mut net, &mut shared, Duration::from_secs(120))
+        } else {
+            fetch::live(&current.request, &mut net, &mut shared, Duration::from_secs(120)).map(|mut value| {
+                // Real time passed while the page was running, not virtual replay time.
+                value["took"] = json!(0);
+                value
+            })
+        };
         let _ = current.send.send(result);
         let mut queue = queue.lock().unwrap();
         queue.release(&current.host);
@@ -286,6 +291,25 @@ mod tests {
                 break;
             }
         }
+    }
+    #[test]
+    fn image_job_delivers_its_size() {
+        // (B218) an image load as a live job: started and polled as a fetch, answered with the size
+        let stores = Arc::new(Mutex::new(Stores::default()));
+        let mut jobs = Jobs::default();
+        let mut start = request("start");
+        start["op"] = json!("image");
+        start["url"] = json!("data:image/gif;base64,R0lGODlhAwACAIAAAP///wAAACH5BAEAAAAALAAAAAADAAIAAAICjF8AOw==");
+        let id = jobs.handle(&start, &stores).unwrap()["job"].clone();
+        let mut poll = request("poll"); poll["op"] = json!("image"); poll["id"] = id;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let r = loop {
+            let r = jobs.handle(&poll, &stores).unwrap();
+            if r["pending"] != true { break r; }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(r, json!({"ok": true, "width": 3, "height": 2, "ms": 0}));
     }
     #[test]
     fn decoded_response_is_bounded() {

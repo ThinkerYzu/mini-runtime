@@ -941,16 +941,17 @@
   }
   // Live native jobs retain their response past the old five-second cutoff.
   // Poll in timer tasks so input, other APIs and viewer replacement keep running.
-  function receiveResponse(initial, aborted = () => false) {
+  // `op`: the job's kind, "fetch" or "image" (an image load, B218).
+  function receiveResponse(initial, aborted = () => false, op = "fetch") {
     return new Promise((resolve, reject) => {
       const id = initial?.job;
       const poll = () => {
         try {
           if (aborted()) {
-            if (id) bridge("fetch", {call: "cancel", id});
+            if (id) bridge(op, {call: "cancel", id});
             resolve(null); return;
           }
-          const response = id ? bridge("fetch", {call: "poll", id}) : initial;
+          const response = id ? bridge(op, {call: "poll", id}) : initial;
           if (response?.job) { global.__mrt.queueAt(poll, clockNow() + 100); return; }
           // Legacy measuring/privileged bridge long polls still have no late delivery.
           if (response?.pending) return;
@@ -7828,8 +7829,18 @@
         const entry = __mrtBlobURL(2, url, global.origin, true, clockNow());
         if (entry) Object.assign(ask, { bodyBase64: toBase64(entry[0]), type: entry[1] });
       }
+      // A network image loads while the page runs (B218): a live job of the API process, polled
+      // in timer tasks, as Gecko's image loads do not hold the task that started them.
+      if (env.imageAsync && !isBlobURL(url)) ask.call = "start";
       r = isBlobURL(url) && !ask.bodyBase64 ? { ok: false, ms: 0 } : bridge("image", ask);
     } catch (e) { r = { ok: false, ms: 0 }; }
+    if (r && r.job) {
+      // (a request replaced meanwhile is cancelled at its next poll)
+      receiveResponse(r, () => st.current !== request && st.pending !== request, "image")
+        .then(response => { if (response) finishImage(el, st, request, response); }, () => finishImage(el, st, request, { ok: false }))
+        .finally(unblock);
+      return;
+    }
     // still loading in Firefox (mini_realsites.py PENDING_MS): it stays loading, no event
     if (r && r.pending) { unblock(); return; }
     afterNetwork(r, () => { try { finishImage(el, st, request, r); } finally { unblock(); } });

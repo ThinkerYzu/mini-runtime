@@ -435,6 +435,20 @@ fn svg_size(bytes: &[u8], mime: &str) -> Option<(u32, u32)> {
 }
 
 pub fn handle(req: &Value, net: &mut fetch::Net, stores: &mut Stores) -> Result<Value, String> {
+    load(req, |request| fetch::image(request, net, stores))
+}
+
+/// `handle` for a live job (fetch_jobs, B218): the image loads on a worker while the page runs,
+/// as Gecko's image loads do; the reply's `ms` is 0, since real time passed meanwhile.
+pub fn live(req: &Value, net: &mut fetch::Net, stores: &mut impl fetch::CookieStores, timeout: std::time::Duration) -> Result<Value, String> {
+    let mut reply = load(req, |request| fetch::image_live(request, net, stores, timeout))?;
+    reply["ms"] = json!(0);
+    Ok(reply)
+}
+
+/// An image request's reply ({ok, width, height, ms}, or the fetch's pending reply): its bytes from
+/// the runtime (a blob: URL) or from `get` (the network), and the size their header gives.
+fn load(req: &Value, get: impl FnOnce(&Value) -> Result<Value, String>) -> Result<Value, String> {
     let started = Instant::now();
     let mut ms = 0.0;
     let mime;
@@ -465,7 +479,7 @@ pub fn handle(req: &Value, net: &mut fetch::Net, stores: &mut Stores) -> Result<
             "accept",
             "image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"
         ]]);
-        let response = match fetch::image(&request, net, stores) {
+        let response = match get(&request) {
             Ok(response) => response,
             Err(_) => {
                 return Ok(

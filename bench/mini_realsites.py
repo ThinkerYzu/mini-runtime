@@ -2295,6 +2295,8 @@ def run(name, url):
             if frames.viewer:
                 reply["ok"]["httpViewer"] = True
                 reply["ok"]["fetchAsync"] = "fetch" in API_ROUTED
+                # (B218) images load in live jobs of the API process, as the page's fetches do
+                reply["ok"]["imageAsync"] = "image" in API_ROUTED and "fetch" in API_ROUTED
                 reply["ok"]["mediaReplayUnlimited"] = os.environ.get("VIEWER_MEDIA_REPLAY_UNLIMITED") == "1"
             if API_ENV_CHECK and not frames.dropped:
                 frames.use(rt, req.get("ctx"))
@@ -2402,9 +2404,10 @@ def run(name, url):
                     log_fetch(rt, req, reply)
                 elif req["op"] == "ws" and req.get("call") == "open":
                     log_ws(rt, req, reply)
-                elif req["op"] == "image":
+                elif req["op"] == "image" and req.get("call") != "cancel" and not (reply.get("ok") or {}).get("pending"):
+                    # (B218: a live job's start and its unfinished polls are not logged; its last poll is, without a URL)
                     ok = reply.get("ok") or {}
-                    rt.fetches.write(json.dumps({"t": req.get("t"), "method": "IMAGE", "url": req["url"], "ok": ok.get("ok"),
+                    rt.fetches.write(json.dumps({"t": req.get("t"), "method": "IMAGE", "url": req.get("url"), "job": req.get("id"), "ok": ok.get("ok"),
                                                  "size": [ok.get("width"), ok.get("height")], "ms": ok.get("ms"), "err": reply.get("err")}) + "\n")
                 return reply
             if req["op"] == "bridgeDrop":
