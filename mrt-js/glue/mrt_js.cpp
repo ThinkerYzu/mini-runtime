@@ -33,6 +33,7 @@
 #include <js/String.h>
 #include <js/TracingAPI.h>
 #include <js/experimental/TypedData.h>
+#include <js/experimental/JSStencil.h>
 
 #include <malloc.h>
 #include <algorithm>
@@ -426,6 +427,10 @@ struct MrtJs {
   std::vector<FrameWindow> windows;
   // The JS half of the bindings, evaluated in every window (Page::with_global, Page::load_bridge).
   std::string preludeSource, bridgeSource;
+  // Each compiled once for the frame windows (task dcb24: compiling both for every new <iframe> took
+  // ~50 ms, and Google Images inserts one around its clicks), as Gecko shares its own scripts'
+  // stencils between globals; dropped by mrt_js_shrink_gc, as memory pressure would.
+  RefPtr<JS::Stencil> preludeStencil, bridgeStencil;
   // a dedicated worker's context (mrt_js_new_worker), not a page's
   bool worker = false;
   // The nodes the document's parser put into the tree since its last stop (mrt_js_parser_inserted),
@@ -6254,6 +6259,28 @@ static void ReportPending(MrtJs* js);
 
 void mrt_js_set_window_script(MrtJs* js, int32_t which, const char* src, size_t len) {
   (which == 0 ? js->preludeSource : js->bridgeSource).assign(src, len);
+  (which == 0 ? js->preludeStencil : js->bridgeStencil) = nullptr;
+}
+
+// Evaluate the window script `src` in the current realm from its stencil in `aStencil`, compiled
+// at the first use; what it throws is reported.
+static bool EvaluateWindowScript(JSContext* cx, const std::string& src, const char* filename, RefPtr<JS::Stencil>& aStencil) {
+  if (src.empty()) return true;
+  JS::CompileOptions options(cx);
+  options.setFileAndLine(filename, 1);
+  if (!aStencil) {
+    JS::SourceText<mozilla::Utf8Unit> text;
+    if (text.init(cx, src.data(), src.size(), JS::SourceOwnership::Borrowed)) aStencil = JS::CompileGlobalScriptToStencil(cx, options, text);
+  }
+  JS::RootedValue rval(cx);
+  JS::InstantiateOptions instantiate(options);
+  JS::RootedScript script(cx, aStencil ? JS::InstantiateGlobalStencil(cx, instantiate, aStencil, nullptr) : nullptr);
+  if (!script || !JS_ExecuteScript(cx, script, &rval)) {
+    tJs->errors++;
+    ReportPending(tJs);
+    return false;
+  }
+  return true;
 }
 
 // Evaluate `src` in the current realm, reporting what it throws.
@@ -6339,8 +6366,8 @@ static JSObject* CreateWindowGlobal(JSContext* cx, uint32_t aFrame, uint32_t aDo
       !JS_DefineProperty(cx, global, "__mrtShared", shared, 0)) {
     return nullptr;
   }
-  EvaluateInWindow(cx, js->preludeSource, "prelude.js");
-  EvaluateInWindow(cx, js->bridgeSource, "bridge.js");
+  EvaluateWindowScript(cx, js->preludeSource, "prelude.js", js->preludeStencil);
+  EvaluateWindowScript(cx, js->bridgeSource, "bridge.js", js->bridgeStencil);
   return global;
 }
 
@@ -7030,6 +7057,8 @@ size_t mrt_js_idle_gc(MrtJs* js) {
 // compressions, so that it holds the page for the GC only. It decommits the free arenas, which a
 // normal GC skips while GCs come often (GCRuntime::shouldDecommit).
 void mrt_js_shrink_gc(MrtJs* js) {
+  js->preludeStencil = nullptr;
+  js->bridgeStencil = nullptr;
   JS::PrepareForFullGC(js->cx);
   JS::NonIncrementalGC(js->cx, JS::GCOptions::Shrink, JS::GCReason::API);
 }

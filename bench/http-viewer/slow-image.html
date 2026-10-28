@@ -2,6 +2,7 @@
 <meta charset="utf-8"><title>Late image loads and beacons</title>
 <button id="start">Insert slow images and send a beacon</button>
 <button id="increment">Count while waiting</button><output id="count">0</output>
+<button id="detach">Load a detached image</button><button id="insert">Insert it</button><p id="detached">none</p>
 <p id="state">idle</p><p id="beacon">unsent</p><p id="loaded">pending</p><div id="list"></div>
 <script>
 // (B218) a task that inserts images and changes the page: the change shows while the images load;
@@ -22,4 +23,12 @@ $('start').onclick = () => {
   $('beacon').textContent = String(navigator.sendBeacon('/slow-beacon', 'ping'));
   $('state').textContent = 'inserted';
 };
+// (B222) an image loaded outside the document, inserted later: the viewer loads it as the page asks
+let detached = null;
+$('detach').onclick = () => {
+  detached = new Image();
+  detached.onload = () => $('detached').textContent = 'loaded';
+  detached.src = '/detached-image.gif';
+};
+$('insert').onclick = () => { $('list').append(detached); $('detached').textContent = 'inserted'; };
 </script>

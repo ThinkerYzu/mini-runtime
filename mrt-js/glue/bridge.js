@@ -7870,6 +7870,11 @@
   };
   // The image task (ImageLoadTask::Run, LoadSelectedImage). `force`: a src set by script, which loads
   // again even the URL it has (AfterMaybeChangeAttr); without it a src already loading or loaded stays
+  // Network images the page loads outside its document, for the viewer to load too (B222): Google
+  // Images sets the full-size image's src on a detached <img> and inserts it once it has loaded;
+  // Firefox shows it from its image cache then, the viewer's browser had not even asked for it.
+  // ([url, crossorigin, referrerpolicy], taken by the next mirror flush; the top window's only)
+  const viewerPreloads = [];
   function runImageTask(el, force) {
     const st = imageState(el);
     st.task = false;
@@ -7919,6 +7924,8 @@
       // in timer tasks, as Gecko's image loads do not hold the task that started them.
       if (env.imageAsync && !isBlobURL(url)) ask.call = "start";
       r = isBlobURL(url) && !ask.bodyBase64 ? { ok: false, ms: 0 } : bridge("image", ask);
+      if (r && r.job && !el.isConnected && !isFrameWindow && env.httpViewer && mirror.on && viewerPreloads.length < 64)
+        viewerPreloads.push([url, ask.crossOrigin, ask.referrerPolicy]);
     } catch (e) { r = { ok: false, ms: 0 }; }
     if (r && r.job) {
       // (a request replaced meanwhile is cancelled at its next poll)
@@ -9356,6 +9363,7 @@
       const el = global.document.activeElement, id = el === global.document.body ? 0 : mirror.ids.get(el);
       if (id === 0 || (id && mirror.sent.has(el))) { focus.sent = focus.seq; ops.push(["focus", id, focus.seq]); }
     }
+    for (const [url, crossOrigin, referrerPolicy] of viewerPreloads.splice(0)) ops.push(["img", url, crossOrigin, referrerPolicy]);
     // what the page asked of its media, once their elements are in the copy
     mediaLink.flush(ops);
     if (env.httpViewer) mediaResources.flush();

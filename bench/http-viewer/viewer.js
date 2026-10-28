@@ -461,6 +461,20 @@ function restoreEditableSelection(doc, saved) {
   if (sel.anchorNode !== a[0] || sel.anchorOffset !== a[1] || sel.focusNode !== f[0] || sel.focusOffset !== f[1])
     sel.setBaseAndExtent(...a, ...f);
 }
+// Images the page loads outside its document (["img", url, crossorigin, referrerpolicy], B222):
+// loaded and decoded here too, so that the element shows at once when the page inserts it, from
+// this browser's image cache, as it does in Firefox. The last 32 are kept.
+const preloads = new Map();
+function preload(doc, url, crossOrigin, referrerPolicy) {
+  if (preloads.has(url) || !doc.defaultView) return;
+  const img = new doc.defaultView.Image();
+  if (crossOrigin !== null && crossOrigin !== undefined) img.crossOrigin = crossOrigin;
+  if (referrerPolicy) img.referrerPolicy = referrerPolicy;
+  img.src = url;
+  img.decode().catch(() => {});
+  preloads.set(url, img);
+  if (preloads.size > 32) preloads.delete(preloads.keys().next().value);
+}
 function apply(batch) {
   const doc = frame.contentDocument, win = frame.contentWindow;
   const caret = batch.snapshot ? null : editableSelection(doc);
@@ -484,6 +498,7 @@ function apply(batch) {
     if (kind === "adopted") { adoptedStyle(doc, id); continue; }
     if (kind === "scroll") { scrollSeq = id; holdScroll(arg, fourth); continue; }
     if (kind === "m") { media?.apply(id); continue; }
+    if (kind === "img") { preload(doc, id, arg, fourth); continue; }
     if (kind === "focus") { focusSeq = arg; focusWanted = id ? nodes.get(id) ?? null : null; pageFocus(); continue; }
     const node = nodes.get(id);
     if (!node) throw new Error("Unknown mirror node " + id);

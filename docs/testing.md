@@ -21,7 +21,7 @@ python3 bench/test_http_viewer.py
 
 The launcher suite covers URL validation, launch from another working directory, inherited benchmark-setting isolation, native profile persistence/isolation, profile locking and clean termination. It uses local HTTP and Python `-S` without a browser or recording.
 
-The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 72 cases: 44 run without a browser and 28 require `VIEWER_BROWSER=1`. Browser cases load the viewer with its default transport (WebSocket, falling back to long polling); `VIEWER_TRANSPORT=poll` or `ws` runs them on one transport only. Run the browser cases on both `poll` and the default. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
+The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 75 cases: 46 run without a browser and 29 require `VIEWER_BROWSER=1`. Browser cases load the viewer with its default transport (WebSocket, falling back to long polling); `VIEWER_TRANSPORT=poll` or `ws` runs them on one transport only. Run the browser cases on both `poll` and the default. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
 
 ```sh
 VIEWER_BROWSER=1 FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python \
@@ -44,6 +44,7 @@ This local fixture checks redirect ownership independently of Google's traffic v
 | `Runtime.test_browser_document_input` | Controlled textarea input and consecutive submissions. |
 | `Runtime.test_browser_slow_fetch` | Slow binary fetch/XHR, responsive input, cookies, errors, abort/reuse and reconnect. |
 | `Runtime.test_browser_slow_image` | Images and a beacon loading as live jobs: the inserting task's change reaches the copy and input is taken while the image responses and the beacon are held; `sendBeacon` returns true at once; load events with the size once they arrive. |
+| `Runtime.test_browser_detached_image` | An image the page loads outside its document: the viewer's browser requests it before the page inserts it, once, and the inserted copy is complete. |
 | `Runtime.test_fragment_scroll` | No browser required: initial fragments, ID/name lookup, encoded/literal targets, repeat clicks, top/empty/missing targets, cancellation, history restoration and manual mode. |
 | `Runtime.test_browser_fragment_scroll` | Reference Firefox comparison, actual viewer link clicks, target scrolling and reconnect preservation. |
 | `Runtime.test_navigation_startup_redirects` | No browser required: immediate redirect chains, replace history, session storage, referrers, activation headers, failed successors and process cleanup. |

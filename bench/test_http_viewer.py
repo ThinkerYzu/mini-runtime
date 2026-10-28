@@ -1165,6 +1165,8 @@ class Runtime(unittest.TestCase):
         # (B222) and its beacon to /slow-beacon waits for beacon_release
         self.beacon_requested = threading.Event()
         self.beacon_release = threading.Event()
+        # (B222) who asked for detached-image.gif, in order: "runtime" or "viewer"
+        self.detached_requests = []
 
         class Quiet(http.server.SimpleHTTPRequestHandler):
             def navigation(self, body=b""):
@@ -1280,6 +1282,14 @@ class Runtime(unittest.TestCase):
                     try: self.wfile.write(gif)
                     except (BrokenPipeError, ConnectionResetError): pass
                     return
+                if self.path == "/detached-image.gif":
+                    runtime.detached_requests.append("runtime" if "MiniRuntime/" in self.headers.get("User-Agent", "") else "viewer")
+                    gif = base64.b64decode("R0lGODlhAwACAIAAAP///wAAACH5BAEAAAAALAAAAAADAAIAAAICjF8AOw==")
+                    self.send_response(200); self.send_header("Content-Type", "image/gif"); self.send_header("Cache-Control", "max-age=60")
+                    self.send_header("Content-Length", str(len(gif))); self.end_headers()
+                    try: self.wfile.write(gif)
+                    except (BrokenPipeError, ConnectionResetError): pass
+                    return
                 if self.path == "/fast-reply":
                     self.send_response(200); self.send_header("Content-Length", "4"); self.end_headers()
                     self.wfile.write(b"fast"); return
@@ -1312,7 +1322,7 @@ class Runtime(unittest.TestCase):
             page = "shadow-adopted.html"
         if self._testMethodName == "test_browser_slow_fetch":
             page = "slow-fetch.html"
-        if self._testMethodName == "test_browser_slow_image":
+        if self._testMethodName in ("test_browser_slow_image", "test_browser_detached_image"):
             page = "slow-image.html"
         if self._testMethodName == "test_browser_svg_search":
             source, page = HERE / "bridge-cases", "svg-element.html"
@@ -1982,6 +1992,34 @@ class Runtime(unittest.TestCase):
         self.assertEqual(result["js_errors"], 0, result)
         self.assertFalse(result["unsupported_ops"], result)
         self.assertEqual(result["bridge_tab"], {"made": False})
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_detached_image(self):
+        """(B222) An image the page loads outside its document: the viewer's browser loads it too
+        before the page inserts it (Google Images inserts its full-size image once loaded), so the
+        copy shows it at once from that browser's cache."""
+        from marionette_driver.marionette import Marionette
+        import firefox_exit
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        browser.start_session()
+        try:
+            browser.set_context("content"); browser.navigate(self.viewer_url)
+            self.until(lambda: browser.execute_script('return document.getElementById("status").textContent.startsWith("Connected")'))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            browser.find_element("id", "detach").click()
+            self.until(lambda: browser.execute_script('return document.getElementById("detached").textContent === "loaded"'), timeout=5)
+            self.until(lambda: "viewer" in self.detached_requests, timeout=3)
+            self.assertEqual(browser.execute_script('return document.getElementById("detached").textContent'), "loaded")
+            browser.find_element("id", "insert").click()
+            self.until(lambda: browser.execute_script('const i = document.querySelector("#list img"); return !!i && i.complete && i.naturalWidth === 3'), timeout=5)
+            self.assertEqual(self.detached_requests.count("viewer"), 1, self.detached_requests)
+        finally:
+            firefox_exit.close(browser)
+        self.call("stop", {})
+        self.proc.wait(timeout=10)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual(result["js_errors"], 0, result)
 
     @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_document_input(self):

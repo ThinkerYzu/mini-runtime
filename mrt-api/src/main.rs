@@ -100,6 +100,18 @@ fn main() {
                 // a window whose site is the top-level site's but which has another site's frame
                 // above it (the driver's `ancestor`): Gecko's partition key with the foreign-ancestor bit
                 let ancestor = req.get("ancestor").and_then(Value::as_bool).unwrap_or(false);
+                // A live job's poll or cancel reads only the job table (B222): it does not wait for
+                // the stores, which a fetch worker may hold while it opens a partition's store or
+                // writes the cookies a response set; the page's thread waits on this answer.
+                let op = req.get("op").and_then(Value::as_str);
+                if matches!(op, Some("fetch" | "image")) && matches!(req.get("call").and_then(Value::as_str), Some("poll" | "cancel")) {
+                    let r = fetch_jobs.handle(&req, &shared_stores).map(|mut value| { value.sort_all_objects(); value });
+                    let reply = match r { Ok(v) => json!({ "ok": v }), Err(e) => json!({ "err": e }) };
+                    if writeln!(out, "{}", surrogates::write_line(reply.to_string())).and_then(|_| out.flush()).is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 let mut stores = shared_stores.lock().unwrap();
                 // the cookies a WebSocket's handshake set since the last request
                 sockets.take_cookies(&mut stores);

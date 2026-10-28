@@ -198,6 +198,17 @@ struct PresShell {
     boxes_element_scroll: u64,
     /// The size each frame element of the document gives its own document, from the last flush.
     subdocument_sizes: HashMap<NodeId, (i32, i32)>,
+    /// The offset rectangles and computed values read since the flush `boxes` is for, kept and
+    /// dropped with them (task dcb24: one of Google Images' tasks reads ~1600 of them, each a round
+    /// trip to the layout thread, with nothing changed in between).
+    reads: LayoutReads,
+}
+
+/// See `PresShell::reads`.
+#[derive(Default)]
+struct LayoutReads {
+    offsets: HashMap<NodeId, Option<(NodeId, [i32; 4])>>,
+    computed: HashMap<(NodeId, Option<mrt_style::style::selector_parser::PseudoElement>, String), String>,
 }
 
 impl PresShell {
@@ -213,6 +224,7 @@ impl PresShell {
             boxes: None,
             boxes_complete: false,
             boxes_scroll: (0, 0),
+            reads: LayoutReads::default(),
             boxes_element_scroll: 0,
             subdocument_sizes: HashMap::new(),
         }
@@ -308,6 +320,7 @@ impl Host {
             shell.restyle.reset(HashMap::new(), Default::default());
             shell.frame_ops.clear();
             shell.boxes = None;
+            shell.reads = LayoutReads::default();
         }
     }
 
@@ -362,6 +375,7 @@ impl Host {
     pub fn drop_layout_cache(&mut self) {
         for shell in self.shells.values_mut() {
             shell.boxes = None;
+            shell.reads = LayoutReads::default();
         }
     }
 
@@ -661,6 +675,7 @@ impl Host {
                 }
             };
             shell.boxes = Some((self.generation, Some(viewport), HashMap::new()));
+            shell.reads = LayoutReads::default();
             shell.boxes_scroll = scroll;
             shell.boxes_element_scroll = self.element_scroll_generation;
             shell.subdocument_sizes = subdocuments;
@@ -799,11 +814,19 @@ impl Host {
         if !self.flush_document(doc) {
             return String::new();
         }
+        let key = (node, pseudo.clone(), name.to_string());
+        if let Some(v) = self.shells[&doc].reads.computed.get(&key) {
+            return v.clone();
+        }
         let Some(thread) = &self.shells[&doc].layout_thread else {
             return String::new();
         };
         let (dom, value) = thread.computed_value(std::mem::take(&mut self.dom), node, pseudo, name);
         self.dom = dom;
+        let shell = self.shells.get_mut(&doc).unwrap();
+        if shell.boxes.is_some() {
+            shell.reads.computed.insert(key, value.clone());
+        }
         value
     }
 
@@ -1063,9 +1086,16 @@ impl Host {
         if !self.flush_document(doc) {
             return None;
         }
+        if let Some(o) = self.shells[&doc].reads.offsets.get(&node) {
+            return *o;
+        }
         let thread = self.shells[&doc].layout_thread.as_ref()?;
         let (dom, offsets) = thread.offset_rect(std::mem::take(&mut self.dom), node);
         self.dom = dom;
+        let shell = self.shells.get_mut(&doc).unwrap();
+        if shell.boxes.is_some() {
+            shell.reads.offsets.insert(node, offsets);
+        }
         offsets
     }
 }
