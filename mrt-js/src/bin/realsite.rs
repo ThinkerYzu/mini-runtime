@@ -404,9 +404,12 @@ struct LoopProfile {
     wait_ms: f64,
     upkeep_ms: f64,
     by_timer: Option<HashMap<String, (usize, f64)>>,
-    /// MRT_LOOP_TRACE=1: on stderr, each task over 30 ms, each flush over 30 ms or that sent the tab something, each wait answer with the owner's
+    /// MRT_LOOP_TRACE=1: on stderr, each task over 30 ms (MRT_LOOP_TRACE_MS), each flush over 30 ms or that sent the tab something, each wait
+    /// that long, each wait answer with the owner's
     /// input, and each input task with how long after its input's arrival it ran (task 0f15b)
     trace: Option<Instant>,
+    /// MRT_LOOP_TRACE_MS: the task, flush and wait length traced (default 30 ms)
+    trace_ms: f64,
 }
 
 impl LoopProfile {
@@ -434,6 +437,7 @@ impl LoopProfile {
             upkeep_ms: 0.0,
             by_timer,
             trace: trace.then(Instant::now),
+            trace_ms: std::env::var("MRT_LOOP_TRACE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30.0),
         }
     }
 
@@ -458,7 +462,7 @@ impl LoopProfile {
         if let Some(since) = self.trace {
             let key = page.eval_string("__mrt.lastTimerKey()", "driver");
             let late = page.eval_number("__mrt.lastTimerLate()", "driver");
-            if ms > 30.0 || key.contains("inputGroups") {
+            if ms > self.trace_ms || key.contains("inputGroups") {
                 // what of the task was layout and bridge; the rest is the page's scripts and the DOM
                 let tt = mrt_js::take_task_times();
                 let split = format!(
@@ -483,7 +487,7 @@ impl LoopProfile {
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         // (each flush that sends the tab something, to tell an update's wait for its flush from the
         // flush itself, task 9caa0)
-        if let Some(since) = self.trace.filter(|_| ms > 30.0 || ops > 0.0) {
+        if let Some(since) = self.trace.filter(|_| ms > self.trace_ms || ops > 0.0) {
             eprintln!("trace {:.0}: flush {ms:.0} ms, {ops} ops", since.elapsed().as_secs_f64() * 1000.0);
         }
         self.mirror_flushes += 1;
@@ -497,7 +501,11 @@ impl LoopProfile {
     fn wait<T>(&mut self, f: impl FnOnce() -> T) -> T {
         let t = Instant::now();
         let r = f();
-        self.wait_ms += t.elapsed().as_secs_f64() * 1000.0;
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        self.wait_ms += ms;
+        if let Some(since) = self.trace.filter(|_| ms > self.trace_ms) {
+            eprintln!("trace {:.0}: wait {ms:.0} ms", since.elapsed().as_secs_f64() * 1000.0);
+        }
         r
     }
 

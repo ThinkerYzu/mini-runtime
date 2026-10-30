@@ -574,11 +574,15 @@ impl Net {
         let status = resp.status().as_u16();
         let raw: Vec<(String, String)> =
             resp.headers().iter().map(|(k, v)| (k.as_str().to_ascii_lowercase(), latin1(v.as_bytes()))).collect();
+        let head_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let mut body = Vec::new();
         if method != "HEAD" && !matches!(status, 204 | 304) {
             body = resp.into_body().with_config().limit(limit).read_to_vec().map_err(fail)?;
         }
         let measured = t0.elapsed().as_secs_f64() * 1000.0;
+        if std::env::var_os("MRT_NET_TRACE").is_some() {
+            eprintln!("net-trace {method} {} status {status} head {head_ms:.0} ms total {measured:.0} ms bytes {}", &url.as_str()[..url.as_str().len().min(90)], body.len());
+        }
         let ms = header(&raw, RECORDED_MS).and_then(|v| v.trim().parse::<f64>().ok()).map(|v| v.max(0.0)).unwrap_or(measured);
         Ok(Answer { status, headers: raw, body, ms })
     }

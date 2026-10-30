@@ -2299,6 +2299,8 @@ servo_pref = "layout.unimplemented"
 animation_type = "discrete"
 spec = "https://drafts.csswg.org/css-view-transitions-2/#view-transition-class-prop"
 affects = ""
+# mini runtime: Gecko's nsStyleUIReset::CalcDifference gives no reflow (RepaintFrame, NeutralChange)
+servo_restyle_damage = "repaint"
 
 [view-transition-name]
 type = "ViewTransitionName"
@@ -2308,6 +2310,8 @@ servo_pref = "layout.unimplemented"
 animation_type = "discrete"
 spec = "https://drafts.csswg.org/css-view-transitions-1/#view-transition-name-prop"
 affects = ""
+# mini runtime: Gecko's nsStyleUIReset::CalcDifference gives no reflow (RepaintFrame, NeutralChange)
+servo_restyle_damage = "repaint"
 
 [vector-effect]
 type = "VectorEffect"

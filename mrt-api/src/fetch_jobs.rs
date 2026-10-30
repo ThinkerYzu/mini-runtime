@@ -33,6 +33,7 @@ struct Request {
     host: String,
     request: Value,
     started: Arc<OnceLock<Instant>>,
+    queued: Instant,
     send: mpsc::Sender<Answer>,
 }
 #[derive(Default)]
@@ -79,6 +80,9 @@ fn work(queue: Arc<Mutex<Queue>>, first: Request, stores: Arc<Mutex<Stores>>, mu
     let mut current = first;
     loop {
         let _ = current.started.set(Instant::now());
+        if std::env::var_os("MRT_NET_TRACE").is_some() {
+            eprintln!("net-trace job {} {} waited {:.0} ms", current.request["op"], &current.request["url"].as_str().unwrap_or("")[..current.request["url"].as_str().unwrap_or("").len().min(90)], current.queued.elapsed().as_secs_f64() * 1000.0);
+        }
         let result = if current.request["op"] == "image" {
             image::live(&current.request, &mut net, &mut shared, Duration::from_secs(120))
         } else {
@@ -117,7 +121,7 @@ impl Jobs {
                 };
                 let (send, answer) = mpsc::channel();
                 let started = Arc::new(OnceLock::new());
-                let request = Request { id: id.clone(), host: host(req), request: req.clone(), started: started.clone(), send };
+                let request = Request { id: id.clone(), host: host(req), request: req.clone(), started: started.clone(), queued: Instant::now(), send };
                 let mut queue = self.queue.lock().unwrap();
                 if queue.has_room(&request.host) {
                     queue.take(&request);

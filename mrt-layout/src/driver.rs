@@ -225,6 +225,12 @@ impl PresShellFrames {
         self.mFrameConstructor.ReleaseDestroyedFrames();
     }
 
+    /// An element restyled with no layout change gets its new style on the frames it has; false when
+    /// it must be reframed instead (see nsCSSFrameConstructor::RestyleFramesInPlace).
+    pub fn RestyleFramesInPlace(&mut self, aContent: NodeId) -> bool {
+        self.mFrameConstructor.RestyleFramesInPlace(aContent)
+    }
+
     /// The text of a text node changed (Gecko: PresShell::CharacterDataChanged).
     pub fn CharacterDataChanged(&mut self, aContent: NodeId) {
         self.NoteNewText(aContent);

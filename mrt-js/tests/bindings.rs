@@ -259,6 +259,71 @@ const CASES: &[(&str, &str, &[&str])] = &[
         &["40 40px 10", "40 40px 10", "40 40px 10", "80 80px 10", "120 120px 10", "120 120px 30", "120 120px 30"],
     ),
     (
+        // restyles that need no layout keep the frames and give them the new style (task 8facd; the
+        // hit test is bridge.js elementFromPoint's, not defined here):
+        // z-index, pointer-events and visibility as hit testing sees them, also on the text frames
+        // inside, a sheet that restyles everything, the root's view-transition-name (a repaint in Gecko), and
+        // the boxes unchanged throughout
+        "restyles without layout change keep the frames",
+        r##"<style>#a,#b{position:absolute;left:0;top:0;width:100px;height:50px} .up{z-index:2} .np{pointer-events:none} .hid{visibility:hidden}</style><div id=a style="z-index:1">a text</div><div id=b>b</div><script>
+        try {
+        const a = document.getElementById("a"), b = document.getElementById("b");
+        const at = () => { const e = __mrtNodesFromPoint(document, 10, 10, false)[0]; return (e ? e.id || e.tagName : "null") + " " + a.getBoundingClientRect().width + " " + b.offsetHeight; };
+        console.log(at());
+        b.className = "up"; console.log(at());
+        b.classList.add("np"); console.log(at());
+        a.classList.add("hid"); console.log(at());
+        const s = document.createElement("style");
+        s.textContent = ":root { --x: 1 } div { color: green }";
+        document.head.appendChild(s);
+        console.log(at());
+        a.classList.remove("hid"); console.log(at());
+        a.style.zIndex = "3"; b.classList.remove("np"); console.log(at());
+        document.documentElement.style.viewTransitionName = "none"; console.log(at());
+        document.documentElement.style.viewTransitionName = ""; console.log(at());
+        } catch (e) { console.log("ERR " + e + " " + e.stack); }
+        </script>"##,
+        &["a 100 50", "b 100 50", "a 100 50", "HTML 100 50", "HTML 100 50", "a 100 50", "a 100 50", "a 100 50", "a 100 50"],
+    ),
+    (
+        // the same through an {ib} split: an inline with a block inside, its parts restyled in place
+        "restyles without layout change in an inline with a block inside",
+        r##"<style>.hid{pointer-events:none} .c{color:red}</style><span id=s>t<div id=d style="height:20px">block</div>u</span><script>
+        const s = document.getElementById("s"), d = document.getElementById("d");
+        const at = () => { const r = d.getBoundingClientRect(), e = __mrtNodesFromPoint(document, r.left + 5, r.top + 10, false)[0]; return (e ? e.id || e.tagName : "null") + " " + r.height; };
+        console.log(at());
+        s.className = "c"; console.log(at());
+        s.className = "hid"; console.log(at());
+        s.className = ""; console.log(at());
+        </script>"##,
+        &["d 20", "d 20", "BODY 20", "d 20"],
+    ),
+    (
+        // and through generated content: a ::before's frames and its text restyled in place
+        "restyles without layout change of a ::before",
+        r##"<style>#g::before{content:"before text"} .hid{pointer-events:none} .c::before{color:red}</style><div id=g></div><script>
+        const g = document.getElementById("g");
+        const at = () => { const r = g.getBoundingClientRect(), e = __mrtNodesFromPoint(document, r.left + 5, r.top + 5, false)[0]; return (e ? e.id || e.tagName : "null") + " " + (r.height > 0); };
+        console.log(at());
+        g.className = "c"; console.log(at());
+        g.className = "c hid"; console.log(at());
+        g.className = ""; console.log(at());
+        </script>"##,
+        &["g true", "g true", "BODY true", "g true"],
+    ),
+    (
+        // and on a frame that stands in for a class not ported (a form control made inline-block)
+        "restyles without layout change of a form control",
+        r##"<style>.hid{pointer-events:none}</style><input id=m><script>
+        const m = document.getElementById("m");
+        const at = () => { const r = m.getBoundingClientRect(), e = __mrtNodesFromPoint(document, r.left + 3, r.top + 3, false)[0]; return (e ? e.id || e.tagName : "null") + " " + (r.width > 0); };
+        console.log(at());
+        m.className = "hid"; console.log(at());
+        m.className = ""; console.log(at());
+        </script>"##,
+        &["m true", "BODY true", "m true"],
+    ),
+    (
         // class and id selectors compared with the attribute's text (task 9caa0): exact in a
         // standards-mode document, ASCII case-insensitive in a quirks-mode one (a DOMParser document
         // without a doctype), through querySelectorAll, querySelector, matches and closest

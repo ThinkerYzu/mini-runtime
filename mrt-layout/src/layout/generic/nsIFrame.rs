@@ -1837,6 +1837,11 @@ impl nsIFrame {
         self.with_mut(|d| d.mHasPaddingChange = aHasPaddingChange)
     }
 
+    // Gecko: layout/generic/nsIFrame.h nsIFrame::SetComputedStyleWithoutNotification
+    pub fn SetComputedStyleWithoutNotification(&self, aStyle: ServoArc<ComputedValues>) {
+        self.with_mut(|d| d.mStyle = Some(aStyle));
+    }
+
     // Gecko: layout/generic/nsIFrame.h nsIFrame::Style
     pub fn Style(&self) -> ServoArc<ComputedValues> {
         self.with(|d| d.mStyle.clone()).expect("frame without a style")

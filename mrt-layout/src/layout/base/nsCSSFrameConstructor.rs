@@ -5433,6 +5433,181 @@ impl nsCSSFrameConstructor {
         true
     }
 
+    /// Gives the frames of an element whose new style needs no layout (Stylo's damage of repaint or
+    /// stacking-context bits only) that style in place, as Gecko's RestyleManager does for a change
+    /// hint without nsChangeHint_ReconstructFrame or reflow hints (ProcessPostTraversal:
+    /// SetComputedStyle on the primary frame, its continuations and the anonymous boxes and text
+    /// frames it owns, UpdateStyleOfOwnedAnonBoxes). Returns false, changing nothing, when the frames
+    /// are not of a kind handled here; the caller reframes the element then.
+    ///
+    /// ADAPTER (task 8facd): the port had no in-place restyle and reframed every restyled element, so
+    /// a sheet that restyled the whole document (Google inserts <style> elements around its clicks)
+    /// rebuilt and reflowed all its frames. A frame other than the element's own (text, anonymous
+    /// boxes, placeholders) gets its style made again from its parent's new style, but only when its
+    /// old style is what that would have made from the parent's old style. The parts of an {ib} split
+    /// and the element's ::before/::after (with their text) are covered too; any other frame, or a
+    /// derived style that does not match, falls back to reframing.
+    pub fn RestyleFramesInPlace(&mut self, aContent: ContentId) -> bool {
+        if aContent >= kGeneratedContentBase || !self.IsElement(aContent) {
+            return false;
+        }
+        let Some(newStyle) = self.ResolveComputedStyle(aContent) else { return false };
+        let Some(primary) = self.GetPrimaryFrame(aContent) else {
+            // no frame: display: none, unless display: contents left frames to its children
+            return newStyle.get_box().display != StyleDisplayValue::Contents;
+        };
+        let oldStyle = primary.Style();
+        // the element's own frames: the first of each part of an {ib} split (CreateIBSiblings: the
+        // inlines have the element's style, the anonymous blocks between them an anonymous block style
+        // of it), whose continuations follow
+        let mut parts = vec![primary];
+        if primary.HasAnyStateBits(NS_FRAME_PART_OF_IBSPLIT) {
+            let mut part = primary;
+            while let Some(next) = part.FirstContinuation().GetProperty(nsIFrame::IBSplitSibling()) {
+                if parts.contains(&next) {
+                    return false;
+                }
+                parts.push(next);
+                part = next;
+            }
+        }
+        // The element's own style on its frames: the new one, or for a frame that stands in for a class
+        // not ported (ConstructAsBlockWithDisplay, the replaced and form control stubs) the new one
+        // with the display that frame was made with (StyleWithDisplay). Damage without layout bits
+        // leaves `display` as it was, so the frame constructor would choose the same display again.
+        let ownStyle = if oldStyle.get_box().display == newStyle.get_box().display {
+            newStyle.clone()
+        } else {
+            nsCSSFrameConstructor::StyleWithDisplay(&newStyle, oldStyle.get_box().display)
+        };
+        let dom = &self.sd().tree.dom;
+        // (frame, new style), applied once all of them are known
+        let mut updates: Vec<(nsIFrame, ServoArc<ComputedStyle>)> = Vec::new();
+        // each visited frame's new style, by frame id, for its children
+        let mut newOf: HashMap<u32, ServoArc<ComputedStyle>> = HashMap::new();
+        // the element's generated containers restyled, with their new style
+        let mut generated: Vec<(usize, ServoArc<ComputedStyle>)> = Vec::new();
+        let mut stack: Vec<nsIFrame> = parts.iter().rev().copied().collect();
+        while let Some(f) = stack.pop() {
+            // (the continuations made while reflowing are not in mFrameContent; the frame has its content)
+            let content = match self.ContentOfFrame(f) {
+                NONE => f.GetContent().map_or(NONE, |c| c.Id()),
+                c => c,
+            };
+            let own = content == aContent && parts.contains(&f.FirstContinuation());
+            let style = if own && ServoArc::ptr_eq(&f.Style(), &oldStyle) {
+                ownStyle.clone()
+            } else if own && !f.FirstContinuation().IsBlockFrameOrSubclass() {
+                return false;
+            } else if content != NONE && content < kGeneratedContentBase && content != aContent
+                && !(self.IsText(content) && dom.flattened_parent(content) == aContent) {
+                // another element's frames (its own restyle, if any, sees to them)
+                continue;
+            } else if content >= kGeneratedContentBase && (content - kGeneratedContentBase) < self.mGenerated.len() as u32 {
+                // the element's ::before or ::after (CreateGeneratedContentItem: the pseudo-element's
+                // style) and the text in it (an anonymous inline of that style), when the
+                // pseudo-element stays and keeps its display and content
+                use mrt_style::style::selector_parser::PseudoElement;
+                let g = (content - kGeneratedContentBase) as usize;
+                let old = f.Style();
+                let parent = self.mGenerated[g].mParent;
+                let style = if self.mGenerated[g].mText.is_none() && parent == aContent {
+                    let pseudo = if self.mBeforeOf.get(&aContent) == Some(&content) {
+                        PseudoElement::Before
+                    } else if self.mAfterOf.get(&aContent) == Some(&content) {
+                        PseudoElement::After
+                    } else {
+                        return false;
+                    };
+                    let Some(made) = self.mGenerated[g].mStyle.clone() else { return false };
+                    let Some(new) = self.sd().pseudo_style(aContent, pseudo) else { return false };
+                    if !ServoArc::ptr_eq(&old, &made) || made.get_box().display != new.get_box().display || made.get_counters() != new.get_counters() {
+                        return false;
+                    }
+                    generated.push((g, new.clone()));
+                    new
+                } else if self.mGenerated[g].mText.is_some() && parent >= kGeneratedContentBase {
+                    let Some(&(_, ref newParent)) = generated.iter().find(|(p, _)| *p == (parent - kGeneratedContentBase) as usize) else { return false };
+                    let Some(oldParent) = self.mGenerated[(parent - kGeneratedContentBase) as usize].mStyle.clone() else { return false };
+                    let newParent = newParent.clone();
+                    if !SameStyleValues(&old, &self.sd().anonymous_style(Some(&*oldParent), Some(StyleDisplayValue::Inline))) {
+                        return false;
+                    }
+                    self.AnonymousStyle(&newParent, AnonymousDisplay::Inline)
+                } else {
+                    return false;
+                };
+                style
+            } else if (content == NONE && !f.IsPlaceholderFrame()) || content >= kGeneratedContentBase {
+                return false;
+            } else {
+                // a text frame of the element, or an anonymous box or a placeholder (ResolveStyleFor
+                // Placeholder: an anonymous box of its parent frame's style): made again from the new
+                // style it was made from, if its old style is what that makes of the old one
+                let (oldParent, newParent) = if (content != aContent && content != NONE) || own {
+                    (oldStyle.clone(), newStyle.clone())
+                } else {
+                    let Some(parent) = f.GetParent() else { return false };
+                    let Some(newParent) = newOf.get(&parent.0) else { return false };
+                    (parent.Style(), newParent.clone())
+                };
+                let old = f.Style();
+                let pseudo = f.GetProperty(nsIFrame::AnonBoxPseudoTypeProperty());
+                let display = old.get_box().display;
+                let remade = match pseudo {
+                    Some(p) => {
+                        if !matches!(p, PseudoStyleType::MozTable | PseudoStyleType::MozInlineTable | PseudoStyleType::MozTableWrapper
+                            | PseudoStyleType::MozTableRowGroup | PseudoStyleType::MozTableRow | PseudoStyleType::MozTableCell
+                            | PseudoStyleType::MozCellContent | PseudoStyleType::MozAnonymousItem) {
+                            return false;
+                        }
+                        if !SameStyleValues(&old, &nsCSSFrameConstructor::MakeInheritingAnonBoxStyle(self.sd(), p, &oldParent)) {
+                            return false;
+                        }
+                        self.ResolveInheritingAnonymousBoxStyle(p, &newParent)
+                    }
+                    _ => {
+                        if !SameStyleValues(&old, &self.sd().anonymous_style(Some(&*oldParent), Some(display))) {
+                            return false;
+                        }
+                        match display {
+                            StyleDisplayValue::Inline => self.AnonymousStyle(&newParent, AnonymousDisplay::Inline),
+                            StyleDisplayValue::Block => self.AnonymousStyle(&newParent, AnonymousDisplay::Block),
+                            StyleDisplayValue::InlineBlock => self.AnonymousStyle(&newParent, AnonymousDisplay::InlineBlock),
+                            _ => self.sd().anonymous_style(Some(&*newParent), Some(display)),
+                        }
+                    }
+                };
+                remade
+            };
+            newOf.insert(f.0, style.clone());
+            updates.push((f, style));
+            let mut lists = Vec::new();
+            f.GetChildLists(&mut lists);
+            for l in lists {
+                let mut kid = l.mList.FirstChild();
+                while let Some(k) = kid {
+                    stack.push(k);
+                    kid = k.GetNextSibling();
+                }
+            }
+            if own {
+                if let Some(next) = f.GetNextContinuation() {
+                    if !newOf.contains_key(&next.0) {
+                        stack.push(next);
+                    }
+                }
+            }
+        }
+        for (f, style) in updates {
+            f.SetComputedStyleWithoutNotification(style);
+        }
+        for (g, style) in generated {
+            self.mGenerated[g].mStyle = Some(style);
+        }
+        true
+    }
+
     // Gecko: layout/base/nsCSSFrameConstructor.cpp nsCSSFrameConstructor::RecreateFramesForContent
     pub fn RecreateFramesForContent(&mut self, aContent: ContentId, aInsertionKind: InsertionKind) {
         MOZ_ASSERT!(aContent != NONE);
@@ -7922,4 +8097,16 @@ mod counter_reconstruction_tests {
         assert!(frames.mFrameConstructor.TakePendingReconstructs().is_empty());
         frames.Destroy();
     }
+}
+
+// ADAPTER (task 8facd): whether two styles have the same computed values, struct by struct (the
+// structs shared between them compare by address first).
+fn SameStyleValues(a: &ComputedStyle, b: &ComputedStyle) -> bool {
+    macro_rules! same {
+        ($($g:ident),*) => { $( (std::ptr::eq(a.$g(), b.$g()) || a.$g() == b.$g()) )&&* };
+    }
+    same!(get_background, get_border, get_box, get_column, get_counters, get_effects, get_font, get_inherited_box,
+          get_inherited_svg, get_inherited_table, get_inherited_text, get_inherited_ui, get_list, get_margin, get_outline,
+          get_padding, get_position, get_svg, get_table, get_text, get_ui, get_xul)
+        && a.custom_properties() == b.custom_properties()
 }

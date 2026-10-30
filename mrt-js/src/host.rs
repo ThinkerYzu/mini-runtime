@@ -1463,6 +1463,12 @@ fn form_control_ancestor(dom: &Dom, node: NodeId) -> Option<NodeId> {
 /// ProcessPostTraversal gives Gecko's frame constructor, in tree order, the descendants of a node that
 /// is reframed left out (its reframe rebuilds them). `damaged`: the elements whose style changed.
 fn apply_frame_changes(frames: &mut PresShellFrames, dom: &Dom, frame_ops: &[FrameOp], damaged: &[(NodeId, u16)]) {
+    // Damage of the repaint or stacking-context bits only (ServoRestyleDamage REPAINT,
+    // REBUILD_STACKING_CONTEXT) needs no layout: such an element keeps its frames and gets its new style
+    // on them, as Gecko's change hints without reflow or reconstruct do (task 8facd). Anything else
+    // reframes the element.
+    const NO_LAYOUT: u16 = 0b0011;
+    let (restyled, damaged): (Vec<_>, Vec<_>) = damaged.iter().copied().partition(|d| d.1 & !NO_LAYOUT == 0);
     let mut reframe: std::collections::HashSet<NodeId> = damaged.iter().map(|d| d.0).collect();
     let mut text_changed: Vec<NodeId> = Vec::new();
     for op in frame_ops {
@@ -1496,7 +1502,7 @@ fn apply_frame_changes(frames: &mut PresShellFrames, dom: &Dom, frame_ops: &[Fra
             }
         }
     }
-    let covered = |n: NodeId| {
+    let covered = |reframe: &std::collections::HashSet<NodeId>, n: NodeId| {
         let mut p = dom.flattened_parent(n);
         while p != NONE {
             if reframe.contains(&p) {
@@ -1506,6 +1512,22 @@ fn apply_frame_changes(frames: &mut PresShellFrames, dom: &Dom, frame_ops: &[Fra
         }
         false
     };
+    // Order does not matter: each element's frames get styles derived from its own old and new style.
+    let mut in_place = 0;
+    for &(n, _) in &restyled {
+        if reframe.contains(&n) || !dom.is_connected(n) || covered(&reframe, n) {
+            continue;
+        }
+        if frames.RestyleFramesInPlace(n) {
+            in_place += 1;
+        } else {
+            reframe.insert(n);
+        }
+    }
+    if std::env::var_os("MRT_FLUSH_TIMES").is_some() && !restyled.is_empty() {
+        eprintln!("FLUSHRESTYLE in place {in_place} of {} without layout damage", restyled.len());
+    }
+    let covered = |n: NodeId| covered(&reframe, n);
     let mut work: Vec<(NodeId, bool)> = reframe.iter().filter(|&&n| dom.is_connected(n) && !covered(n)).map(|&n| (n, true)).collect();
     text_changed.sort();
     text_changed.dedup();
