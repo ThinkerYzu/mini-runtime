@@ -436,15 +436,20 @@ impl Tree {
         }
     }
 
+    /// The atoms of the names the DOM interned since the last call (its name table only grows).
+    fn sync_names(&mut self) {
+        for i in self.name_atoms.len() as u32..self.dom.names.len() as u32 {
+            self.name_atoms.push(LocalName::from(self.dom.names.get(i)));
+        }
+    }
+
     /// Bring the side tables up to the DOM: a slot for each element made since the last call (a slot
     /// is never taken back, as a node id is not, GAPS B10; slots are in node id order), the atoms of
     /// new names, and the `id` and `style=""` tables of every element, the parsed blocks kept by text.
     pub fn sync_tables(&mut self) {
+        self.sync_names();
         let dom = &self.dom;
         let quirks = quirks_of(dom.document_mode(self.doc));
-        for i in self.name_atoms.len() as u32..dom.names.len() as u32 {
-            self.name_atoms.push(LocalName::from(dom.names.get(i)));
-        }
         let first_new = self.slot_of.len();
         self.slot_of.resize(dom.nodes.len(), u32::MAX);
         // the elements of this document only; one adopted from another document since the last call
@@ -772,8 +777,6 @@ impl StyleDom {
         out
     }
 
-    /// Put back the DOM `detach_dom` took, unchanged since: the side tables and the caches are as
-    /// they were, so nothing is brought up to date (a style query between two flushes).
     /// A new viewport (a frame resized, DESIGN "The frames' layout (S5)"): the next restyle makes the
     /// stylist again for it, which restyles everything (Gecko re-evaluates the media queries, and
     /// restyles what they change).
@@ -784,8 +787,14 @@ impl StyleDom {
         }
     }
 
+    /// Put back the DOM `detach_dom` took, for a style or layout read between two flushes: the side
+    /// tables and the caches are as they were, but for the atoms of names the DOM interned since.
+    /// A flush skipped for attribute changes (task dcb24) can leave an attribute with a new name, and
+    /// a read that styles an element or matches a selector looks its attributes up by name (B223,
+    /// task fa72f).
     pub fn attach_dom_unchanged(&mut self, dom: Dom) {
         self.tree.dom = dom;
+        self.tree.sync_names();
     }
 
     /// Take the DOM out (the runtime changes it between style builds); the style data stays.

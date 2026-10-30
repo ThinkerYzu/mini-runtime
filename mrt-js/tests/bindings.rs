@@ -259,6 +259,22 @@ const CASES: &[(&str, &str, &[&str])] = &[
         &["40 40px 10", "40 40px 10", "40 40px 10", "80 80px 10", "120 120px 10", "120 120px 30", "120 120px 30"],
     ),
     (
+        // the same skipped flush, then a computed style read of an element with no style yet (in a
+        // display:none subtree) that has an attribute with a name the page never used before: the
+        // style query matches its attributes by name (task fa72f, B223: the layout thread did not
+        // know the new name and panicked)
+        "computed style after an attribute with a new name",
+        r##"<div style="display:none"><span id=t></span></div><script>
+        const t = document.getElementById("t");
+        console.log(document.body.offsetHeight >= 0);
+        t.setAttribute("data-fa72f-never-seen-name", "1");
+        console.log(getComputedStyle(t).color);
+        t.setAttribute("data-fa72f-another-new-name", "2");
+        console.log(getComputedStyle(t).display, getComputedStyle(t.parentNode).display);
+        </script>"##,
+        &["true", "rgb(0, 0, 0)", "inline none"],
+    ),
+    (
         // restyles that need no layout keep the frames and give them the new style (task 8facd; the
         // hit test is bridge.js elementFromPoint's, not defined here):
         // z-index, pointer-events and visibility as hit testing sees them, also on the text frames
