@@ -66,7 +66,7 @@ gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
 console.log("WEBGL " + JSON.stringify([Array.from(px), gl.getShaderParameter(s, gl.COMPILE_STATUS), gl.getParameter(gl.VERSION), gl.getError()]));
 </script>''')
         # Serve the established storage/crypto cases alongside the network fixture.
-        for name in ("storage", "crypto", "websocket", "images", "images-api", "permissions-storage", "media-types", "idb", "idb-native", "fetch-bytes", "document-input", "frame-transfers", "secondary-sheets", "rule-style"):
+        for name in ("storage", "crypto", "websocket", "images", "images-api", "permissions-storage", "media-types", "idb", "idb-native", "fetch-bytes", "document-input", "frame-transfers", "secondary-sheets", "rule-style", "idle-deadline"):
             cls.root.joinpath(name + ".html").write_bytes((HERE / "bridge-cases" / (name + ".html")).read_bytes())
         for name in ("images-a.png", "images-b.png", "images-bad.png",
                      "images-api.png", "images-api.jpg", "images-api.gif", "images-api.webp",
@@ -204,6 +204,16 @@ console.log("WEBGL " + JSON.stringify([Array.from(px), gl.getShaderParameter(s, 
         self.assertEqual(lines, ["secondary detached true", "secondary sheet true true true true",
                                 "secondary rule 1 true .preview { color: red; }",
                                 "secondary removed true 1", "secondary reinserted true 0"])
+
+    def test_idle_deadline_counts_down(self):
+        # B225: Google Search's idle diagnostics loop while timeRemaining() > 5
+        result, data = self.run_page("idle-deadline")
+        self.assert_standalone(result, data)
+        log = (self.root / "logs" / "idle-deadline.log").read_text()
+        lines = next(json.loads(line.split("CASELOG ", 1)[1]) for line in log.splitlines() if "CASELOG " in line)
+        self.assertEqual(len(lines), 7, lines)
+        self.assertEqual(lines[-1], "done")
+        self.assertTrue(all(line.endswith(" true") for line in lines[:-1]), lines)
 
     def test_document_input_handlers(self):
         result, data = self.run_page("document-input")

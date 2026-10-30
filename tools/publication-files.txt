@@ -49,6 +49,7 @@ bench/bridge-cases/idb-native.html
 bench/bridge-cases/idb-profile-seed.html
 bench/bridge-cases/idb-profile.html
 bench/bridge-cases/idb.html
+bench/bridge-cases/idle-deadline.html
 bench/bridge-cases/iframes-child.html
 bench/bridge-cases/iframes.html
 bench/bridge-cases/images-a.png

@@ -5636,7 +5636,16 @@
     getEntries: () => [], getEntriesByType: () => [], getEntriesByName: () => [],
     mark() {}, measure() {}, clearMarks() {}, clearMeasures() {}, clearResourceTimings() {}, setResourceTimingBufferSize() {}, toJSON() { return {}; },
   });
-  define(global, "requestIdleCallback", cb => setTimeout(() => cb({ didTimeout: false, timeRemaining: () => 50 }), 1));
+  // Gecko's IdleDeadline::TimeRemaining: what is left of an idle period of at most 50 ms that began
+  // when the callback was called, counted down while the callback works. Pages loop on it to cut
+  // their idle work into slices (Google Search's diagnostics walk every rule of every sheet while
+  // timeRemaining() > 5); a deadline that stayed at 50 ran all of it in one task and held the page
+  // for minutes (B225). Counted on the wall clock, which moves during a task on the virtual clock too.
+  const idleWallNow = Date.now;
+  define(global, "requestIdleCallback", cb => setTimeout(() => {
+    const deadline = idleWallNow() + 50;
+    cb({ didTimeout: false, timeRemaining: () => Math.min(50, Math.max(0, deadline - idleWallNow())) });
+  }, 1));
   define(global, "cancelIdleCallback", id => clearTimeout(id));
 
   // custom elements: window.customElements is native (glue/mrt_js.cpp, Gecko's CustomElementRegistry)

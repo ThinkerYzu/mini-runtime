@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>requestIdleCallback deadline</title>
+<script>
+// Gecko's IdleDeadline counts down from at most 50 ms while the callback works (B225). Google
+// Search cuts its idle diagnostics into slices with `while (deadline.timeRemaining() > 5)` and asks
+// for another idle callback for the rest; with a deadline that stayed at 50 the whole job ran in one
+// task and held the page.
+window.__log = [];
+function check(name, ok) { __log.push(name + ' ' + !!ok); }
+requestIdleCallback(d => {
+  const first = d.timeRemaining();
+  check('starts at most 50 ms', first > 40 && first <= 50);
+  check('not timed out', d.didTimeout === false);
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20);
+  check('counts down while the callback works', d.timeRemaining() <= first - 15);
+  while (d.timeRemaining() > 5);
+  const t1 = Date.now();
+  while (Date.now() - t1 < 10);
+  check('spent deadline is 0', d.timeRemaining() === 0);
+  // a job longer than one idle period: about 300 ms of work in 5 ms steps
+  let left = 60, slices = 0, longest = 0;
+  const step = () => { const s = Date.now(); while (Date.now() - s < 5); left--; };
+  const run = deadline => {
+    const start = Date.now();
+    slices++;
+    while (left > 0 && deadline.timeRemaining() > 5) step();
+    longest = Math.max(longest, Date.now() - start);
+    if (left > 0) { requestIdleCallback(run); return; }
+    check('long job split into slices', slices >= 6);
+    check('no slice much over 50 ms', longest <= 60);
+    __log.push('done');
+  };
+  requestIdleCallback(run);
+});
+</script>
