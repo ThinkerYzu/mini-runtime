@@ -21,7 +21,7 @@ python3 bench/test_http_viewer.py
 
 The launcher suite covers URL validation, launch from another working directory, inherited benchmark-setting isolation, native profile persistence/isolation, profile locking and clean termination. It uses local HTTP and Python `-S` without a browser or recording.
 
-The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 75 cases: 46 run without a browser and 29 require `VIEWER_BROWSER=1`. Browser cases load the viewer with its default transport (WebSocket, falling back to long polling); `VIEWER_TRANSPORT=poll` or `ws` runs them on one transport only. Run the browser cases on both `poll` and the default. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
+The standalone suite has 17 checks, covering built-in desktop/isolated environments, consistent network identity and strict explicit recording overrides. The viewer suite has 76 cases: 46 run without a browser and 30 require `VIEWER_BROWSER=1`. Browser cases load the viewer with its default transport (WebSocket, falling back to long polling); `VIEWER_TRANSPORT=poll` or `ws` runs them on one transport only. Run the browser cases on both `poll` and the default. The local fixtures use the built-in environment and their own HTTP servers. To run all viewer cases, use the pinned ordinary-Python virtual environment from [build setup](build.md#recording-the-browser-environment):
 
 ```sh
 VIEWER_BROWSER=1 FIREFOX_BIN=/path/to/firefox xvfb-run -a .venv/bin/python \
@@ -40,6 +40,7 @@ This local fixture checks redirect ownership independently of Google's traffic v
 |---|---|
 | `Runtime.test_browser` | Input, scroll, tab replacement/reconnect, resize, CSSOM and script isolation. `VIEWER_SHOT=FILE` saves a screenshot. |
 | `Runtime.test_browser_editable` | Ordered typing, caret/selection replacement, deletion, Unicode and editable reconnect. |
+| `Runtime.test_browser_canceled_keys` | Keys the page cancels after the viewer's Firefox did their default: a search textarea's Enter submits without keeping the newline (caret restored, no keypress), a multiline textarea's Enter, a digits-only field typed quickly (`1a2b3` gives `123`), an editing host that sends on Enter (task 464ad). |
 | `Runtime.test_browser_svg_search` | Lazy replacement of a search field, SVG namespace detection, typing and value preservation after reconnect. |
 | `Runtime.test_browser_document_input` | Controlled textarea input and consecutive submissions. |
 | `Runtime.test_browser_slow_fetch` | Slow binary fetch/XHR, responsive input, cookies, errors, abort/reuse and reconnect. |

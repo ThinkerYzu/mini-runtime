@@ -5865,6 +5865,9 @@
     if (before.defaultPrevented || (typeof before.returnValue === "string" && before.returnValue !== "")) {
       return refuseNavigation(nav.url, "beforeunload canceled");
     }
+    // the copy gets the document as it is now, before this runtime waits for the new one: the
+    // page's last changes, and the undoing of the key that submitted (task 464ad)
+    mirrorFlush(true);
     const entries = historyEntries();
     const items = __mrtSessionStorage(pageURL.origin, "names").map(k => [k, __mrtSessionStorage(pageURL.origin, "getItem", k)]);
     let reply;
@@ -8967,7 +8970,7 @@
   // `windows`: the window that mirrored each node, whose fireInput runs the input on it (a frame's).
   // Unlike `sent` it outlives a detach, so input queued before one still reaches its frame.)
   const mirror = share("viewerMirror", () => ({ on: false, next: 1, ids: new WeakMap(), windows: new WeakMap(), snapshot: null, pendingSnapshot: null, sent: new WeakMap(), byId: new Map(), last: -Infinity, href: "", adopted: "", history: "", historyAck: 0,
-    full: true, removed: [], controls: new Set(), frames: new Set(), roots: new Set(), templates: new WeakMap() }));
+    full: true, removed: [], controls: new Set(), frames: new Set(), roots: new Set(), resync: new Set(), templates: new WeakMap() }));
   const XHTML = "http://www.w3.org/1999/xhtml";
   // the DOM's own methods, as they were before the page's scripts, which may wrap them
   const domOwn = (proto, name) => {
@@ -9229,6 +9232,19 @@
     }
     mirrorChildren(node, rec, ops, false);
   }
+  // A node the copy has, and below it, sent again as the runtime has it although its records match:
+  // the tab's own editor changed that subtree (droppedEdit). Its children's lists name the ids the
+  // tab has, so the viewer removes the nodes its editor made; each text node's data is sent again.
+  function mirrorResync(node, ops) {
+    const rec = mirror.sent.get(node);
+    mirror.byId.set(rec.i, node);
+    if (node.nodeType === 3) { rec.d = node.data; ops.push(["d", rec.i, node.data]); return; }
+    if (node.nodeType !== 1 || rec.leaf) return;
+    const kids = Array.from(mirrorKids(node));
+    if (!kids.every(k => mirror.sent.has(k))) { mirrorChildren(node, rec, ops, true); return; }
+    ops.push(["c", rec.i, kids.map(k => mirror.sent.get(k).i)]);
+    for (const k of kids) mirrorResync(k, ops);
+  }
   // An incremental flush (mirrorFlush): the nodes the DOM marked that the copy has in this document
   // (a frame's document is walked whole, by mirrorFrame), then what changes without a DOM mutation:
   // sheets the CSSOM edited, form controls' values, frames' documents and shadow roots' adopted sheets
@@ -9333,6 +9349,15 @@
       mirror.byId = new Map([[0, document]]);
       mirrorChildren(document, mirror.sent.get(document), ops);
     } else mirrorChanges(dirty, ops);
+    // a key the page cancelled (editCanceled), for the viewer to undo the edit its Firefox made
+    if (mirror.keyCanceled) { ops.push(["kc", mirror.keyCanceled]); mirror.keyCanceled = 0; }
+    // editing hosts whose edit in the tab the page cancelled (droppedEdit): the tab gets the
+    // runtime's children and text back, which its own editor changed
+    for (const host of mirror.resync) {
+      if (mirrorRootOf(host) !== document) continue;
+      mirror.resync.delete(host);
+      if (host.isConnected && mirror.sent.has(host)) mirrorResync(host, ops);
+    }
     if (pageURL.href !== mirror.href) { mirror.href = pageURL.href; ops.push(["u", pageURL.href]); }
     if (env.httpViewer) {
       const count = historyEntries().length;
@@ -9722,7 +9747,7 @@
   // cancel, or a submit, would navigate, which the runtime does not do (GAPS B151): counted in
   // `input.unhandled`.
   const INPUT_INTERFACES = new Set(["Event", "UIEvent", "MouseEvent", "PointerEvent", "WheelEvent", "KeyboardEvent", "FocusEvent", "InputEvent", "SubmitEvent"]);
-  const input = { events: 0, missed: 0, unhandled: [] };
+  const input = { events: 0, missed: 0, dropped: 0, unhandled: [] };
   const inputGroups = [];
   let inputQueued = false;
   function inputEvents(list) {
@@ -9795,6 +9820,7 @@
       return;
     }
     if (tabHasFocus(ev)) focus.element = node(ev.active);
+    if (droppedEdit(ev, target)) return;
     // The owner scrolled an element scroll container in the tab (task 0bec4): it is at the tab's
     // offset before its event, unless the page scrolled it since the tab last had its offset (`seq`).
     if (elementScrolled) {
@@ -9885,15 +9911,17 @@
       }
     }
     if (ev.value && isControl(target)) {
-      const [value, checked] = ev.value;
+      const checked = ev.value[1], now = domCall(target.localName === "input" ? DOM_OWN.inputValue : DOM_OWN.textareaValue, target);
+      // (the tab edited another value than the runtime's: the edit made on this one, task 464ad)
+      const value = typeof ev.base === "string" && typeof ev.value[0] === "string" ? rebaseEdit(ev.base, ev.value[0], now) : ev.value[0];
       if (target.localName === "input") {
         // (only when it differs: a checkbox's value is its attribute, which setting would add)
         if (domCall(DOM_OWN.inputValue, target) !== value) domCall(DOM_OWN.setInputValue, target, value);
         if (domCall(DOM_OWN.inputChecked, target) !== checked) domCall(DOM_OWN.setInputChecked, target, checked);
       } else domCall(DOM_OWN.setTextareaValue, target, value);
-      // the tab has it: no "v" op back
+      // the tab has it: no "v" op back, unless the tab's value is not the runtime's
       const rec = mirror.sent.get(target);
-      if (rec) rec.v = controlState(target);
+      if (rec) rec.v = value === ev.value[0] ? controlState(target) : JSON.stringify(ev.value);
     }
     const C = INPUT_INTERFACES.has(ev.iface) && global[ev.iface] ? global[ev.iface] : Event;
     const init = { bubbles: ev.bubbles, cancelable: ev.cancelable, composed: ev.composed };
@@ -9905,6 +9933,62 @@
     Object.assign(e, ev.fields, extra);
     navigation.input++;
     try { fireInputDefault(target, e, ev); } finally { navigation.input--; }
+    editCanceled(ev, e);
+  }
+  // The value of a control after the edit the tab made from `base` to `edited`, made on the runtime's
+  // value `current` instead (task 464ad): `base` is what the tab had, which differs from the
+  // runtime's while a "v" op is on its way to it, as after an edit the page cancelled (droppedEdit),
+  // when a key typed next carries the cancelled one. Each change is one splice; the runtime's goes
+  // first where they meet (it is the older: the user's earlier key, or the page's own change). When
+  // they overlap the tab's value is taken, as before.
+  function rebaseEdit(base, edited, current) {
+    if (base === current) return edited;
+    const splice = (a, b) => {
+      const n = Math.min(a.length, b.length);
+      let s = 0, e = 0;
+      while (s < n && a[s] === b[s]) s++;
+      while (e < n - s && a[a.length - 1 - e] === b[b.length - 1 - e]) e++;
+      return [s, a.length - e, b.length - e];
+    };
+    const [s1, e1, f1] = splice(base, edited), [s2, e2, f2] = splice(base, current);
+    if (e2 <= s1) return current.slice(0, f2) + base.slice(e2, s1) + edited.slice(s1);
+    if (e1 <= s2) return edited.slice(0, f1) + base.slice(e1, s2) + current.slice(s2);
+    return edited;
+  }
+  // A key or edit the page cancels here (task 464ad, GAPS B224, B184). The tab has already done its
+  // default: Firefox's textarea there inserted Enter's newline before Google's keydown handler ran
+  // here and cancelled it. As in Firefox once keydown, keypress or beforeinput is cancelled, the
+  // rest of that edit does not happen: its keypress (after a cancelled keydown), beforeinput and
+  // input are not fired, and the tab's edit is not taken. The tab gets the runtime's value back (a
+  // "v" op: its record is set to what the tab has) or, for an editing host, its children and text.
+  // The cancellation lasts until the edit's input, the key's keyup or the next keydown. A key of an
+  // IME composition is not cancelled (Firefox's editor composes regardless).
+  // The viewer is also told at once, with a "kc" op naming the keydown's task, and undoes the key's
+  // edit itself if nothing was edited after it: the rest of the key's events may never run here, as
+  // when the cancelling handler starts a navigation (Google's search), which blocks this runtime
+  // until the new document commits and drops the input that comes meanwhile.
+  let canceledEdit = false, keydownTask = 0;
+  function editCanceled(ev, e) {
+    if (ev.type === "keydown") keydownTask = ev.task;
+    if (ev.type === "keydown" || ev.type === "keyup" || ev.type === "input") canceledEdit = false;
+    if (!e.defaultPrevented || !["keydown", "keypress", "beforeinput"].includes(ev.type)) return;
+    if (ev.fields && (ev.fields.isComposing || ev.fields.keyCode === 229)) return;
+    canceledEdit = true;
+    if (env.httpViewer && ev.type !== "beforeinput" && keydownTask) mirror.keyCanceled = keydownTask;
+  }
+  function droppedEdit(ev, target) {
+    if (ev.type === "keydown" || ev.type === "keyup") canceledEdit = false;
+    if (!canceledEdit || !["keypress", "beforeinput", "input"].includes(ev.type)) return false;
+    input.dropped++;
+    if (ev.type !== "input") return true;
+    canceledEdit = false;
+    const rec = mirror.sent.get(target);
+    if (ev.value && isControl(target) && rec && rec.v !== undefined) rec.v = JSON.stringify(ev.value);
+    else if (Array.isArray(ev.editable) && ev.editSelection) {
+      const host = mirror.byId.get(ev.editSelection.host);
+      if (host && mirror.sent.has(host)) mirror.resync.add(host);
+    }
+    return true;
   }
   function fireInputDefault(target, e, ev) {
     target.dispatchEvent(e);

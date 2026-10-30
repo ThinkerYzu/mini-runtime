@@ -1290,6 +1290,13 @@ class Runtime(unittest.TestCase):
                     try: self.wfile.write(gif)
                     except (BrokenPipeError, ConnectionResetError): pass
                     return
+                if self.path.startswith("/searched?"):
+                    # (task 464ad: the search page loads slowly, as Google's results do, so the viewer
+                    # shows the old page and its box while the navigation is loading)
+                    time.sleep(1.5)
+                    body = b"<!doctype html><title>searched</title><p id=searched>searched</p>"
+                    self.send_response(200); self.send_header("Content-Type", "text/html"); self.send_header("Content-Length", str(len(body)))
+                    self.end_headers(); self.wfile.write(body); return
                 if self.path == "/fast-reply":
                     self.send_response(200); self.send_header("Content-Length", "4"); self.end_headers()
                     self.wfile.write(b"fast"); return
@@ -1318,6 +1325,8 @@ class Runtime(unittest.TestCase):
         page = "media-types.html" if media_case else ("webgl-demo.html" if self._testMethodName == "test_browser_webgl" else "demo.html")
         if self._testMethodName == "test_browser_editable":
             page = "editable.html"
+        if self._testMethodName == "test_browser_canceled_keys":
+            page = "canceled-keys.html"
         if self._testMethodName == "test_browser_shadow_adopted":
             page = "shadow-adopted.html"
         if self._testMethodName == "test_browser_slow_fetch":
@@ -2204,6 +2213,91 @@ class Runtime(unittest.TestCase):
         self.assertEqual(result["js_errors"],0,result)
         self.assertFalse(result["unsupported_ops"],result)
         self.assertEqual(result["bridge_tab"],{"made":False})
+
+    @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
+    def test_browser_canceled_keys(self):
+        """Keys the page cancels in the runtime do not keep the edit the viewer's Firefox made (task 464ad)"""
+        from marionette_driver.marionette import Marionette
+        from marionette_driver.keys import Keys
+        import firefox_exit
+        browser = Marionette(bin=os.environ["FIREFOX_BIN"], prefs={"marionette.allowSystemAccess": True,
+            "browser.aboutwelcome.enabled": False, "browser.shell.checkDefaultBrowser": False})
+        browser.start_session()
+        try:
+            browser.set_context("content")
+            browser.navigate(self.viewer_url)
+            self.until(lambda: browser.execute_script('return document.getElementById("status").textContent.startsWith("Connected")'))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            text = lambda id: browser.execute_script("return document.getElementById(arguments[0]).textContent", script_args=(id,))
+            box = lambda id: browser.execute_script("const b = document.getElementById(arguments[0]); return [b.value, b.selectionStart, b.selectionEnd]", script_args=(id,))
+            # Enter submits the search box: the newline the viewer's textarea inserted is taken back, with the caret
+            search = browser.find_element("id", "search")
+            search.click()
+            search.send_keys("javascript")
+            self.until(lambda: text("search-model") == '"javascript"')
+            presses = text("keypress")
+            search.send_keys(Keys.ENTER)
+            self.until(lambda: text("submitted") == "1")
+            self.until(lambda: box("search") == ["javascript", 10, 10])
+            self.assertEqual(text("keypress"), presses)  # (no keypress after a cancelled keydown, as in Firefox)
+            # the next edit is the user's: no stale newline comes back; a changed query submits once per Enter
+            search.send_keys(Keys.BACK_SPACE * 10 + "rust")
+            self.until(lambda: text("search-model") == '"rust"')
+            self.assertEqual(box("search"), ["rust", 4, 4])
+            search.send_keys(Keys.ENTER)
+            self.until(lambda: text("submitted") == "2")
+            self.until(lambda: box("search") == ["rust", 4, 4])
+            # a caret inside the text goes back there, not to the end
+            browser.execute_script("document.getElementById('search').setSelectionRange(2, 2)")
+            search.send_keys(Keys.ENTER)
+            self.until(lambda: text("submitted") == "3")
+            self.until(lambda: box("search") == ["rust", 2, 2])
+            # Enter in a textarea that does not cancel it is a newline in both copies
+            notes = browser.find_element("id", "notes")
+            notes.click()
+            notes.send_keys("one" + Keys.ENTER + "two")
+            self.until(lambda: text("notes-model") == '"one\\ntwo"')
+            self.assertEqual(box("notes")[0], "one\ntwo")
+            # letters the page refuses do not stay in the viewer's field; digits typed after them do
+            digits = browser.find_element("id", "digits")
+            digits.click()
+            digits.send_keys("1a2b3")
+            try: self.until(lambda: text("digits-model") == '"123"')
+            except AssertionError: raise AssertionError(f"digits model {text('digits-model')} viewer {box('digits')}")
+            self.until(lambda: box("digits") == ["123", 3, 3])
+            # an editing host that sends on Enter: the viewer's line break is taken back
+            chat = browser.find_element("id", "chat")
+            chat.click()
+            chat.send_keys("hi")
+            self.until(lambda: text("chat-model") == '"hi"')
+            chat.send_keys(Keys.ENTER)
+            self.until(lambda: text("sent") == '["hi"]')
+            self.until(lambda: browser.execute_script('return document.getElementById("chat").innerHTML') == "")
+            chat.send_keys("again")
+            self.until(lambda: text("chat-model") == '"again"')
+            self.assertEqual(text("chat"), "again")
+            # Enter in a box whose cancelling handler navigates (Google Search): the runtime waits for the
+            # new document and takes no more input, so the viewer undoes the newline itself ("kc")
+            go = browser.find_element("id", "go")
+            go.click()
+            go.send_keys("javascript")
+            self.until(lambda: text("go-model") == '"javascript"')
+            go.send_keys(Keys.ENTER)
+            browser.switch_to_frame()
+            self.until(lambda: browser.execute_script('return document.getElementById("status").textContent.startsWith("Loading")'))
+            browser.switch_to_frame(browser.find_element("id", "page"))
+            self.until(lambda: box("go") == ["javascript", 10, 10])
+            browser.switch_to_frame()
+            self.assertTrue(browser.execute_script('return document.getElementById("status").textContent.startsWith("Loading")'))
+            self.until(lambda: "/searched?q=javascript" in browser.execute_script('return document.getElementById("status").textContent'))
+        finally:
+            firefox_exit.close(browser)
+        self.call("stop", {})
+        self.proc.wait(timeout=20)
+        result = json.loads((self.root / "result.json").read_text())["demo"]
+        self.assertEqual(self.proc.returncode, 0, result)
+        self.assertEqual(result["exit"], 0, result)
+        self.assertEqual(result["js_errors"], 0, result)
 
     @unittest.skipUnless(os.environ.get("VIEWER_BROWSER") == "1", "set VIEWER_BROWSER=1 with the pinned Python environment to drive Firefox")
     def test_browser_frames(self):

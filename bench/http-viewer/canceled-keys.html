@@ -1,0 +1,42 @@
+<!doctype html><meta charset="utf-8"><title>Keys the page cancels</title>
+<!-- task 464ad: a search box that submits on Enter (Google Search's textarea), a plain multiline
+     textarea, a field that refuses letters and an editing host that sends on Enter. Each cancels
+     its key in the runtime after the viewer's Firefox already did the key's default; #go's Enter
+     also navigates to the search, as Google's does. -->
+<form id="form" action="/searched"><textarea id="search" name="q" rows="1"></textarea></form>
+<textarea id="go" rows="1"></textarea> <output id="go-model"></output>
+<textarea id="notes" rows="3"></textarea>
+<input id="digits">
+<div id="chat" contenteditable="true" role="textbox"></div>
+<p>search <output id="search-model"></output> submitted <output id="submitted">0</output> keypress <output id="keypress">0</output></p>
+<p>notes <output id="notes-model"></output> digits <output id="digits-model"></output></p>
+<p>chat <output id="chat-model"></output> sent <output id="sent"></output></p>
+<script>
+const $ = id => document.getElementById(id);
+const sent = [];
+$("search").addEventListener("keydown", e => {
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+  e.preventDefault();
+  $("submitted").textContent = +$("submitted").textContent + 1;
+  $("form").dataset.last = $("search").value;
+});
+$("search").addEventListener("keypress", () => { $("keypress").textContent = +$("keypress").textContent + 1; });
+$("search").addEventListener("input", () => { $("search-model").textContent = JSON.stringify($("search").value); });
+$("go").addEventListener("keydown", e => {
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+  e.preventDefault();
+  location.href = "/searched?q=" + encodeURIComponent($("go").value);
+});
+$("go").addEventListener("input", () => { $("go-model").textContent = JSON.stringify($("go").value); });
+$("notes").addEventListener("input", () => { $("notes-model").textContent = JSON.stringify($("notes").value); });
+$("digits").addEventListener("keydown", e => { if (e.key.length === 1 && !/[0-9]/.test(e.key)) e.preventDefault(); });
+$("digits").addEventListener("input", () => { $("digits-model").textContent = JSON.stringify($("digits").value); });
+$("chat").addEventListener("keydown", e => {
+  if (e.key !== "Enter" || e.shiftKey) return;
+  e.preventDefault();
+  sent.push($("chat").textContent);
+  $("sent").textContent = JSON.stringify(sent);
+  $("chat").replaceChildren();
+});
+$("chat").addEventListener("input", () => { $("chat-model").textContent = JSON.stringify($("chat").textContent); });
+</script>

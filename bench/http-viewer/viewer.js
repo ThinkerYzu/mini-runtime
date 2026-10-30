@@ -64,6 +64,26 @@ let elementSeqs = new WeakMap(), elementEchoes = new WeakMap(), elementWanted = 
 // the element while it cannot take the focus yet (not laid out), tried again after each batch until
 // it has it or the owner moves the focus. Its focus and blur events here are not the owner's.
 let focusSeq = 0, focusWanted = null, pageFocusing = false;
+// A form control's value and selection when a key went down on it (capture), and its value after
+// that key's edit (`after`). The page may cancel the key in the runtime, after Firefox made the edit
+// here (task 464ad): the runtime says so with a "kc" op naming the keydown's task, and the edit is
+// undone (undoKey) unless the control was edited since. A "v" op giving back the value from before
+// the key (the runtime's own correction) also puts the caret back where it was, not at the end.
+let keyStart = null;
+function undoKey(task) {
+  const k = keyStart;
+  if (!k || k.task !== task || k.after === null || !k.node.isConnected || k.node.value !== k.after) return;
+  k.node.value = k.value;
+  lastValues.set(k.node, k.value);
+  k.after = null;
+  if (k.node.ownerDocument.activeElement === k.node) {
+    try { k.node.setSelectionRange(k.start, k.end, k.direction); } catch (e) {}
+  }
+}
+// Each form control's value as this copy last had it: after its last input or change event, or the
+// runtime's last "v" op. An input event carries it as `base`, the value Firefox's editor edited
+// here, which the runtime's value may no longer be (task 464ad: a "v" op still on its way).
+let lastValues = new WeakMap();
 function pageFocus() {
   const doc = frame.contentDocument, node = focusWanted, active = doc.activeElement;
   if (node && !node.isConnected) { focusWanted = null; return; }
@@ -500,6 +520,7 @@ function apply(batch) {
     if (kind === "m") { media?.apply(id); continue; }
     if (kind === "img") { preload(doc, id, arg, fourth); continue; }
     if (kind === "focus") { focusSeq = arg; focusWanted = id ? nodes.get(id) ?? null : null; pageFocus(); continue; }
+    if (kind === "kc") { undoKey(id); continue; }
     const node = nodes.get(id);
     if (!node) throw new Error("Unknown mirror node " + id);
     if (kind === "c") {
@@ -519,7 +540,16 @@ function apply(batch) {
     else if (kind === "d") { if (node.data !== arg) node.data = arg; }
     else if (kind === "r") shadow(node, arg);
     else if (kind === "adopted-root") mirrorAdoptedSheets(node, arg);
-    else if (kind === "v") { if (node.value !== arg) node.value = arg; if (node.localName === "input") node.checked = fourth; }
+    else if (kind === "v") {
+      if (node.value !== arg) {
+        node.value = arg;
+        if (keyStart?.node === node && keyStart.value === arg && node.ownerDocument.activeElement === node) {
+          try { node.setSelectionRange(keyStart.start, keyStart.end, keyStart.direction); } catch (e) {}
+        }
+      }
+      if (node.localName === "input") node.checked = fourth;
+      lastValues.set(node, node.value);
+    }
     else if (kind === "s") { rules.set(id, arg); setRules(node, arg); }
     else if (kind === "escroll") { elementSeqs.set(node, fifth); scrollElement(node, arg, fourth); }
   }
@@ -597,7 +627,19 @@ function capture(e) {
       catch (err) { disconnected(err.message + ". Click Connect to resynchronize."); return; }
     }
   }
-  if (["input", "change"].includes(e.type) && ["input", "textarea"].includes(path[0].localName)) ev.value = [path[0].value, !!path[0].checked];
+  if (["input", "change"].includes(e.type) && ["input", "textarea"].includes(path[0].localName)) {
+    ev.value = [path[0].value, !!path[0].checked];
+    if (lastValues.has(path[0])) ev.base = lastValues.get(path[0]);
+    lastValues.set(path[0], path[0].value);
+    if (keyStart?.node === path[0] && e.type === "input") keyStart.after = path[0].value;
+  }
+  if (e.type === "keydown") {
+    const el = path[0];
+    keyStart = null;
+    if (["input", "textarea"].includes(el.localName)) {
+      try { keyStart = {node: el, task: ev.task, value: el.value, start: el.selectionStart, end: el.selectionEnd, direction: el.selectionDirection, after: null}; } catch (err) {}
+    }
+  }
   events.push(ev);
   if (!LAZY.has(e.type)) { urgent = true; sendSoon(); }
   // Pointer crossing can synchronously enter hundreds of nested nodes before

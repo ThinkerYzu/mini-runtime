@@ -222,6 +222,7 @@ bench/firefox_worker_census.py
 bench/heap_compress.py
 bench/heaptrack_owners.py
 bench/http-viewer/adopted.js
+bench/http-viewer/canceled-keys.html
 bench/http-viewer/demo.css
 bench/http-viewer/demo.html
 bench/http-viewer/editable.html
